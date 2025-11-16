@@ -3,7 +3,7 @@ import { trpc } from '@/lib/trpc';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Card } from '@/components/ui/card';
-import { Loader2, Send } from 'lucide-react';
+import { Loader2, Send, Volume2, VolumeX } from 'lucide-react';
 import { toast } from 'sonner';
 import { Streamdown } from 'streamdown';
 
@@ -27,14 +27,59 @@ export default function ChatInterface({ sessionId, characterId, characterName }:
   const [streamingText, setStreamingText] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [pendingUserMessage, setPendingUserMessage] = useState<string | null>(null);
+  const [playingMessageId, setPlayingMessageId] = useState<number | null>(null);
+  const [audioCache, setAudioCache] = useState<Map<number, string>>(new Map());
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const utils = trpc.useUtils();
 
   const { data: messages, isLoading, refetch } = trpc.messages.list.useQuery(
     { sessionId: sessionId!, limit: 100 },
     { enabled: !!sessionId }
   );
+
+  const { data: settings } = trpc.settings.get.useQuery();
+
+  const ttsMutation = trpc.tts.generate.useMutation({
+    onSuccess: (data, variables) => {
+      const messageId = (variables as any).messageId;
+      const audioUrl = `data:audio/mp3;base64,${data.audio}`;
+      
+      // Cache the audio
+      setAudioCache(prev => new Map(prev).set(messageId, audioUrl));
+      
+      // Play the audio
+      if (audioRef.current) {
+        audioRef.current.pause();
+      }
+      
+      const audio = new Audio(audioUrl);
+      audioRef.current = audio;
+      setPlayingMessageId(messageId);
+      
+      audio.onended = () => {
+        setPlayingMessageId(null);
+        audioRef.current = null;
+      };
+      
+      audio.onerror = () => {
+        toast.error('Failed to play audio');
+        setPlayingMessageId(null);
+        audioRef.current = null;
+      };
+      
+      audio.play().catch((err) => {
+        toast.error('Failed to play audio: ' + err.message);
+        setPlayingMessageId(null);
+        audioRef.current = null;
+      });
+    },
+    onError: (error) => {
+      toast.error('Failed to generate speech: ' + error.message);
+      setPlayingMessageId(null);
+    },
+  });
 
   const sendMutation = trpc.messages.send.useMutation({
     onSuccess: (data) => {
@@ -139,6 +184,59 @@ export default function ChatInterface({ sessionId, characterId, characterName }:
     }
   };
 
+  const handlePlayTTS = (messageId: number, text: string) => {
+    // If already playing this message, stop it
+    if (playingMessageId === messageId) {
+      handleStopTTS();
+      return;
+    }
+
+    // Check if we have cached audio
+    const cachedAudio = audioCache.get(messageId);
+    if (cachedAudio) {
+      // Play cached audio
+      if (audioRef.current) {
+        audioRef.current.pause();
+      }
+      
+      const audio = new Audio(cachedAudio);
+      audioRef.current = audio;
+      setPlayingMessageId(messageId);
+      
+      audio.onended = () => {
+        setPlayingMessageId(null);
+        audioRef.current = null;
+      };
+      
+      audio.play().catch((err) => {
+        toast.error('Failed to play audio: ' + err.message);
+        setPlayingMessageId(null);
+        audioRef.current = null;
+      });
+    } else {
+      // Generate new audio
+      ttsMutation.mutate({ text, messageId } as any);
+    }
+  };
+
+  const handleStopTTS = () => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+    setPlayingMessageId(null);
+  };
+
+  // Cleanup audio on unmount
+  useEffect(() => {
+    return () => {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+    };
+  }, []);
+
   if (!sessionId) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -208,44 +306,69 @@ export default function ChatInterface({ sessionId, characterId, characterName }:
             <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
           </div>
         ) : allMessages.length > 0 ? (
-          allMessages.map((msg) => (
-            <Card
-              key={'id' in msg && typeof msg.id === 'number' ? msg.id : ('id' in msg ? msg.id : 'unknown')}
-              className={`p-4 ${
-                msg.isDm ? 'bg-primary/5 border-primary/20' : 'bg-accent/50'
-              } ${'isPending' in msg && msg.isPending ? 'opacity-70' : ''}`}
-            >
-              <div className="flex items-start gap-3">
-                <div className="flex-shrink-0 w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center font-bold text-sm">
-                  {msg.isDm ? 'DM' : (msg.characterName?.[0] || 'P')}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="font-semibold text-sm">{msg.characterName}</span>
-                    <span className="text-xs text-muted-foreground">
-                      {typeof msg.timestamp === 'string' 
-                        ? new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-                        : msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                    </span>
+          allMessages.map((msg) => {
+            const messageId = 'id' in msg && typeof msg.id === 'number' ? msg.id : null;
+            const isTTSEnabled = settings?.ttsEnabled && settings?.ttsApiKey && msg.isDm;
+            const isCurrentlyPlaying = messageId && playingMessageId === messageId;
+            const isTTSLoading = ttsMutation.isPending && (ttsMutation.variables as any)?.messageId === messageId;
+            
+            return (
+              <Card
+                key={messageId || ('id' in msg ? msg.id : 'unknown')}
+                className={`p-4 ${
+                  msg.isDm ? 'bg-primary/5 border-primary/20' : 'bg-accent/50'
+                } ${'isPending' in msg && msg.isPending ? 'opacity-70' : ''}`}
+              >
+                <div className="flex items-start gap-3">
+                  <div className="flex-shrink-0 w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center font-bold text-sm">
+                    {msg.isDm ? 'DM' : (msg.characterName?.[0] || 'P')}
                   </div>
-                  {'isThinking' in msg && msg.isThinking ? (
-                    <div className="flex items-center gap-2 text-muted-foreground italic">
-                      <span>DM is thinking</span>
-                      <span className="inline-flex gap-1">
-                        <span className="animate-bounce" style={{ animationDelay: '0ms' }}>.</span>
-                        <span className="animate-bounce" style={{ animationDelay: '150ms' }}>.</span>
-                        <span className="animate-bounce" style={{ animationDelay: '300ms' }}>.</span>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="font-semibold text-sm">{msg.characterName}</span>
+                      <span className="text-xs text-muted-foreground">
+                        {typeof msg.timestamp === 'string' 
+                          ? new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                          : msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                       </span>
+                      {isTTSEnabled && messageId && !('isThinking' in msg) && msg.content && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6 ml-auto"
+                          onClick={() => handlePlayTTS(messageId, msg.content)}
+                          disabled={isTTSLoading}
+                          title={isCurrentlyPlaying ? 'Stop' : 'Play audio'}
+                        >
+                          {isTTSLoading ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : isCurrentlyPlaying ? (
+                            <VolumeX className="h-4 w-4" />
+                          ) : (
+                            <Volume2 className="h-4 w-4" />
+                          )}
+                        </Button>
+                      )}
                     </div>
-                  ) : (
-                    <div className="prose prose-sm dark:prose-invert max-w-none">
-                      <Streamdown>{msg.content}</Streamdown>
-                    </div>
-                  )}
+                    {'isThinking' in msg && msg.isThinking ? (
+                      <div className="flex items-center gap-2 text-muted-foreground italic">
+                        <span>DM is thinking</span>
+                        <span className="inline-flex gap-1">
+                          <span className="animate-bounce" style={{ animationDelay: '0ms' }}>.</span>
+                          <span className="animate-bounce" style={{ animationDelay: '150ms' }}>.</span>
+                          <span className="animate-bounce" style={{ animationDelay: '300ms' }}>.</span>
+                        </span>
+                      </div>
+                    ) : (
+                      <div className="prose prose-sm dark:prose-invert max-w-none">
+                        <Streamdown>{msg.content}</Streamdown>
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </div>
-            </Card>
-          ))
+              </Card>
+            );
+          })
         ) : (
           <div className="flex justify-center items-center h-full">
             <p className="text-muted-foreground">No messages yet. Start the adventure!</p>

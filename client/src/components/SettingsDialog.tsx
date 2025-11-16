@@ -18,6 +18,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Switch } from '@/components/ui/switch';
 import { toast } from 'sonner';
 import { Loader2 } from 'lucide-react';
 import { Textarea } from '@/components/ui/textarea';
@@ -96,8 +97,9 @@ export default function SettingsDialog({ open, onOpenChange }: SettingsDialogPro
   const [llmModel, setLlmModel] = useState<string>('');
   const [llmApiKey, setLlmApiKey] = useState<string>('');
   const [ttsEnabled, setTtsEnabled] = useState(false);
-  const [ttsProvider, setTtsProvider] = useState<string>('');
-  const [ttsVoice, setTtsVoice] = useState<string>('');
+  const [ttsProvider, setTtsProvider] = useState<string>('openai');
+  const [ttsModel, setTtsModel] = useState<string>('tts-1');
+  const [ttsVoice, setTtsVoice] = useState<string>('alloy');
   const [ttsApiKey, setTtsApiKey] = useState<string>('');
   const [systemPrompt, setSystemPrompt] = useState<string>(DEFAULT_SYSTEM_PROMPT);
 
@@ -107,8 +109,9 @@ export default function SettingsDialog({ open, onOpenChange }: SettingsDialogPro
       setLlmModel(settings.llmModel || '');
       setLlmApiKey(settings.llmApiKey || '');
       setTtsEnabled(settings.ttsEnabled);
-      setTtsProvider(settings.ttsProvider || '');
-      setTtsVoice(settings.ttsVoice || '');
+      setTtsProvider(settings.ttsProvider || 'openai');
+      setTtsModel(settings.ttsModel || 'tts-1');
+      setTtsVoice(settings.ttsVoice || 'alloy');
       setTtsApiKey(settings.ttsApiKey || '');
       setSystemPrompt(settings.systemPrompt || DEFAULT_SYSTEM_PROMPT);
     }
@@ -121,6 +124,7 @@ export default function SettingsDialog({ open, onOpenChange }: SettingsDialogPro
       llmApiKey: llmApiKey || null,
       ttsEnabled,
       ttsProvider: ttsProvider || null,
+      ttsModel: ttsModel || null,
       ttsVoice: ttsVoice || null,
       ttsApiKey: ttsApiKey || null,
       systemPrompt: systemPrompt || null,
@@ -264,11 +268,27 @@ export default function SettingsDialog({ open, onOpenChange }: SettingsDialogPro
             </TabsContent>
 
             <TabsContent value="tts" className="space-y-4 mt-4">
-              <div className="rounded-lg border border-yellow-500/20 bg-yellow-500/10 p-4 mb-4">
+              <div className="rounded-lg border border-blue-500/20 bg-blue-500/10 p-4 mb-4">
                 <p className="text-sm">
-                  <strong>Coming Soon:</strong> Text-to-speech integration will allow the DM's responses to be read aloud.
-                  Configure your preferences here for when this feature is available.
+                  <strong>Text-to-Speech:</strong> Configure OpenAI's TTS to have the DM's responses read aloud.
+                  You'll see a play button next to DM messages when this is enabled.
                 </p>
+              </div>
+
+              <div className="flex items-center justify-between space-x-2 p-4 rounded-lg border">
+                <div className="space-y-0.5">
+                  <Label htmlFor="tts-enabled" className="text-base font-semibold">
+                    Enable Text-to-Speech
+                  </Label>
+                  <p className="text-sm text-muted-foreground">
+                    Turn on to hear DM responses read aloud
+                  </p>
+                </div>
+                <Switch
+                  id="tts-enabled"
+                  checked={ttsEnabled}
+                  onCheckedChange={setTtsEnabled}
+                />
               </div>
 
               <div className="space-y-2">
@@ -276,40 +296,83 @@ export default function SettingsDialog({ open, onOpenChange }: SettingsDialogPro
                 <Select
                   value={ttsProvider}
                   onValueChange={setTtsProvider}
-                  disabled
                 >
                   <SelectTrigger id="ttsProvider">
-                    <SelectValue placeholder="Select provider (coming soon)" />
+                    <SelectValue placeholder="Select provider" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="elevenlabs">ElevenLabs</SelectItem>
                     <SelectItem value="openai">OpenAI TTS</SelectItem>
-                    <SelectItem value="google">Google Cloud TTS</SelectItem>
                   </SelectContent>
                 </Select>
+                <p className="text-sm text-muted-foreground">
+                  Currently only OpenAI TTS is supported.
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="ttsModel">TTS Model</Label>
+                <Select
+                  value={ttsModel}
+                  onValueChange={setTtsModel}
+                >
+                  <SelectTrigger id="ttsModel">
+                    <SelectValue placeholder="Select model" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="tts-1">TTS-1 (Faster, Standard Quality)</SelectItem>
+                    <SelectItem value="tts-1-hd">TTS-1-HD (Higher Quality, Slower)</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-sm text-muted-foreground">
+                  TTS-1-HD is OpenAI's most powerful text-to-speech model with better audio quality.
+                </p>
               </div>
 
               <div className="space-y-2">
                 <Label htmlFor="ttsVoice">Voice</Label>
-                <Input
-                  id="ttsVoice"
+                <Select
                   value={ttsVoice}
-                  onChange={(e) => setTtsVoice(e.target.value)}
-                  placeholder="Voice ID or name"
-                  disabled
-                />
+                  onValueChange={setTtsVoice}
+                >
+                  <SelectTrigger id="ttsVoice">
+                    <SelectValue placeholder="Select voice" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="alloy">Alloy (Neutral)</SelectItem>
+                    <SelectItem value="echo">Echo (Male)</SelectItem>
+                    <SelectItem value="fable">Fable (British Male)</SelectItem>
+                    <SelectItem value="onyx">Onyx (Deep Male)</SelectItem>
+                    <SelectItem value="nova">Nova (Female)</SelectItem>
+                    <SelectItem value="shimmer">Shimmer (Soft Female)</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-sm text-muted-foreground">
+                  Choose a voice that fits your DM's personality.
+                </p>
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="ttsApiKey">TTS API Key</Label>
+                <Label htmlFor="ttsApiKey">OpenAI API Key</Label>
                 <Input
                   id="ttsApiKey"
                   type="password"
                   value={ttsApiKey}
                   onChange={(e) => setTtsApiKey(e.target.value)}
-                  placeholder="API key for TTS provider"
-                  disabled
+                  placeholder="sk-..."
                 />
+                <p className="text-sm text-muted-foreground">
+                  Your API key is stored securely and only used for TTS API calls.
+                </p>
+              </div>
+
+              <div className="rounded-lg border border-green-500/20 bg-green-500/10 p-4">
+                <h4 className="font-semibold text-sm mb-2">Current TTS Configuration</h4>
+                <div className="text-sm space-y-1">
+                  <p><span className="text-muted-foreground">Provider:</span> {ttsProvider || 'Not set'}</p>
+                  <p><span className="text-muted-foreground">Model:</span> {ttsModel || 'Not set'}</p>
+                  <p><span className="text-muted-foreground">Voice:</span> {ttsVoice || 'Not set'}</p>
+                  <p><span className="text-muted-foreground">API Key:</span> {ttsApiKey ? '••••••••' : 'Not set'}</p>
+                </div>
               </div>
             </TabsContent>
           </Tabs>

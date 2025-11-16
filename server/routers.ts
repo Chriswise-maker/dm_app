@@ -494,6 +494,48 @@ Focus on information needed for narrative continuity.`;
   }),
 
   // Settings router
+  tts: router({
+    generate: protectedProcedure
+      .input(z.object({
+        text: z.string().min(1),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await import('./db');
+        const settings = await db.getUserSettings(ctx.user.id);
+        
+        if (!settings || !settings.ttsApiKey) {
+          throw new Error('TTS API key not configured. Please add your OpenAI API key in settings.');
+        }
+        
+        if (!settings.ttsProvider || settings.ttsProvider !== 'openai') {
+          throw new Error('Only OpenAI TTS is currently supported.');
+        }
+        
+        const OpenAI = (await import('openai')).default;
+        const openai = new OpenAI({ apiKey: settings.ttsApiKey });
+        
+        try {
+          const mp3 = await openai.audio.speech.create({
+            model: settings.ttsModel || 'tts-1',
+            voice: (settings.ttsVoice || 'alloy') as any,
+            input: input.text,
+            response_format: 'mp3',
+          });
+          
+          const buffer = Buffer.from(await mp3.arrayBuffer());
+          const base64Audio = buffer.toString('base64');
+          
+          return {
+            audio: base64Audio,
+            format: 'mp3',
+          };
+        } catch (error: any) {
+          console.error('TTS generation error:', error);
+          throw new Error(`Failed to generate speech: ${error.message}`);
+        }
+      }),
+  }),
+
   settings: router({ 
     get: protectedProcedure.query(async ({ ctx }) => {
       const db = await import('./db');
@@ -507,6 +549,7 @@ Focus on information needed for narrative continuity.`;
           llmApiKey: null,
           ttsEnabled: false,
           ttsProvider: null,
+          ttsModel: null,
           ttsVoice: null,
           ttsApiKey: null,
           systemPrompt: null,
@@ -519,6 +562,7 @@ Focus on information needed for narrative continuity.`;
         llmApiKey: settings.llmApiKey,
         ttsEnabled: settings.ttsEnabled === 1,
         ttsProvider: settings.ttsProvider,
+        ttsModel: settings.ttsModel,
         ttsVoice: settings.ttsVoice,
         ttsApiKey: settings.ttsApiKey,
         systemPrompt: settings.systemPrompt,
@@ -532,6 +576,7 @@ Focus on information needed for narrative continuity.`;
         llmApiKey: z.string().nullable(),
         ttsEnabled: z.boolean(),
         ttsProvider: z.string().nullable(),
+        ttsModel: z.string().nullable(),
         ttsVoice: z.string().nullable(),
         ttsApiKey: z.string().nullable(),
         systemPrompt: z.string().nullable(),
@@ -545,6 +590,7 @@ Focus on information needed for narrative continuity.`;
           llmApiKey: input.llmApiKey,
           ttsEnabled: input.ttsEnabled ? 1 : 0,
           ttsProvider: input.ttsProvider,
+          ttsModel: input.ttsModel,
           ttsVoice: input.ttsVoice,
           ttsApiKey: input.ttsApiKey,
           systemPrompt: input.systemPrompt,
