@@ -21,10 +21,13 @@ export const appRouter = router({
   // D&D Game routers
   sessions: router({
     create: protectedProcedure
-      .input(z.object({ campaignName: z.string().min(1) }))
+      .input(z.object({ 
+        campaignName: z.string().min(1),
+        narrativePrompt: z.string().optional()
+      }))
       .mutation(async ({ ctx, input }) => {
         const db = await import('./db');
-        return db.createSession(ctx.user.id, input.campaignName);
+        return db.createSession(ctx.user.id, input.campaignName, input.narrativePrompt);
       }),
     
     list: protectedProcedure.query(async ({ ctx }) => {
@@ -37,6 +40,14 @@ export const appRouter = router({
       .query(async ({ input }) => {
         const db = await import('./db');
         return db.getSession(input.sessionId);
+      }),
+    
+    delete: protectedProcedure
+      .input(z.object({ sessionId: z.number() }))
+      .mutation(async ({ input }) => {
+        const db = await import('./db');
+        await db.deleteSession(input.sessionId);
+        return { success: true };
       }),
   }),
 
@@ -125,6 +136,118 @@ export const appRouter = router({
         }
         await db.updateCharacter(input.characterId, updateData);
         return { success: true };
+      }),
+    
+    delete: protectedProcedure
+      .input(z.object({ characterId: z.number() }))
+      .mutation(async ({ input }) => {
+        const db = await import('./db');
+        await db.deleteCharacter(input.characterId);
+        return { success: true };
+      }),
+    
+    generate: protectedProcedure
+      .input(z.object({
+        sessionId: z.number(),
+        className: z.string().optional(),
+        race: z.string().optional(),
+        background: z.string().optional(),
+        level: z.number().min(1).max(20).default(1),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const { invokeLLMWithSettings } = await import('./llm-with-settings');
+        const db = await import('./db');
+        
+        // Get session to check for narrative prompt
+        const session = await db.getSession(input.sessionId);
+        if (!session) throw new Error('Session not found');
+        
+        const prompt = `Generate a D&D 5th Edition character with the following parameters:
+${input.className ? `Class: ${input.className}` : 'Class: Choose an appropriate class'}
+${input.race ? `Race: ${input.race}` : 'Race: Choose an appropriate race'}
+${input.background ? `Background: ${input.background}` : 'Background: Choose an appropriate background'}
+Level: ${input.level}
+
+Create a complete, rules-compliant D&D 5e character. Follow these rules:
+
+1. **Ability Scores**: Use standard array (15, 14, 13, 12, 10, 8) distributed appropriately for the class
+2. **Hit Points**: Calculate based on class hit dice (e.g., Fighter d10, Wizard d6) + CON modifier × level
+3. **Armor Class**: Based on starting equipment and DEX modifier
+4. **Starting Equipment**: Use Player's Handbook starting equipment for the class and background
+5. **Personality**: Create a brief but engaging personality description
+
+Return ONLY a JSON object with this exact structure:
+{
+  "name": "character name",
+  "className": "class name",
+  "race": "race name",
+  "level": ${input.level},
+  "hpMax": calculated_hp,
+  "hpCurrent": calculated_hp,
+  "ac": calculated_ac,
+  "stats": {
+    "str": number,
+    "dex": number,
+    "con": number,
+    "int": number,
+    "wis": number,
+    "cha": number
+  },
+  "inventory": ["item1", "item2", "item3"],
+  "notes": "Brief personality, background, and appearance description (2-3 sentences)"
+}`;
+
+        let systemPrompt = 'You are a D&D 5e character creation expert. Return ONLY raw JSON with no markdown formatting, no code blocks, no explanatory text. Just the JSON object.';
+        
+        // Add campaign narrative prompt if it exists
+        if (session.narrativePrompt) {
+          systemPrompt += `
+
+[CAMPAIGN NARRATIVE SETTING]
+${session.narrativePrompt}
+
+Create a character that fits within this campaign setting and narrative tone.`;
+        }
+
+        const response = await invokeLLMWithSettings(ctx.user.id, {
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: prompt },
+          ],
+        });
+        
+        const content = response.choices[0].message.content;
+        if (!content || typeof content !== 'string') {
+          throw new Error('Failed to generate character');
+        }
+        
+        // Strip markdown code blocks if present
+        let jsonContent = content.trim();
+        if (jsonContent.startsWith('```')) {
+          jsonContent = jsonContent.replace(/^```(?:json)?\s*\n/, '').replace(/\n```\s*$/, '');
+        }
+        
+        // Parse the JSON response
+        const characterData = JSON.parse(jsonContent);
+        
+        // Create the character in the database
+        const result = await db.createCharacter({
+          sessionId: input.sessionId,
+          name: characterData.name,
+          className: characterData.className,
+          level: characterData.level,
+          hpMax: characterData.hpMax,
+          hpCurrent: characterData.hpCurrent,
+          ac: characterData.ac,
+          stats: JSON.stringify(characterData.stats),
+          inventory: JSON.stringify(characterData.inventory),
+          notes: characterData.notes,
+        });
+        
+        return {
+          ...result,
+          ...characterData,
+        };
       }),
   }),
 
@@ -232,7 +355,17 @@ Be creative but respect established facts and character conditions.
 During combat, track damage dealt and specify HP changes clearly.
 Use D&D 5e rules for all mechanics.`;
         
-        const systemPrompt = userSettings?.systemPrompt || defaultSystemPrompt;
+        let systemPrompt = userSettings?.systemPrompt || defaultSystemPrompt;
+        
+        // Add campaign narrative prompt if it exists
+        if (session.narrativePrompt) {
+          systemPrompt += `
+
+[CAMPAIGN NARRATIVE SETTING & TONE]
+${session.narrativePrompt}
+
+Follow this narrative guidance throughout all responses. Maintain the established setting, tone, themes, and style.`;
+        }
         
         // Get LLM response using user settings
         const response = await invokeLLMWithSettings(ctx.user.id, {

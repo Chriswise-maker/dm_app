@@ -97,13 +97,14 @@ import { sessions, characters, messages, InsertSession, InsertCharacter, InsertM
 import { desc } from "drizzle-orm";
 
 // Session helpers
-export async function createSession(userId: number, campaignName: string) {
+export async function createSession(userId: number, campaignName: string, narrativePrompt?: string) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   
   const result = await db.insert(sessions).values({
     userId,
     campaignName,
+    narrativePrompt: narrativePrompt || null,
     currentSummary: null,
   }).returning({ id: sessions.id });
   
@@ -137,6 +138,19 @@ export async function updateSessionSummary(sessionId: number, summary: string) {
   await db.update(sessions)
     .set({ currentSummary: summary, updatedAt: new Date() })
     .where(eq(sessions.id, sessionId));
+}
+
+export async function deleteSession(sessionId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  
+  // Delete related data first (messages, characters, context)
+  await db.delete(messages).where(eq(messages.sessionId, sessionId));
+  await db.delete(characters).where(eq(characters.sessionId, sessionId));
+  await db.delete(sessionContext).where(eq(sessionContext.sessionId, sessionId));
+  
+  // Delete the session itself
+  await db.delete(sessions).where(eq(sessions.id, sessionId));
 }
 
 // Character helpers
@@ -182,6 +196,14 @@ export async function updateCharacter(characterId: number, data: Partial<Omit<In
   
   await db.update(characters)
     .set({ ...data, updatedAt: new Date() })
+    .where(eq(characters.id, characterId));
+}
+
+export async function deleteCharacter(characterId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  
+  await db.delete(characters)
     .where(eq(characters.id, characterId));
 }
 

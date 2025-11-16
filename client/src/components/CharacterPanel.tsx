@@ -1,14 +1,26 @@
 import { trpc } from '@/lib/trpc';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Loader2, Minus, Plus, User } from 'lucide-react';
+import { Loader2, Minus, Plus, User, Edit2, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import { useState } from 'react';
 
 interface CharacterPanelProps {
   sessionId: number | null;
   selectedCharacterId: number | null;
   onCharacterSelect: (characterId: number) => void;
   onCreateCharacter: () => void;
+  onEditCharacter: (characterId: number) => void;
 }
 
 export default function CharacterPanel({
@@ -16,7 +28,11 @@ export default function CharacterPanel({
   selectedCharacterId,
   onCharacterSelect,
   onCreateCharacter,
+  onEditCharacter,
 }: CharacterPanelProps) {
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [characterToDelete, setCharacterToDelete] = useState<number | null>(null);
+
   const { data: characters, isLoading, refetch } = trpc.characters.list.useQuery(
     { sessionId: sessionId! },
     { enabled: !!sessionId }
@@ -31,9 +47,33 @@ export default function CharacterPanel({
     },
   });
 
+  const deleteMutation = trpc.characters.delete.useMutation({
+    onSuccess: () => {
+      toast.success('Character deleted');
+      refetch();
+      setDeleteDialogOpen(false);
+      setCharacterToDelete(null);
+    },
+    onError: (error) => {
+      toast.error('Failed to delete character: ' + error.message);
+    },
+  });
+
   const handleHPChange = (characterId: number, currentHP: number, maxHP: number, delta: number) => {
     const newHP = Math.max(0, Math.min(maxHP, currentHP + delta));
     updateHPMutation.mutate({ characterId, hpCurrent: newHP });
+  };
+
+  const handleDeleteClick = (characterId: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setCharacterToDelete(characterId);
+    setDeleteDialogOpen(true);
+  };
+
+  const handleDeleteConfirm = () => {
+    if (characterToDelete) {
+      deleteMutation.mutate({ characterId: characterToDelete });
+    }
   };
 
   if (!sessionId) {
@@ -84,7 +124,29 @@ export default function CharacterPanel({
                     {char.className} • Level {char.level}
                   </p>
                 </div>
-                <User className="h-5 w-5 text-muted-foreground" />
+                <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 w-7 p-0"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onEditCharacter(char.id);
+                    }}
+                    title="Edit character"
+                  >
+                    <Edit2 className="h-3.5 w-3.5" />
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 w-7 p-0 text-destructive hover:text-destructive"
+                    onClick={(e) => handleDeleteClick(char.id, e)}
+                    title="Delete character"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
               </div>
 
               {/* HP Bar */}
@@ -172,6 +234,27 @@ export default function CharacterPanel({
           </p>
         )}
       </CardContent>
+
+      {/* Delete Confirmation Dialog */}
+      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Character?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This action cannot be undone. This will permanently delete the character.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDeleteConfirm}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Card>
   );
 }

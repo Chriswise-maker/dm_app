@@ -34,6 +34,7 @@ export const sessions = pgTable("sessions", {
   id: integer("id").primaryKey().generatedByDefaultAsIdentity(),
   userId: integer("userId").notNull().references(() => users.id),
   campaignName: text("campaignName").notNull(),
+  narrativePrompt: text("narrativePrompt"),
   currentSummary: text("currentSummary"),
   createdAt: timestamp("createdAt", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updatedAt", { withTimezone: true }).defaultNow().notNull(),

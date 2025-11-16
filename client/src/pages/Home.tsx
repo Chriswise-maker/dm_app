@@ -5,6 +5,8 @@ import { getLoginUrl, APP_TITLE } from '@/const';
 import SessionManager from '@/components/SessionManager';
 import CharacterPanel from '@/components/CharacterPanel';
 import CharacterCreationDialog from '@/components/CharacterCreationDialog';
+import CharacterEditDialog from '@/components/CharacterEditDialog';
+import CharacterGeneratorDialog from '@/components/CharacterGeneratorDialog';
 import ChatInterface from '@/components/ChatInterface';
 import { trpc } from '@/lib/trpc';
 import { Loader2, Scroll, Settings } from 'lucide-react';
@@ -16,7 +18,10 @@ export default function Home() {
   const [selectedSessionId, setSelectedSessionId] = useState<number | null>(null);
   const [selectedCharacterId, setSelectedCharacterId] = useState<number | null>(null);
   const [isCharacterDialogOpen, setIsCharacterDialogOpen] = useState(false);
+  const [isCharacterEditOpen, setIsCharacterEditOpen] = useState(false);
+  const [isGeneratorOpen, setIsGeneratorOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [characterToEdit, setCharacterToEdit] = useState<number | null>(null);
 
   const { data: characters, refetch: refetchCharacters } = trpc.characters.list.useQuery(
     { sessionId: selectedSessionId! },
@@ -24,6 +29,7 @@ export default function Home() {
   );
 
   const selectedCharacter = characters?.find((c) => c.id === selectedCharacterId);
+  const editingCharacter = characters?.find((c) => c.id === characterToEdit);
 
   const handleSessionSelect = (sessionId: number) => {
     setSelectedSessionId(sessionId);
@@ -32,6 +38,11 @@ export default function Home() {
 
   const handleCharacterCreated = () => {
     refetchCharacters();
+  };
+
+  const handleEditCharacter = (characterId: number) => {
+    setCharacterToEdit(characterId);
+    setIsCharacterEditOpen(true);
   };
 
   return (
@@ -70,7 +81,17 @@ export default function Home() {
             selectedCharacterId={selectedCharacterId}
             onCharacterSelect={setSelectedCharacterId}
             onCreateCharacter={() => setIsCharacterDialogOpen(true)}
+            onEditCharacter={handleEditCharacter}
           />
+          
+          <Button 
+            onClick={() => setIsGeneratorOpen(true)}
+            variant="outline"
+            className="w-full"
+            disabled={!selectedSessionId}
+          >
+            ✨ AI Generate Character
+          </Button>
         </aside>
 
         {/* Main Chat Area */}
@@ -88,6 +109,22 @@ export default function Home() {
         sessionId={selectedSessionId}
         open={isCharacterDialogOpen}
         onOpenChange={setIsCharacterDialogOpen}
+        onSuccess={handleCharacterCreated}
+      />
+
+      {/* Character Edit Dialog */}
+      <CharacterEditDialog
+        character={editingCharacter || null}
+        open={isCharacterEditOpen}
+        onOpenChange={setIsCharacterEditOpen}
+        onSuccess={handleCharacterCreated}
+      />
+
+      {/* AI Character Generator Dialog */}
+      <CharacterGeneratorDialog
+        sessionId={selectedSessionId}
+        open={isGeneratorOpen}
+        onOpenChange={setIsGeneratorOpen}
         onSuccess={handleCharacterCreated}
       />
 
