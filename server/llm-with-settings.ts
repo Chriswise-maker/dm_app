@@ -9,40 +9,47 @@ export async function invokeLLMWithSettings(
   userId: number,
   params: InvokeParams
 ): Promise<InvokeResult> {
-  const settings = await getUserSettings(userId);
-  
-  // If using Manus built-in or no settings, use default invokeLLM
-  if (!settings || settings.llmProvider === 'manus') {
-    return invokeLLM(params);
-  }
-  
-  // Build provider-specific API URL
-  const apiUrls: Record<string, string> = {
-    openai: 'https://api.openai.com/v1/chat/completions',
-    anthropic: 'https://api.anthropic.com/v1/messages',
-    google: 'https://generativelanguage.googleapis.com/v1beta/models',
-  };
-  
-  const apiUrl = apiUrls[settings.llmProvider];
-  if (!apiUrl) {
-    throw new Error(`Unsupported LLM provider: ${settings.llmProvider}`);
-  }
-  
-  if (!settings.llmApiKey) {
-    throw new Error(`API key not configured for provider: ${settings.llmProvider}`);
-  }
-  
-  // Use configured model or provider default
-  const model = settings.llmModel || getDefaultModel(settings.llmProvider);
-  
-  // Handle provider-specific API formats
-  if (settings.llmProvider === 'anthropic') {
-    return await invokeAnthropic(apiUrl, settings.llmApiKey, model, params);
-  } else if (settings.llmProvider === 'google') {
-    return await invokeGoogle(apiUrl, settings.llmApiKey, model, params);
-  } else {
-    // OpenAI-compatible format
-    return await invokeOpenAI(apiUrl, settings.llmApiKey, model, params);
+  try {
+    const settings = await getUserSettings(userId);
+    
+    // If using Manus built-in or no settings, use default invokeLLM
+    if (!settings || settings.llmProvider === 'manus') {
+      return invokeLLM(params);
+    }
+    
+    // Build provider-specific API URL
+    const apiUrls: Record<string, string> = {
+      openai: 'https://api.openai.com/v1/chat/completions',
+      anthropic: 'https://api.anthropic.com/v1/messages',
+      google: 'https://generativelanguage.googleapis.com/v1beta/models',
+    };
+    
+    const apiUrl = apiUrls[settings.llmProvider];
+    if (!apiUrl) {
+      throw new Error(`Unsupported LLM provider: ${settings.llmProvider}`);
+    }
+    
+    if (!settings.llmApiKey) {
+      throw new Error(`API key not configured for provider: ${settings.llmProvider}`);
+    }
+    
+    // Use configured model or provider default
+    const model = settings.llmModel || getDefaultModel(settings.llmProvider);
+    
+    console.log(`[LLM] Using provider: ${settings.llmProvider}, model: ${model}`);
+    
+    // Handle provider-specific API formats
+    if (settings.llmProvider === 'anthropic') {
+      return await invokeAnthropic(apiUrl, settings.llmApiKey, model, params);
+    } else if (settings.llmProvider === 'google') {
+      return await invokeGoogle(apiUrl, settings.llmApiKey, model, params);
+    } else {
+      // OpenAI-compatible format
+      return await invokeOpenAI(apiUrl, settings.llmApiKey, model, params);
+    }
+  } catch (error) {
+    console.error('[LLM Error]', error);
+    throw error;
   }
 }
 
@@ -93,7 +100,25 @@ async function invokeOpenAI(
     );
   }
   
-  return (await response.json()) as InvokeResult;
+  const result = await response.json();
+  
+  // Validate OpenAI response structure
+  if (!result || typeof result !== 'object') {
+    console.error('[OpenAI] Invalid response - not an object:', result);
+    throw new Error('OpenAI API returned invalid response format');
+  }
+  
+  if (!result.choices || !Array.isArray(result.choices) || result.choices.length === 0) {
+    console.error('[OpenAI] Invalid response - no choices array:', result);
+    throw new Error('OpenAI API returned response without choices');
+  }
+  
+  if (!result.choices[0].message) {
+    console.error('[OpenAI] Invalid response - no message in first choice:', result);
+    throw new Error('OpenAI API returned response without message');
+  }
+  
+  return result as InvokeResult;
 }
 
 async function invokeAnthropic(
@@ -140,24 +165,34 @@ async function invokeAnthropic(
   
   const result = await response.json();
   
+  // Validate response structure
+  if (!result || !result.content || !Array.isArray(result.content) || result.content.length === 0) {
+    throw new Error(`Invalid Anthropic API response structure: ${JSON.stringify(result)}`);
+  }
+  
+  const textContent = result.content[0]?.text;
+  if (typeof textContent !== 'string') {
+    throw new Error(`Anthropic API response missing text content: ${JSON.stringify(result.content[0])}`);
+  }
+  
   // Convert Anthropic format to OpenAI format
   return {
-    id: result.id,
+    id: result.id || 'anthropic-' + Date.now(),
     created: Date.now(),
-    model: result.model,
+    model: result.model || model,
     choices: [{
       index: 0,
       message: {
         role: 'assistant',
-        content: result.content[0].text,
+        content: textContent,
       },
-      finish_reason: result.stop_reason,
+      finish_reason: result.stop_reason || 'stop',
     }],
-    usage: {
-      prompt_tokens: result.usage.input_tokens,
-      completion_tokens: result.usage.output_tokens,
-      total_tokens: result.usage.input_tokens + result.usage.output_tokens,
-    },
+    usage: result.usage ? {
+      prompt_tokens: result.usage.input_tokens || 0,
+      completion_tokens: result.usage.output_tokens || 0,
+      total_tokens: (result.usage.input_tokens || 0) + (result.usage.output_tokens || 0),
+    } : undefined,
   };
 }
 
@@ -212,8 +247,22 @@ async function invokeGoogle(
   
   const result = await response.json();
   
-  // Convert Gemini format to OpenAI format
+  // Validate response structure
+  if (!result || !result.candidates || !Array.isArray(result.candidates) || result.candidates.length === 0) {
+    throw new Error(`Invalid Google API response structure: ${JSON.stringify(result)}`);
+  }
+  
   const candidate = result.candidates[0];
+  if (!candidate || !candidate.content || !candidate.content.parts || !Array.isArray(candidate.content.parts) || candidate.content.parts.length === 0) {
+    throw new Error(`Invalid Google API candidate structure: ${JSON.stringify(candidate)}`);
+  }
+  
+  const textContent = candidate.content.parts[0]?.text;
+  if (typeof textContent !== 'string') {
+    throw new Error(`Google API response missing text content: ${JSON.stringify(candidate.content.parts[0])}`);
+  }
+  
+  // Convert Gemini format to OpenAI format
   return {
     id: 'gemini-' + Date.now(),
     created: Date.now(),
@@ -222,9 +271,9 @@ async function invokeGoogle(
       index: 0,
       message: {
         role: 'assistant',
-        content: candidate.content.parts[0].text,
+        content: textContent,
       },
-      finish_reason: candidate.finishReason,
+      finish_reason: candidate.finishReason || 'stop',
     }],
   };
 }

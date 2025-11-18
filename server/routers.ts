@@ -216,9 +216,14 @@ Create a character that fits within this campaign setting and narrative tone.`;
           ],
         });
         
+        if (!response.choices || !response.choices[0] || !response.choices[0].message) {
+          console.error('[Character Generation] Invalid LLM response structure:', response);
+          throw new Error('Failed to generate character: Invalid response from LLM');
+        }
+        
         const content = response.choices[0].message.content;
         if (!content || typeof content !== 'string') {
-          throw new Error('Failed to generate character');
+          throw new Error('Failed to generate character: No content in response');
         }
         
         // Strip markdown code blocks if present
@@ -375,6 +380,11 @@ Follow this narrative guidance throughout all responses. Maintain the establishe
           ],
         });
         
+        if (!response.choices || !response.choices[0] || !response.choices[0].message) {
+          console.error('[Chat] Invalid LLM response structure:', response);
+          throw new Error('Failed to get DM response: Invalid response from LLM');
+        }
+        
         const content = response.choices[0].message.content;
         const dmResponse = typeof content === 'string' ? content : 'The DM is thinking...';
         
@@ -482,9 +492,15 @@ Focus on information needed for narrative continuity.`;
             messages: [{ role: 'user', content: summaryPrompt }],
           });
           
-          const summaryContent = summaryResponse.choices[0].message.content;
-          const newSummary = (typeof summaryContent === 'string' ? summaryContent : session.currentSummary) || 'Campaign in progress';
-          await db.updateSessionSummary(input.sessionId, newSummary);
+          if (!summaryResponse.choices || !summaryResponse.choices[0] || !summaryResponse.choices[0].message) {
+            console.error('[Summary] Invalid LLM response structure:', summaryResponse);
+            // Don't throw error for summary - just skip update
+            console.warn('[Summary] Skipping summary update due to invalid LLM response');
+          } else {
+            const summaryContent = summaryResponse.choices[0].message.content;
+            const newSummary = (typeof summaryContent === 'string' ? summaryContent : session.currentSummary) || 'Campaign in progress';
+            await db.updateSessionSummary(input.sessionId, newSummary);
+          }
         }
         
         return { response: dmResponse };
