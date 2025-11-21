@@ -6,7 +6,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
-import { Loader2, Plus, Trash2 } from 'lucide-react';
+import { Loader2, Plus, Trash2, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   AlertDialog,
@@ -21,7 +21,7 @@ import {
 
 interface SessionManagerProps {
   selectedSessionId: number | null;
-  onSessionSelect: (sessionId: number) => void;
+  onSessionSelect: (sessionId: number | null) => void;
 }
 
 export default function SessionManager({ selectedSessionId, onSessionSelect }: SessionManagerProps) {
@@ -30,9 +30,9 @@ export default function SessionManager({ selectedSessionId, onSessionSelect }: S
   const [narrativePrompt, setNarrativePrompt] = useState('');
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [sessionToDelete, setSessionToDelete] = useState<number | null>(null);
-  
+
   const { data: sessions, isLoading, refetch } = trpc.sessions.list.useQuery();
-  
+
   const createMutation = trpc.sessions.create.useMutation({
     onSuccess: (data) => {
       toast.success('Campaign created!');
@@ -62,12 +62,24 @@ export default function SessionManager({ selectedSessionId, onSessionSelect }: S
     },
   });
 
+  const generateMutation = trpc.sessions.generate.useMutation({
+    onSuccess: (data) => {
+      toast.success('Campaign generated successfully!');
+      setNarrativePrompt('');
+      refetch();
+      onSessionSelect(data.id);
+    },
+    onError: (error) => {
+      toast.error('Failed to generate campaign: ' + error.message);
+    },
+  });
+
   const handleCreate = () => {
     if (!campaignName.trim()) {
       toast.error('Please enter a campaign name');
       return;
     }
-    createMutation.mutate({ 
+    createMutation.mutate({
       campaignName: campaignName.trim(),
       narrativePrompt: narrativePrompt.trim() || undefined
     });
@@ -124,17 +136,56 @@ export default function SessionManager({ selectedSessionId, onSessionSelect }: S
                     className="resize-none"
                   />
                   <p className="text-xs text-muted-foreground">
-                    Describe the setting, tone, themes, and style for your campaign. 
+                    Describe the setting, tone, themes, and style for your campaign.
                     This will guide the AI to maintain consistency throughout your adventure.
                   </p>
                 </div>
-                <Button 
-                  onClick={handleCreate} 
+                <Button
+                  onClick={handleCreate}
                   disabled={createMutation.isPending}
                   className="w-full"
                 >
                   {createMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                   Create Campaign
+                </Button>
+              </div>
+            </DialogContent>
+          </Dialog>
+
+          <Dialog>
+            <DialogTrigger asChild>
+              <Button size="sm" variant="outline" className="ml-2 gap-2">
+                <Sparkles className="h-4 w-4" />
+                Generate
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="max-w-2xl">
+              <DialogHeader>
+                <DialogTitle>Generate Campaign with AI</DialogTitle>
+              </DialogHeader>
+              <div className="space-y-4 pt-4">
+                <div className="space-y-2">
+                  <Label htmlFor="gen-prompt">Campaign Theme / Idea (Optional)</Label>
+                  <Textarea
+                    id="gen-prompt"
+                    value={narrativePrompt}
+                    onChange={(e) => setNarrativePrompt(e.target.value)}
+                    placeholder="e.g., A post-apocalyptic world where magic has returned, or a classic high fantasy setting with a twist..."
+                    rows={4}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Leave blank for a completely random campaign.
+                  </p>
+                </div>
+                <Button
+                  onClick={() => {
+                    generateMutation.mutate({ prompt: narrativePrompt });
+                  }}
+                  disabled={generateMutation.isPending}
+                  className="w-full"
+                >
+                  {generateMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  Generate Campaign
                 </Button>
               </div>
             </DialogContent>
@@ -150,11 +201,10 @@ export default function SessionManager({ selectedSessionId, onSessionSelect }: S
           sessions.map((session) => (
             <div
               key={session.id}
-              className={`flex items-center justify-between px-3 py-2 rounded-md text-sm transition-colors ${
-                selectedSessionId === session.id
-                  ? 'bg-primary text-primary-foreground'
-                  : 'hover:bg-accent'
-              }`}
+              className={`flex items-center justify-between px-3 py-2 rounded-md text-sm transition-colors ${selectedSessionId === session.id
+                ? 'bg-primary text-primary-foreground'
+                : 'hover:bg-accent'
+                }`}
             >
               <button
                 onClick={() => onSessionSelect(session.id)}
@@ -186,7 +236,7 @@ export default function SessionManager({ selectedSessionId, onSessionSelect }: S
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Campaign?</AlertDialogTitle>
             <AlertDialogDescription>
-              This action cannot be undone. This will permanently delete the campaign, 
+              This action cannot be undone. This will permanently delete the campaign,
               including all characters, messages, and game context.
             </AlertDialogDescription>
           </AlertDialogHeader>

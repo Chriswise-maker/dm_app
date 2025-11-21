@@ -5,7 +5,7 @@ import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
 import { z } from "zod";
 
 export const appRouter = router({
-    // if you need to use socket.io, read and register route in server/_core/index.ts, all api should start with '/api/' so that the gateway can route correctly
+  // if you need to use socket.io, read and register route in server/_core/index.ts, all api should start with '/api/' so that the gateway can route correctly
   system: systemRouter,
   auth: router({
     me: publicProcedure.query(opts => opts.ctx.user),
@@ -21,7 +21,7 @@ export const appRouter = router({
   // D&D Game routers
   sessions: router({
     create: protectedProcedure
-      .input(z.object({ 
+      .input(z.object({
         campaignName: z.string().min(1),
         narrativePrompt: z.string().optional()
       }))
@@ -29,25 +29,109 @@ export const appRouter = router({
         const db = await import('./db');
         return db.createSession(ctx.user.id, input.campaignName, input.narrativePrompt);
       }),
-    
+
     list: protectedProcedure.query(async ({ ctx }) => {
       const db = await import('./db');
       return db.getUserSessions(ctx.user.id);
     }),
-    
+
     get: protectedProcedure
       .input(z.object({ sessionId: z.number() }))
       .query(async ({ input }) => {
         const db = await import('./db');
         return db.getSession(input.sessionId);
       }),
-    
+
     delete: protectedProcedure
       .input(z.object({ sessionId: z.number() }))
       .mutation(async ({ input }) => {
         const db = await import('./db');
         await db.deleteSession(input.sessionId);
         return { success: true };
+      }),
+
+    generate: protectedProcedure
+      .input(z.object({
+        prompt: z.string().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const { invokeLLMWithSettings } = await import('./llm-with-settings');
+        const db = await import('./db');
+
+        // 1. Get Global System Prompt
+        const userSettings = await db.getUserSettings(ctx.user.id);
+        const defaultSystemPrompt = `You are an expert Dungeon Master for D&D 5th Edition.
+Your task is to generate a unique, engaging campaign setting based on the user's input.`;
+
+        const systemPrompt = userSettings?.systemPrompt || defaultSystemPrompt;
+
+        // 2. Construct Generation Prompt
+        const customGenerationPrompt = userSettings?.campaignGenerationPrompt;
+
+        let generationPrompt;
+        if (customGenerationPrompt) {
+          generationPrompt = `${customGenerationPrompt}
+${input.prompt ? `User Request/Theme: "${input.prompt}"` : ''}
+
+Return ONLY a JSON object with this exact structure:
+{
+  "title": "A short, evocative campaign title",
+  "narrativePrompt": "A detailed paragraph describing the world, tone, major factions, and central conflict. This will serve as the 'World Bible' for the AI DM.",
+  "prologue": "An immersive opening message from the DM to the player. It should set the scene, establish the atmosphere, and end with a question or prompt that invites the player to introduce their character (e.g., 'Who are you?', 'What brings you to this wretched hive?')."
+}`;
+        } else {
+          generationPrompt = `Generate a D&D 5e campaign setting.
+${input.prompt ? `User Request/Theme: "${input.prompt}"` : 'Theme: Create a random, creative, and engaging setting.'}
+
+Return ONLY a JSON object with this exact structure:
+{
+  "title": "A short, evocative campaign title",
+  "narrativePrompt": "A detailed paragraph describing the world, tone, major factions, and central conflict. This will serve as the 'World Bible' for the AI DM.",
+  "prologue": "An immersive opening message from the DM to the player. It should set the scene, establish the atmosphere, and end with a question or prompt that invites the player to introduce their character (e.g., 'Who are you?', 'What brings you to this wretched hive?')."
+}`;
+        }
+
+        // 3. Call LLM
+        const response = await invokeLLMWithSettings(ctx.user.id, {
+          messages: [
+            { role: 'system', content: systemPrompt + '\nReturn ONLY raw JSON. No markdown formatting.' },
+            { role: 'user', content: generationPrompt },
+          ],
+        });
+
+        if (!response.choices || !response.choices[0] || !response.choices[0].message) {
+          throw new Error('Failed to generate campaign: Invalid LLM response');
+        }
+
+        const content = response.choices[0].message.content;
+        if (!content || typeof content !== 'string') throw new Error('Failed to generate campaign: Empty or invalid response');
+
+        // Clean up markdown if present
+        let jsonContent = content.trim();
+        if (jsonContent.startsWith('```')) {
+          jsonContent = jsonContent.replace(/^```(?:json)?\s*\n/, '').replace(/\n```\s*$/, '');
+        }
+
+        let data;
+        try {
+          data = JSON.parse(jsonContent);
+        } catch (e) {
+          console.error('Failed to parse generated campaign JSON:', content);
+          throw new Error('Failed to parse generated campaign data');
+        }
+
+        // 4. Create Session
+        const session = await db.createSession(ctx.user.id, data.title, data.narrativePrompt);
+
+        // 5. Insert Prologue Message
+        await db.saveMessage({
+          sessionId: session.id,
+          characterName: 'DM',
+          content: data.prologue,
+          isDm: 1,
+        });
+
+        return session;
       }),
   }),
 
@@ -80,7 +164,7 @@ export const appRouter = router({
           inventory: JSON.stringify(input.inventory),
         });
       }),
-    
+
     list: protectedProcedure
       .input(z.object({ sessionId: z.number() }))
       .query(async ({ input }) => {
@@ -92,7 +176,7 @@ export const appRouter = router({
           inventory: JSON.parse(char.inventory),
         }));
       }),
-    
+
     updateHP: protectedProcedure
       .input(z.object({
         characterId: z.number(),
@@ -103,7 +187,7 @@ export const appRouter = router({
         await db.updateCharacterHP(input.characterId, input.hpCurrent);
         return { success: true };
       }),
-    
+
     update: protectedProcedure
       .input(z.object({
         characterId: z.number(),
@@ -137,7 +221,7 @@ export const appRouter = router({
         await db.updateCharacter(input.characterId, updateData);
         return { success: true };
       }),
-    
+
     delete: protectedProcedure
       .input(z.object({ characterId: z.number() }))
       .mutation(async ({ input }) => {
@@ -145,7 +229,7 @@ export const appRouter = router({
         await db.deleteCharacter(input.characterId);
         return { success: true };
       }),
-    
+
     generate: protectedProcedure
       .input(z.object({
         sessionId: z.number(),
@@ -157,11 +241,11 @@ export const appRouter = router({
       .mutation(async ({ ctx, input }) => {
         const { invokeLLMWithSettings } = await import('./llm-with-settings');
         const db = await import('./db');
-        
+
         // Get session to check for narrative prompt
         const session = await db.getSession(input.sessionId);
         if (!session) throw new Error('Session not found');
-        
+
         const prompt = `Generate a D&D 5th Edition character with the following parameters:
 ${input.className ? `Class: ${input.className}` : 'Class: Choose an appropriate class'}
 ${input.race ? `Race: ${input.race}` : 'Race: Choose an appropriate race'}
@@ -198,7 +282,7 @@ Return ONLY a JSON object with this exact structure:
 }`;
 
         let systemPrompt = 'You are a D&D 5e character creation expert. Return ONLY raw JSON with no markdown formatting, no code blocks, no explanatory text. Just the JSON object.';
-        
+
         // Add campaign narrative prompt if it exists
         if (session.narrativePrompt) {
           systemPrompt += `
@@ -215,26 +299,26 @@ Create a character that fits within this campaign setting and narrative tone.`;
             { role: 'user', content: prompt },
           ],
         });
-        
+
         if (!response.choices || !response.choices[0] || !response.choices[0].message) {
           console.error('[Character Generation] Invalid LLM response structure:', response);
           throw new Error('Failed to generate character: Invalid response from LLM');
         }
-        
+
         const content = response.choices[0].message.content;
         if (!content || typeof content !== 'string') {
           throw new Error('Failed to generate character: No content in response');
         }
-        
+
         // Strip markdown code blocks if present
         let jsonContent = content.trim();
         if (jsonContent.startsWith('```')) {
           jsonContent = jsonContent.replace(/^```(?:json)?\s*\n/, '').replace(/\n```\s*$/, '');
         }
-        
+
         // Parse the JSON response
         const characterData = JSON.parse(jsonContent);
-        
+
         // Create the character in the database
         const result = await db.createCharacter({
           sessionId: input.sessionId,
@@ -248,7 +332,7 @@ Create a character that fits within this campaign setting and narrative tone.`;
           inventory: JSON.stringify(characterData.inventory),
           notes: characterData.notes,
         });
-        
+
         return {
           ...result,
           ...characterData,
@@ -263,7 +347,7 @@ Create a character that fits within this campaign setting and narrative tone.`;
         const db = await import('./db');
         return db.getSessionMessages(input.sessionId, input.limit);
       }),
-    
+
     send: protectedProcedure
       .input(z.object({
         sessionId: z.number(),
@@ -275,49 +359,49 @@ Create a character that fits within this campaign setting and narrative tone.`;
       .mutation(async ({ ctx, input }) => {
         const db = await import('./db');
         const { invokeLLMWithSettings } = await import('./llm-with-settings');
-        
+
         // Get context
         const character = await db.getCharacter(input.characterId);
         if (!character) throw new Error('Character not found');
-        
+
         const session = await db.getSession(input.sessionId);
         if (!session) throw new Error('Session not found');
-        
+
         const recentMessages = await db.getSessionMessages(input.sessionId, 10);
         const stats = JSON.parse(character.stats);
         const inventory = JSON.parse(character.inventory);
-        
+
         // Get extracted context
         const storedContext = await db.getSessionContext(input.sessionId);
         const context = db.parseSessionContext(storedContext);
-        
+
         // Format context sections
         const npcsText = context.npcs && context.npcs.length > 0
           ? context.npcs.map(npc => `- ${npc.name}: ${npc.description} (${npc.disposition || 'unknown'})`).join('\n')
           : 'None encountered yet';
-        
+
         const locationsText = context.locations && context.locations.length > 0
           ? context.locations.map(loc => `- ${loc.name}: ${loc.description}`).join('\n')
           : 'None visited yet';
-        
+
         const plotPointsText = context.plotPoints && context.plotPoints.length > 0
           ? context.plotPoints.filter(p => !p.resolved).map(p => `- [${p.importance}] ${p.summary}`).join('\n')
           : 'None established yet';
-        
+
         const itemsText = context.items && context.items.length > 0
           ? context.items.map(i => `- ${i.name}: ${i.description} (${i.location || 'unknown location'})`).join('\n')
           : 'None tracked yet';
-        
+
         const questsText = context.quests && context.quests.length > 0
           ? context.quests.filter(q => q.progress !== 'completed' && q.progress !== 'failed')
-              .map(q => `- ${q.name} (${q.progress}): ${q.description}`).join('\n')
+            .map(q => `- ${q.name} (${q.progress}): ${q.description}`).join('\n')
           : 'None active';
-        
+
         // Format last 10 messages for immediate context
         const recentEvents = recentMessages
           .map(m => `${m.characterName}: ${m.content}`)
           .join('\n');
-        
+
         // Build enriched prompt with extracted context
         const enrichedPrompt = `[CAMPAIGN CONTEXT]
 **Known NPCs:**
@@ -351,7 +435,7 @@ Notes: ${character.notes || 'None'}
 ${character.name}: ${input.message}
 
 Respond as the Dungeon Master. Maintain consistency with established NPCs, locations, and plot points. If combat occurs, clearly state damage dealt and HP changes.`;
-        
+
         // Get user's custom system prompt or use default
         const userSettings = await db.getUserSettings(ctx.user.id);
         const defaultSystemPrompt = `You are an expert Dungeon Master for D&D 5th Edition.
@@ -359,9 +443,9 @@ Maintain narrative consistency based on the provided game state.
 Be creative but respect established facts and character conditions.
 During combat, track damage dealt and specify HP changes clearly.
 Use D&D 5e rules for all mechanics.`;
-        
+
         let systemPrompt = userSettings?.systemPrompt || defaultSystemPrompt;
-        
+
         // Add campaign narrative prompt if it exists
         if (session.narrativePrompt) {
           systemPrompt += `
@@ -371,7 +455,7 @@ ${session.narrativePrompt}
 
 Follow this narrative guidance throughout all responses. Maintain the established setting, tone, themes, and style.`;
         }
-        
+
         // Get LLM response using user settings
         const response = await invokeLLMWithSettings(ctx.user.id, {
           messages: [
@@ -379,15 +463,15 @@ Follow this narrative guidance throughout all responses. Maintain the establishe
             { role: 'user', content: enrichedPrompt },
           ],
         });
-        
+
         if (!response.choices || !response.choices[0] || !response.choices[0].message) {
           console.error('[Chat] Invalid LLM response structure:', response);
           throw new Error('Failed to get DM response: Invalid response from LLM');
         }
-        
+
         const content = response.choices[0].message.content;
         const dmResponse = typeof content === 'string' ? content : 'The DM is thinking...';
-        
+
         // Save messages
         await db.saveMessage({
           sessionId: input.sessionId,
@@ -395,14 +479,14 @@ Follow this narrative guidance throughout all responses. Maintain the establishe
           content: input.message,
           isDm: 0,
         });
-        
+
         await db.saveMessage({
           sessionId: input.sessionId,
           characterName: 'DM',
           content: dmResponse,
           isDm: 1,
         });
-        
+
         // Extract context from the interaction
         const { extractContextFromResponse, mergeContext } = await import('./context-extraction');
         const extractedContext = await extractContextFromResponse(
@@ -410,15 +494,15 @@ Follow this narrative guidance throughout all responses. Maintain the establishe
           input.message,
           character.name
         );
-        
+
         // Get existing context and merge with new extraction
         const existingContext = await db.getSessionContext(input.sessionId);
         const parsedContext = db.parseSessionContext(existingContext);
         const mergedContext = mergeContext(parsedContext, extractedContext);
-        
+
         // Save updated context
         await db.upsertSessionContext(input.sessionId, mergedContext);
-        
+
         // Apply character updates from extracted context
         console.log('[Character Updates] Extracted character updates:', extractedContext.characterUpdates);
         if (extractedContext.characterUpdates) {
@@ -426,7 +510,7 @@ Follow this narrative guidance throughout all responses. Maintain the establishe
             console.log('[Character Updates] Processing update for:', update.characterName, 'Current character:', character.name);
             if (update.characterName.toLowerCase() === character.name.toLowerCase()) {
               const updateData: any = {};
-              
+
               // Apply HP changes
               if (update.hpChange !== undefined) {
                 const newHp = Math.max(0, Math.min(
@@ -435,24 +519,24 @@ Follow this narrative guidance throughout all responses. Maintain the establishe
                 ));
                 updateData.hpCurrent = newHp;
               }
-              
+
               // Apply inventory changes
               if (update.inventoryAdded || update.inventoryRemoved) {
                 let currentInventory = [...inventory];
-                
+
                 if (update.inventoryAdded) {
                   currentInventory.push(...update.inventoryAdded);
                 }
-                
+
                 if (update.inventoryRemoved) {
                   currentInventory = currentInventory.filter(
                     item => !update.inventoryRemoved!.includes(item)
                   );
                 }
-                
+
                 updateData.inventory = JSON.stringify(currentInventory);
               }
-              
+
               // Apply updates if any
               if (Object.keys(updateData).length > 0) {
                 console.log('[Character Updates] Applying updates to character:', character.name, updateData);
@@ -464,7 +548,7 @@ Follow this narrative guidance throughout all responses. Maintain the establishe
             }
           }
         }
-        
+
         // Check if we need to update summary
         const messageCount = await db.getMessageCount(input.sessionId);
         if (messageCount % 20 === 0) {
@@ -473,7 +557,7 @@ Follow this narrative guidance throughout all responses. Maintain the establishe
           const messageHistory = allMessages
             .map(m => `${m.characterName}: ${m.content}`)
             .join('\n');
-          
+
           const summaryPrompt = `Previous summary: ${session.currentSummary || 'None'}
 
 Recent messages:
@@ -487,11 +571,11 @@ Create a concise summary (max 500 words) that captures:
 5. Unresolved plot threads
 
 Focus on information needed for narrative continuity.`;
-          
+
           const summaryResponse = await invokeLLMWithSettings(ctx.user.id, {
             messages: [{ role: 'user', content: summaryPrompt }],
           });
-          
+
           if (!summaryResponse.choices || !summaryResponse.choices[0] || !summaryResponse.choices[0].message) {
             console.error('[Summary] Invalid LLM response structure:', summaryResponse);
             // Don't throw error for summary - just skip update
@@ -502,7 +586,7 @@ Focus on information needed for narrative continuity.`;
             await db.updateSessionSummary(input.sessionId, newSummary);
           }
         }
-        
+
         return { response: dmResponse };
       }),
 
@@ -518,18 +602,18 @@ Focus on information needed for narrative continuity.`;
       .mutation(async ({ ctx, input }) => {
         const db = await import('./db');
         const settings = await db.getUserSettings(ctx.user.id);
-        
+
         if (!settings || !settings.ttsApiKey) {
           throw new Error('TTS API key not configured. Please add your OpenAI API key in settings.');
         }
-        
+
         if (!settings.ttsProvider || settings.ttsProvider !== 'openai') {
           throw new Error('Only OpenAI TTS is currently supported.');
         }
-        
+
         const OpenAI = (await import('openai')).default;
         const openai = new OpenAI({ apiKey: settings.ttsApiKey });
-        
+
         try {
           const mp3 = await openai.audio.speech.create({
             model: settings.ttsModel || 'tts-1',
@@ -537,10 +621,10 @@ Focus on information needed for narrative continuity.`;
             input: input.text,
             response_format: 'mp3',
           });
-          
+
           const buffer = Buffer.from(await mp3.arrayBuffer());
           const base64Audio = buffer.toString('base64');
-          
+
           return {
             audio: base64Audio,
             format: 'mp3',
@@ -552,11 +636,11 @@ Focus on information needed for narrative continuity.`;
       }),
   }),
 
-  settings: router({ 
+  settings: router({
     get: protectedProcedure.query(async ({ ctx }) => {
       const db = await import('./db');
       const settings = await db.getUserSettings(ctx.user.id);
-      
+
       // Return default settings if none exist
       if (!settings) {
         return {
@@ -569,9 +653,10 @@ Focus on information needed for narrative continuity.`;
           ttsVoice: null,
           ttsApiKey: null,
           systemPrompt: null,
+          campaignGenerationPrompt: null,
         };
       }
-      
+
       return {
         llmProvider: settings.llmProvider,
         llmModel: settings.llmModel,
@@ -582,9 +667,10 @@ Focus on information needed for narrative continuity.`;
         ttsVoice: settings.ttsVoice,
         ttsApiKey: settings.ttsApiKey,
         systemPrompt: settings.systemPrompt,
+        campaignGenerationPrompt: settings.campaignGenerationPrompt,
       };
     }),
-    
+
     update: protectedProcedure
       .input(z.object({
         llmProvider: z.enum(['manus', 'openai', 'anthropic', 'google']),
@@ -596,6 +682,7 @@ Focus on information needed for narrative continuity.`;
         ttsVoice: z.string().nullable(),
         ttsApiKey: z.string().nullable(),
         systemPrompt: z.string().nullable(),
+        campaignGenerationPrompt: z.string().nullable(),
       }))
       .mutation(async ({ ctx, input }) => {
         const db = await import('./db');
@@ -610,6 +697,7 @@ Focus on information needed for narrative continuity.`;
           ttsVoice: input.ttsVoice,
           ttsApiKey: input.ttsApiKey,
           systemPrompt: input.systemPrompt,
+          campaignGenerationPrompt: input.campaignGenerationPrompt,
         });
         return { success: true };
       }),

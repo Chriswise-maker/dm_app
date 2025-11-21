@@ -11,6 +11,7 @@ interface ChatInterfaceProps {
   sessionId: number | null;
   characterId: number | null;
   characterName: string | null;
+  onCreateCharacter: () => void;
 }
 
 interface Message {
@@ -22,7 +23,7 @@ interface Message {
   timestamp: Date | string;
 }
 
-export default function ChatInterface({ sessionId, characterId, characterName }: ChatInterfaceProps) {
+export default function ChatInterface({ sessionId, characterId, characterName, onCreateCharacter }: ChatInterfaceProps) {
   const [message, setMessage] = useState('');
   const [streamingText, setStreamingText] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
@@ -45,30 +46,30 @@ export default function ChatInterface({ sessionId, characterId, characterName }:
     onSuccess: (data, variables) => {
       const messageId = (variables as any).messageId;
       const audioUrl = `data:audio/mp3;base64,${data.audio}`;
-      
+
       // Cache the audio
       setAudioCache(prev => new Map(prev).set(messageId, audioUrl));
-      
+
       // Play the audio
       if (audioRef.current) {
         audioRef.current.pause();
       }
-      
+
       const audio = new Audio(audioUrl);
       audioRef.current = audio;
       setPlayingMessageId(messageId);
-      
+
       audio.onended = () => {
         setPlayingMessageId(null);
         audioRef.current = null;
       };
-      
+
       audio.onerror = () => {
         toast.error('Failed to play audio');
         setPlayingMessageId(null);
         audioRef.current = null;
       };
-      
+
       audio.play().catch((err) => {
         toast.error('Failed to play audio: ' + err.message);
         setPlayingMessageId(null);
@@ -85,12 +86,12 @@ export default function ChatInterface({ sessionId, characterId, characterName }:
     onSuccess: (data) => {
       // Clear pending user message since it's now in the database
       setPendingUserMessage(null);
-      
+
       // Start streaming effect
       const fullText = data.response;
       setIsStreaming(true);
       setStreamingText('');
-      
+
       let currentIndex = 0;
       const streamInterval = setInterval(() => {
         if (currentIndex < fullText.length) {
@@ -118,20 +119,20 @@ export default function ChatInterface({ sessionId, characterId, characterName }:
 
   // Track if user has manually scrolled away from bottom
   const userScrolledAwayRef = useRef(false);
-  
+
   // Smart auto-scroll: only scroll if user is already near the bottom
   const scrollToBottom = (force: boolean = false) => {
     if (!messagesContainerRef.current) return;
-    
+
     const container = messagesContainerRef.current;
     const scrollHeight = container.scrollHeight;
     const scrollTop = container.scrollTop;
     const clientHeight = container.clientHeight;
     const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
-    
+
     // Update scroll tracking
     userScrolledAwayRef.current = distanceFromBottom > 100;
-    
+
     // Only auto-scroll if forced OR user is already at the bottom (within 100px)
     if (force || distanceFromBottom < 100) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -166,10 +167,10 @@ export default function ChatInterface({ sessionId, characterId, characterName }:
 
     const userMessage = message.trim();
     setMessage('');
-    
+
     // Immediately show the user's message
     setPendingUserMessage(userMessage);
-    
+
     sendMutation.mutate({
       sessionId,
       characterId,
@@ -198,16 +199,16 @@ export default function ChatInterface({ sessionId, characterId, characterName }:
       if (audioRef.current) {
         audioRef.current.pause();
       }
-      
+
       const audio = new Audio(cachedAudio);
       audioRef.current = audio;
       setPlayingMessageId(messageId);
-      
+
       audio.onended = () => {
         setPlayingMessageId(null);
         audioRef.current = null;
       };
-      
+
       audio.play().catch((err) => {
         toast.error('Failed to play audio: ' + err.message);
         setPlayingMessageId(null);
@@ -241,14 +242,6 @@ export default function ChatInterface({ sessionId, characterId, characterName }:
     return (
       <div className="flex items-center justify-center h-full">
         <p className="text-muted-foreground">Select a campaign to start playing</p>
-      </div>
-    );
-  }
-
-  if (!characterId) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <p className="text-muted-foreground">Select or create a character to begin</p>
       </div>
     );
   }
@@ -297,7 +290,7 @@ export default function ChatInterface({ sessionId, characterId, characterName }:
   return (
     <div className="flex flex-col h-full">
       {/* Messages Area */}
-      <div 
+      <div
         ref={messagesContainerRef}
         className="flex-1 overflow-y-auto p-4 space-y-4"
       >
@@ -311,13 +304,12 @@ export default function ChatInterface({ sessionId, characterId, characterName }:
             const isTTSEnabled = settings?.ttsEnabled && settings?.ttsApiKey && msg.isDm;
             const isCurrentlyPlaying = messageId && playingMessageId === messageId;
             const isTTSLoading = ttsMutation.isPending && (ttsMutation.variables as any)?.messageId === messageId;
-            
+
             return (
               <Card
                 key={messageId || ('id' in msg ? msg.id : 'unknown')}
-                className={`p-4 ${
-                  msg.isDm ? 'bg-primary/5 border-primary/20' : 'bg-accent/50'
-                } ${'isPending' in msg && msg.isPending ? 'opacity-70' : ''}`}
+                className={`p-4 ${msg.isDm ? 'bg-primary/5 border-primary/20' : 'bg-accent/50'
+                  } ${'isPending' in msg && msg.isPending ? 'opacity-70' : ''}`}
               >
                 <div className="flex items-start gap-3">
                   <div className="flex-shrink-0 w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center font-bold text-sm">
@@ -327,7 +319,7 @@ export default function ChatInterface({ sessionId, characterId, characterName }:
                     <div className="flex items-center gap-2 mb-1">
                       <span className="font-semibold text-sm">{msg.characterName}</span>
                       <span className="text-xs text-muted-foreground">
-                        {typeof msg.timestamp === 'string' 
+                        {typeof msg.timestamp === 'string'
                           ? new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
                           : msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                       </span>
@@ -379,28 +371,38 @@ export default function ChatInterface({ sessionId, characterId, characterName }:
 
       {/* Input Area */}
       <div className="border-t p-4">
-        <div className="flex gap-2">
-          <Textarea
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            onKeyDown={handleKeyPress}
-            placeholder={`What does ${characterName} do?`}
-            className="flex-1 min-h-[60px] max-h-[200px]"
-            disabled={sendMutation.isPending}
-          />
+        {characterId ? (
+          <div className="flex gap-2">
+            <Textarea
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              onKeyDown={handleKeyPress}
+              placeholder={`What does ${characterName} do?`}
+              className="flex-1 min-h-[60px] max-h-[200px]"
+              disabled={sendMutation.isPending}
+            />
+            <Button
+              onClick={handleSend}
+              disabled={sendMutation.isPending || !message.trim()}
+              size="icon"
+              className="h-[60px] w-[60px]"
+            >
+              {sendMutation.isPending ? (
+                <Loader2 className="h-5 w-5 animate-spin" />
+              ) : (
+                <Send className="h-5 w-5" />
+              )}
+            </Button>
+          </div>
+        ) : (
           <Button
-            onClick={handleSend}
-            disabled={sendMutation.isPending || !message.trim()}
-            size="icon"
-            className="h-[60px] w-[60px]"
+            onClick={onCreateCharacter}
+            className="w-full h-[60px] text-lg font-semibold"
+            variant="default"
           >
-            {sendMutation.isPending ? (
-              <Loader2 className="h-5 w-5 animate-spin" />
-            ) : (
-              <Send className="h-5 w-5" />
-            )}
+            Create Character to Join Adventure
           </Button>
-        </div>
+        )}
       </div>
     </div>
   );

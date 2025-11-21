@@ -1,0 +1,1 @@
+ALTER TABLE "userSettings" ADD COLUMN "campaignGenerationPrompt" text;

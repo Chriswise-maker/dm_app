@@ -1,5 +1,5 @@
 {
-  "id": "dd3d9367-f51b-4e99-a28a-fd57c4f403fb",
+  "id": "858f76f5-5506-477e-9c55-bc309d6e9bc4",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -357,6 +357,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "narrativePrompt": {
+          "name": "narrativePrompt",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "currentSummary": {
           "name": "currentSummary",
           "type": "text",
@@ -456,6 +462,12 @@
         },
         "ttsProvider": {
           "name": "ttsProvider",
+          "type": "varchar(50)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "ttsModel": {
+          "name": "ttsModel",
           "type": "varchar(50)",
           "primaryKey": false,
           "notNull": false

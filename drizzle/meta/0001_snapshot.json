@@ -1,6 +1,6 @@
 {
-  "id": "e5e1abb4-f2e7-4928-ac84-887e20dac599",
-  "prevId": "dd3d9367-f51b-4e99-a28a-fd57c4f403fb",
+  "id": "f348b60f-9a43-4088-a8a9-05441a8bbab5",
+  "prevId": "858f76f5-5506-477e-9c55-bc309d6e9bc4",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -466,6 +466,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "ttsModel": {
+          "name": "ttsModel",
+          "type": "varchar(50)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "ttsVoice": {
           "name": "ttsVoice",
           "type": "varchar(100)",
@@ -480,6 +486,12 @@
         },
         "systemPrompt": {
           "name": "systemPrompt",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "campaignGenerationPrompt": {
+          "name": "campaignGenerationPrompt",
           "type": "text",
           "primaryKey": false,
           "notNull": false

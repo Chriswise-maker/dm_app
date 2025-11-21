@@ -82,7 +82,7 @@ export default function SettingsDialog({ open, onOpenChange }: SettingsDialogPro
   const { data: settings, isLoading } = trpc.settings.get.useQuery(undefined, {
     enabled: open,
   });
-  
+
   const updateSettings = trpc.settings.update.useMutation({
     onSuccess: () => {
       toast.success('Settings saved successfully');
@@ -102,6 +102,7 @@ export default function SettingsDialog({ open, onOpenChange }: SettingsDialogPro
   const [ttsVoice, setTtsVoice] = useState<string>('alloy');
   const [ttsApiKey, setTtsApiKey] = useState<string>('');
   const [systemPrompt, setSystemPrompt] = useState<string>(DEFAULT_SYSTEM_PROMPT);
+  const [campaignGenerationPrompt, setCampaignGenerationPrompt] = useState<string>('Generate a D&D 5e campaign setting.');
 
   useEffect(() => {
     if (settings) {
@@ -114,6 +115,7 @@ export default function SettingsDialog({ open, onOpenChange }: SettingsDialogPro
       setTtsVoice(settings.ttsVoice || 'alloy');
       setTtsApiKey(settings.ttsApiKey || '');
       setSystemPrompt(settings.systemPrompt || DEFAULT_SYSTEM_PROMPT);
+      setCampaignGenerationPrompt(settings.campaignGenerationPrompt || 'Generate a D&D 5e campaign setting.');
     }
   }, [settings]);
 
@@ -128,6 +130,7 @@ export default function SettingsDialog({ open, onOpenChange }: SettingsDialogPro
       ttsVoice: ttsVoice || null,
       ttsApiKey: ttsApiKey || null,
       systemPrompt: systemPrompt || null,
+      campaignGenerationPrompt: campaignGenerationPrompt || null,
     });
   };
 
@@ -176,7 +179,7 @@ export default function SettingsDialog({ open, onOpenChange }: SettingsDialogPro
                   </SelectContent>
                 </Select>
                 <p className="text-sm text-muted-foreground">
-                  {llmProvider === 'manus' 
+                  {llmProvider === 'manus'
                     ? 'Using Manus built-in API - no API key required. Currently using Gemini 2.5 Flash.'
                     : 'You will need to provide your own API key for this provider.'}
                 </p>
@@ -264,6 +267,29 @@ export default function SettingsDialog({ open, onOpenChange }: SettingsDialogPro
                   <li>Specify any house rules or custom mechanics</li>
                   <li>Mention preferred level of detail for descriptions</li>
                 </ul>
+              </div>
+
+              <div className="space-y-2 pt-4 border-t">
+                <Label htmlFor="campaignGenerationPrompt">Campaign Generator Prompt</Label>
+                <p className="text-sm text-muted-foreground">
+                  Customize the instruction used when generating a new campaign. This is the "seed" instruction sent to the AI.
+                </p>
+                <Textarea
+                  id="campaignGenerationPrompt"
+                  value={campaignGenerationPrompt}
+                  onChange={(e) => setCampaignGenerationPrompt(e.target.value)}
+                  placeholder="Generate a D&D 5e campaign setting."
+                  className="min-h-[100px] font-mono text-sm"
+                />
+                <div className="flex justify-end">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setCampaignGenerationPrompt('Generate a D&D 5e campaign setting.')}
+                  >
+                    Reset to Default
+                  </Button>
+                </div>
               </div>
             </TabsContent>
 

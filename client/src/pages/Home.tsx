@@ -31,7 +31,7 @@ export default function Home() {
   const selectedCharacter = characters?.find((c) => c.id === selectedCharacterId);
   const editingCharacter = characters?.find((c) => c.id === characterToEdit);
 
-  const handleSessionSelect = (sessionId: number) => {
+  const handleSessionSelect = (sessionId: number | null) => {
     setSelectedSessionId(sessionId);
     setSelectedCharacterId(null);
   };
@@ -83,8 +83,8 @@ export default function Home() {
             onCreateCharacter={() => setIsCharacterDialogOpen(true)}
             onEditCharacter={handleEditCharacter}
           />
-          
-          <Button 
+
+          <Button
             onClick={() => setIsGeneratorOpen(true)}
             variant="outline"
             className="w-full"
@@ -100,6 +100,7 @@ export default function Home() {
             sessionId={selectedSessionId}
             characterId={selectedCharacterId}
             characterName={selectedCharacter?.name || null}
+            onCreateCharacter={() => setIsCharacterDialogOpen(true)}
           />
         </main>
       </div>

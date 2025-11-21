@@ -89,6 +89,7 @@ export const userSettings = pgTable("userSettings", {
   ttsVoice: varchar("ttsVoice", { length: 100 }),
   ttsApiKey: text("ttsApiKey"),
   systemPrompt: text("systemPrompt"),
+  campaignGenerationPrompt: text("campaignGenerationPrompt"),
   createdAt: timestamp("createdAt", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updatedAt", { withTimezone: true }).defaultNow().notNull(),
 });
@@ -100,23 +101,23 @@ export type InsertUserSettings = typeof userSettings.$inferInsert;
 export const sessionContext = pgTable("sessionContext", {
   id: integer("id").primaryKey().generatedByDefaultAsIdentity(),
   sessionId: integer("sessionId").notNull().unique().references(() => sessions.id),
-  
+
   // Core extracted data (JSON fields for flexibility)
   npcs: text("npcs"), // [{name, description, firstMet, disposition, notes}]
   locations: text("locations"), // [{name, description, visited, notes}]
   plotPoints: text("plotPoints"), // [{summary, importance, resolved}]
   items: text("items"), // [{name, description, acquiredBy, location}]
-  
+
   // Extensible fields for future additions
   relationships: text("relationships"), // [{char1, char2, affinity, notes}]
   factions: text("factions"), // [{name, standing, notes}]
   quests: text("quests"), // [{name, description, progress, giver}]
   worldState: text("worldState"), // {time, weather, majorEvents, etc}
-  
+
   // Narrative summary
   campaignSummary: text("campaignSummary"), // High-level summary of campaign so far
   recentEvents: text("recentEvents"), // Last 3-5 major events
-  
+
   updatedAt: timestamp("updatedAt", { withTimezone: true }).defaultNow().notNull(),
 });
 
