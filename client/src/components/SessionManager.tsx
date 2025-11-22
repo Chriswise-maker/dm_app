@@ -6,7 +6,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
-import { Loader2, Plus, Trash2, Sparkles } from 'lucide-react';
+import { Loader2, Plus, Trash2, Sparkles, Pencil } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   AlertDialog,
@@ -30,6 +30,9 @@ export default function SessionManager({ selectedSessionId, onSessionSelect }: S
   const [narrativePrompt, setNarrativePrompt] = useState('');
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [sessionToDelete, setSessionToDelete] = useState<number | null>(null);
+  const [isEditNarrativeOpen, setIsEditNarrativeOpen] = useState(false);
+  const [editingSessionId, setEditingSessionId] = useState<number | null>(null);
+  const [editingNarrativePrompt, setEditingNarrativePrompt] = useState('');
 
   const { data: sessions, isLoading, refetch } = trpc.sessions.list.useQuery();
 
@@ -74,6 +77,17 @@ export default function SessionManager({ selectedSessionId, onSessionSelect }: S
     },
   });
 
+  const updateNarrativeMutation = trpc.sessions.updateNarrative.useMutation({
+    onSuccess: () => {
+      toast.success('Campaign narrative updated!');
+      setIsEditNarrativeOpen(false);
+      refetch();
+    },
+    onError: (error) => {
+      toast.error('Failed to update narrative: ' + error.message);
+    },
+  });
+
   const handleCreate = () => {
     if (!campaignName.trim()) {
       toast.error('Please enter a campaign name');
@@ -94,6 +108,22 @@ export default function SessionManager({ selectedSessionId, onSessionSelect }: S
   const handleDeleteConfirm = () => {
     if (sessionToDelete) {
       deleteMutation.mutate({ sessionId: sessionToDelete });
+    }
+  };
+
+  const handleEditNarrativeClick = (session: any, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setEditingSessionId(session.id);
+    setEditingNarrativePrompt(session.narrativePrompt || '');
+    setIsEditNarrativeOpen(true);
+  };
+
+  const handleUpdateNarrative = () => {
+    if (editingSessionId) {
+      updateNarrativeMutation.mutate({
+        sessionId: editingSessionId,
+        narrativePrompt: editingNarrativePrompt,
+      });
     }
   };
 
@@ -212,15 +242,26 @@ export default function SessionManager({ selectedSessionId, onSessionSelect }: S
               >
                 {session.campaignName}
               </button>
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-6 w-6 p-0 hover:bg-transparent"
-                onClick={(e) => handleDeleteClick(session.id, e)}
-                title="Delete campaign"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </Button>
+              <div className="flex items-center">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-6 w-6 p-0 hover:bg-transparent mr-1"
+                  onClick={(e) => handleEditNarrativeClick(session, e)}
+                  title="Edit Campaign Narrative"
+                >
+                  <Pencil className="h-3.5 w-3.5" />
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-6 w-6 p-0 hover:bg-transparent"
+                  onClick={(e) => handleDeleteClick(session.id, e)}
+                  title="Delete campaign"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              </div>
             </div>
           ))
         ) : (
@@ -251,6 +292,41 @@ export default function SessionManager({ selectedSessionId, onSessionSelect }: S
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </Card>
+
+      {/* Edit Narrative Dialog */}
+      <Dialog open={isEditNarrativeOpen} onOpenChange={setIsEditNarrativeOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Edit Campaign Narrative</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 pt-4">
+            <div className="space-y-2">
+              <Label htmlFor="edit-narrative">
+                Narrative Setting & Tone (World Bible)
+              </Label>
+              <Textarea
+                id="edit-narrative"
+                value={editingNarrativePrompt}
+                onChange={(e) => setEditingNarrativePrompt(e.target.value)}
+                placeholder="Describe the setting, tone, themes, and style..."
+                rows={10}
+                className="resize-none"
+              />
+              <p className="text-xs text-muted-foreground">
+                This text is sent to the AI with every message to maintain consistency.
+              </p>
+            </div>
+            <Button
+              onClick={handleUpdateNarrative}
+              disabled={updateNarrativeMutation.isPending}
+              className="w-full"
+            >
+              {updateNarrativeMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Save Changes
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </Card >
   );
 }

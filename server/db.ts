@@ -100,21 +100,21 @@ import { desc } from "drizzle-orm";
 export async function createSession(userId: number, campaignName: string, narrativePrompt?: string) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  
+
   const result = await db.insert(sessions).values({
     userId,
     campaignName,
     narrativePrompt: narrativePrompt || null,
     currentSummary: null,
   }).returning({ id: sessions.id });
-  
+
   return { id: result[0].id, campaignName };
 }
 
 export async function getUserSessions(userId: number) {
   const db = await getDb();
   if (!db) return [];
-  
+
   return await db.select().from(sessions)
     .where(eq(sessions.userId, userId))
     .orderBy(desc(sessions.updatedAt));
@@ -123,32 +123,41 @@ export async function getUserSessions(userId: number) {
 export async function getSession(sessionId: number) {
   const db = await getDb();
   if (!db) return null;
-  
+
   const result = await db.select().from(sessions)
     .where(eq(sessions.id, sessionId))
     .limit(1);
-  
+
   return result.length > 0 ? result[0] : null;
 }
 
 export async function updateSessionSummary(sessionId: number, summary: string) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  
+
   await db.update(sessions)
     .set({ currentSummary: summary, updatedAt: new Date() })
+    .where(eq(sessions.id, sessionId));
+}
+
+export async function updateSessionNarrative(sessionId: number, narrativePrompt: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  await db.update(sessions)
+    .set({ narrativePrompt, updatedAt: new Date() })
     .where(eq(sessions.id, sessionId));
 }
 
 export async function deleteSession(sessionId: number) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  
+
   // Delete related data first (messages, characters, context)
   await db.delete(messages).where(eq(messages.sessionId, sessionId));
   await db.delete(characters).where(eq(characters.sessionId, sessionId));
   await db.delete(sessionContext).where(eq(sessionContext.sessionId, sessionId));
-  
+
   // Delete the session itself
   await db.delete(sessions).where(eq(sessions.id, sessionId));
 }
@@ -157,7 +166,7 @@ export async function deleteSession(sessionId: number) {
 export async function createCharacter(data: Omit<InsertCharacter, 'id' | 'createdAt' | 'updatedAt'>) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  
+
   const result = await db.insert(characters).values(data).returning({ id: characters.id });
   return { id: result[0].id };
 }
@@ -165,7 +174,7 @@ export async function createCharacter(data: Omit<InsertCharacter, 'id' | 'create
 export async function getSessionCharacters(sessionId: number) {
   const db = await getDb();
   if (!db) return [];
-  
+
   return await db.select().from(characters)
     .where(eq(characters.sessionId, sessionId));
 }
@@ -173,18 +182,18 @@ export async function getSessionCharacters(sessionId: number) {
 export async function getCharacter(characterId: number) {
   const db = await getDb();
   if (!db) return null;
-  
+
   const result = await db.select().from(characters)
     .where(eq(characters.id, characterId))
     .limit(1);
-  
+
   return result.length > 0 ? result[0] : null;
 }
 
 export async function updateCharacterHP(characterId: number, hpCurrent: number) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  
+
   await db.update(characters)
     .set({ hpCurrent, updatedAt: new Date() })
     .where(eq(characters.id, characterId));
@@ -193,7 +202,7 @@ export async function updateCharacterHP(characterId: number, hpCurrent: number) 
 export async function updateCharacter(characterId: number, data: Partial<Omit<InsertCharacter, 'id' | 'sessionId'>>) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  
+
   await db.update(characters)
     .set({ ...data, updatedAt: new Date() })
     .where(eq(characters.id, characterId));
@@ -202,7 +211,7 @@ export async function updateCharacter(characterId: number, data: Partial<Omit<In
 export async function deleteCharacter(characterId: number) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  
+
   await db.delete(characters)
     .where(eq(characters.id, characterId));
 }
@@ -211,7 +220,7 @@ export async function deleteCharacter(characterId: number) {
 export async function saveMessage(data: Omit<InsertMessage, 'id' | 'timestamp'>) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  
+
   const result = await db.insert(messages).values(data).returning({ id: messages.id });
   return { id: result[0].id };
 }
@@ -219,12 +228,12 @@ export async function saveMessage(data: Omit<InsertMessage, 'id' | 'timestamp'>)
 export async function getSessionMessages(sessionId: number, limit: number = 50) {
   const db = await getDb();
   if (!db) return [];
-  
+
   const result = await db.select().from(messages)
     .where(eq(messages.sessionId, sessionId))
     .orderBy(desc(messages.timestamp))
     .limit(limit);
-  
+
   // Return in chronological order (oldest first)
   return result.reverse();
 }
@@ -232,10 +241,10 @@ export async function getSessionMessages(sessionId: number, limit: number = 50) 
 export async function getMessageCount(sessionId: number) {
   const db = await getDb();
   if (!db) return 0;
-  
+
   const result = await db.select().from(messages)
     .where(eq(messages.sessionId, sessionId));
-  
+
   return result.length;
 }
 
@@ -245,11 +254,11 @@ import { userSettings, InsertUserSettings, UserSettings } from "../drizzle/schem
 export async function getUserSettings(userId: number): Promise<UserSettings | undefined> {
   const db = await getDb();
   if (!db) return undefined;
-  
+
   const result = await db.select().from(userSettings)
     .where(eq(userSettings.userId, userId))
     .limit(1);
-  
+
   return result[0];
 }
 
@@ -259,7 +268,7 @@ export async function upsertUserSettings(settings: InsertUserSettings): Promise<
     console.warn("[Database] Cannot upsert settings: database not available");
     return;
   }
-  
+
   await db.insert(userSettings)
     .values(settings)
     .onConflictDoUpdate({
@@ -272,6 +281,8 @@ export async function upsertUserSettings(settings: InsertUserSettings): Promise<
         ttsProvider: settings.ttsProvider,
         ttsVoice: settings.ttsVoice,
         ttsApiKey: settings.ttsApiKey,
+        systemPrompt: settings.systemPrompt,
+        campaignGenerationPrompt: settings.campaignGenerationPrompt,
         updatedAt: new Date(),
       },
     });
@@ -284,11 +295,11 @@ import type { ExtractedContext } from "./context-extraction";
 export async function getSessionContext(sessionId: number): Promise<SessionContext | undefined> {
   const db = await getDb();
   if (!db) return undefined;
-  
+
   const result = await db.select().from(sessionContext)
     .where(eq(sessionContext.sessionId, sessionId))
     .limit(1);
-  
+
   return result[0];
 }
 
@@ -301,7 +312,7 @@ export async function upsertSessionContext(
     console.warn("[Database] Cannot upsert context: database not available");
     return;
   }
-  
+
   const contextData: InsertSessionContext = {
     sessionId,
     npcs: context.npcs ? JSON.stringify(context.npcs) : null,
@@ -315,7 +326,7 @@ export async function upsertSessionContext(
     campaignSummary: null, // Will be generated separately
     recentEvents: context.recentEvent ? JSON.stringify([context.recentEvent]) : null,
   };
-  
+
   await db.insert(sessionContext)
     .values(contextData)
     .onConflictDoUpdate({
@@ -341,7 +352,7 @@ export async function upsertSessionContext(
  */
 export function parseSessionContext(stored: SessionContext | undefined): Partial<ExtractedContext> {
   if (!stored) return {};
-  
+
   return {
     npcs: stored.npcs ? JSON.parse(stored.npcs) : undefined,
     locations: stored.locations ? JSON.parse(stored.locations) : undefined,

@@ -58,12 +58,15 @@ export const appRouter = router({
         const { invokeLLMWithSettings } = await import('./llm-with-settings');
         const db = await import('./db');
 
-        // 1. Get Global System Prompt
+        // 1. Get user settings
         const userSettings = await db.getUserSettings(ctx.user.id);
-        const defaultSystemPrompt = `You are an expert Dungeon Master for D&D 5th Edition.
-Your task is to generate a unique, engaging campaign setting based on the user's input.`;
 
-        const systemPrompt = userSettings?.systemPrompt || defaultSystemPrompt;
+        // Use a dedicated, language-neutral system prompt for campaign generation
+        // This ensures the generator focuses on the task (JSON creation) and respects the user's language instructions
+        // without being influenced by the "DM Persona" (which might be English-biased).
+        const campaignSystemPrompt = `You are an expert campaign generator.
+Generate creative, engaging campaign settings exactly as instructed.
+CRITICAL: Respect ALL language requirements. If the user specifies languages, follow them precisely.`;
 
         // 2. Construct Generation Prompt
         const customGenerationPrompt = userSettings?.campaignGenerationPrompt;
@@ -71,13 +74,13 @@ Your task is to generate a unique, engaging campaign setting based on the user's
         let generationPrompt;
         if (customGenerationPrompt) {
           generationPrompt = `${customGenerationPrompt}
-${input.prompt ? `User Request/Theme: "${input.prompt}"` : ''}
+${input.prompt ? `\nAdditional Request: "${input.prompt}"` : ''}
 
-Return ONLY a JSON object with this exact structure:
+IMPORTANT: Return ONLY a JSON object. Respect any language instructions above.
 {
-  "title": "A short, evocative campaign title",
-  "narrativePrompt": "A detailed paragraph describing the world, tone, major factions, and central conflict. This will serve as the 'World Bible' for the AI DM.",
-  "prologue": "An immersive opening message from the DM to the player. It should set the scene, establish the atmosphere, and end with a question or prompt that invites the player to introduce their character (e.g., 'Who are you?', 'What brings you to this wretched hive?')."
+  "title": "Campaign title (in the requested language if specified)",
+  "narrativePrompt": "Detailed world description (in the requested language if specified)",
+  "prologue": "Opening DM message (in the requested language if specified)"
 }`;
         } else {
           generationPrompt = `Generate a D&D 5e campaign setting.
@@ -94,7 +97,7 @@ Return ONLY a JSON object with this exact structure:
         // 3. Call LLM
         const response = await invokeLLMWithSettings(ctx.user.id, {
           messages: [
-            { role: 'system', content: systemPrompt + '\nReturn ONLY raw JSON. No markdown formatting.' },
+            { role: 'system', content: campaignSystemPrompt + '\nReturn ONLY raw JSON. No markdown formatting.' },
             { role: 'user', content: generationPrompt },
           ],
         });
@@ -132,6 +135,17 @@ Return ONLY a JSON object with this exact structure:
         });
 
         return session;
+      }),
+
+    updateNarrative: protectedProcedure
+      .input(z.object({
+        sessionId: z.number(),
+        narrativePrompt: z.string(),
+      }))
+      .mutation(async ({ input }) => {
+        const db = await import('./db');
+        await db.updateSessionNarrative(input.sessionId, input.narrativePrompt);
+        return { success: true };
       }),
   }),
 
