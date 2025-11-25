@@ -28,7 +28,7 @@ export interface ExtractedContext {
     acquiredBy?: string; // character name
     location?: string; // where it is now
   }>;
-  
+
   // Character state changes
   characterUpdates?: Array<{
     characterName: string;
@@ -37,7 +37,7 @@ export interface ExtractedContext {
     inventoryRemoved?: string[];
     conditions?: string[]; // poisoned, blessed, cursed, etc.
   }>;
-  
+
   // Extensible fields (prepared for future use)
   relationships?: Array<{
     character1: string;
@@ -56,7 +56,7 @@ export interface ExtractedContext {
     progress: 'not_started' | 'in_progress' | 'completed' | 'failed';
     giver?: string;
   }>;
-  
+
   // Narrative summary
   recentEvent?: string; // One-sentence summary of what just happened
 }
@@ -271,7 +271,7 @@ export function mergeContext(
   if (newContext.npcs) {
     const existingNpcs = merged.npcs || [];
     const npcMap = new Map(existingNpcs.map(npc => [npc.name.toLowerCase(), npc]));
-    
+
     newContext.npcs.forEach(npc => {
       const key = npc.name.toLowerCase();
       if (npcMap.has(key)) {
@@ -283,7 +283,7 @@ export function mergeContext(
         npcMap.set(key, npc);
       }
     });
-    
+
     merged.npcs = Array.from(npcMap.values());
   }
 
@@ -291,14 +291,14 @@ export function mergeContext(
   if (newContext.locations) {
     const existingLocs = merged.locations || [];
     const locMap = new Map(existingLocs.map(loc => [loc.name.toLowerCase(), loc]));
-    
+
     newContext.locations.forEach(loc => {
       const key = loc.name.toLowerCase();
       if (!locMap.has(key)) {
         locMap.set(key, loc);
       }
     });
-    
+
     merged.locations = Array.from(locMap.values());
   }
 
@@ -311,12 +311,12 @@ export function mergeContext(
   if (newContext.items) {
     const existingItems = merged.items || [];
     const itemMap = new Map(existingItems.map(item => [item.name.toLowerCase(), item]));
-    
+
     newContext.items.forEach(item => {
       const key = item.name.toLowerCase();
       itemMap.set(key, item); // Always update with latest info
     });
-    
+
     merged.items = Array.from(itemMap.values());
   }
 
@@ -329,7 +329,7 @@ export function mergeContext(
         return [key, rel];
       })
     );
-    
+
     newContext.relationships.forEach(rel => {
       const key = [rel.character1, rel.character2].sort().join('|').toLowerCase();
       if (relMap.has(key)) {
@@ -339,7 +339,7 @@ export function mergeContext(
       }
       relMap.set(key, rel);
     });
-    
+
     merged.relationships = Array.from(relMap.values());
   }
 
@@ -347,7 +347,7 @@ export function mergeContext(
   if (newContext.factions) {
     const existingFactions = merged.factions || [];
     const factionMap = new Map(existingFactions.map(f => [f.name.toLowerCase(), f]));
-    
+
     newContext.factions.forEach(faction => {
       const key = faction.name.toLowerCase();
       if (factionMap.has(key)) {
@@ -357,7 +357,7 @@ export function mergeContext(
       }
       factionMap.set(key, faction);
     });
-    
+
     merged.factions = Array.from(factionMap.values());
   }
 
@@ -365,12 +365,12 @@ export function mergeContext(
   if (newContext.quests) {
     const existingQuests = merged.quests || [];
     const questMap = new Map(existingQuests.map(q => [q.name.toLowerCase(), q]));
-    
+
     newContext.quests.forEach(quest => {
       const key = quest.name.toLowerCase();
       questMap.set(key, quest); // Always use latest progress
     });
-    
+
     merged.quests = Array.from(questMap.values());
   }
 

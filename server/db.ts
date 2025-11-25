@@ -364,3 +364,152 @@ export function parseSessionContext(stored: SessionContext | undefined): Partial
     recentEvent: stored.recentEvents ? JSON.parse(stored.recentEvents)[0] : undefined,
   };
 }
+
+// ===== Combat System Functions =====
+import { combatState, combatants, combatLog, CombatState, Combatant, CombatLog, InsertCombatState, InsertCombatant, InsertCombatLog } from "../drizzle/schema";
+
+export async function createCombatState(sessionId: number): Promise<CombatState> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  // First, check if combat state already exists for this session
+  const existing = await db.select().from(combatState)
+    .where(eq(combatState.sessionId, sessionId))
+    .limit(1);
+
+  if (existing.length > 0) {
+    // Update existing combat state
+    await db.update(combatState)
+      .set({
+        inCombat: 1,
+        currentRound: 1,
+        currentTurnIndex: 0,
+        updatedAt: new Date(),
+      })
+      .where(eq(combatState.sessionId, sessionId));
+
+    return (await db.select().from(combatState)
+      .where(eq(combatState.sessionId, sessionId))
+      .limit(1))[0];
+  }
+
+  // Create new combat state
+  const result = await db.insert(combatState).values({
+    sessionId,
+    inCombat: 1,
+    currentRound: 1,
+    currentTurnIndex: 0,
+  }).returning();
+
+  return result[0];
+}
+
+export async function getCombatState(sessionId: number): Promise<CombatState | undefined> {
+  const db = await getDb();
+  if (!db) return undefined;
+
+  const result = await db.select().from(combatState)
+    .where(eq(combatState.sessionId, sessionId))
+    .limit(1);
+
+  return result[0];
+}
+
+export async function updateCombatState(sessionId: number, data: Partial<InsertCombatState>): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  await db.update(combatState)
+    .set({ ...data, updatedAt: new Date() })
+    .where(eq(combatState.sessionId, sessionId));
+}
+
+export async function deleteCombatState(sessionId: number): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  // Delete related combatants and logs first
+  const state = await getCombatState(sessionId);
+  if (state) {
+    await db.delete(combatants).where(eq(combatants.combatStateId, state.id));
+    await db.delete(combatLog).where(eq(combatLog.combatStateId, state.id));
+  }
+
+  await db.delete(combatState).where(eq(combatState.sessionId, sessionId));
+}
+
+export async function addCombatant(data: Omit<InsertCombatant, 'id' | 'createdAt'>): Promise<Combatant> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const result = await db.insert(combatants).values(data).returning();
+  return result[0];
+}
+
+export async function getCombatants(combatStateId: number): Promise<Combatant[]> {
+  const db = await getDb();
+  if (!db) return [];
+
+  return await db.select().from(combatants)
+    .where(eq(combatants.combatStateId, combatStateId));
+}
+
+export async function getCombatantsBySession(sessionId: number): Promise<Combatant[]> {
+  const db = await getDb();
+  if (!db) return [];
+
+  return await db.select().from(combatants)
+    .where(eq(combatants.sessionId, sessionId));
+}
+
+export async function updateCombatant(combatantId: number, data: Partial<InsertCombatant>): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  await db.update(combatants)
+    .set(data)
+    .where(eq(combatants.id, combatantId));
+}
+
+export async function removeCombatant(combatantId: number): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  await db.delete(combatants).where(eq(combatants.id, combatantId));
+}
+
+export async function logCombatAction(data: Omit<InsertCombatLog, 'id' | 'timestamp'>): Promise<CombatLog> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const result = await db.insert(combatLog).values(data).returning();
+  return result[0];
+}
+
+export async function getCombatLog(combatStateId: number, limit: number = 50): Promise<CombatLog[]> {
+  const db = await getDb();
+  if (!db) return [];
+
+  const result = await db.select().from(combatLog)
+    .where(eq(combatLog.combatStateId, combatStateId))
+    .orderBy(desc(combatLog.timestamp))
+    .limit(limit);
+
+  return result.reverse(); // Chronological order (oldest first)
+}
+
+export async function endCombat(sessionId: number): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const state = await getCombatState(sessionId);
+  if (!state) return;
+
+  // Delete all combatants for this combat session
+  await db.delete(combatants).where(eq(combatants.combatStateId, state.id));
+
+  // Set inCombat to 0
+  await db.update(combatState)
+    .set({ inCombat: 0, updatedAt: new Date() })
+    .where(eq(combatState.sessionId, sessionId));
+}

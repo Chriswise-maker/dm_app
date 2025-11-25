@@ -12,6 +12,9 @@ import { trpc } from '@/lib/trpc';
 import { Loader2, Scroll, Settings } from 'lucide-react';
 import SettingsDialog from '@/components/SettingsDialog';
 
+import { useCombatState } from '@/hooks/combat/useCombatState';
+import CombatSidebar from '@/components/combat/CombatSidebar';
+
 export default function Home() {
   // Bypass authentication for local use - use a mock user
   const user = { id: 1, name: 'Local User', openId: 'local-user' };
@@ -27,6 +30,9 @@ export default function Home() {
     { sessionId: selectedSessionId! },
     { enabled: !!selectedSessionId }
   );
+
+  // Lifted combat state
+  const { combatState, refetchCombatState } = useCombatState(selectedSessionId);
 
   const selectedCharacter = characters?.find((c) => c.id === selectedCharacterId);
   const editingCharacter = characters?.find((c) => c.id === characterToEdit);
@@ -95,13 +101,26 @@ export default function Home() {
         </aside>
 
         {/* Main Chat Area */}
-        <main className="flex-1 bg-background">
-          <ChatInterface
-            sessionId={selectedSessionId}
-            characterId={selectedCharacterId}
-            characterName={selectedCharacter?.name || null}
-            onCreateCharacter={() => setIsCharacterDialogOpen(true)}
-          />
+        <main className="flex-1 bg-background flex overflow-hidden">
+          <div className="flex-1">
+            <ChatInterface
+              sessionId={selectedSessionId}
+              characterId={selectedCharacterId}
+              characterName={selectedCharacter?.name || null}
+              onCreateCharacter={() => setIsCharacterDialogOpen(true)}
+              combatState={combatState}
+              refetchCombatState={refetchCombatState}
+            />
+          </div>
+
+          {/* Right Sidebar - Combat */}
+          {combatState?.inCombat && selectedSessionId && (
+            <CombatSidebar
+              combatState={combatState}
+              sessionId={selectedSessionId}
+              refetchCombatState={refetchCombatState}
+            />
+          )}
         </main>
       </div>
 

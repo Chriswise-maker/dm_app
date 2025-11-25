@@ -416,6 +416,44 @@ Create a character that fits within this campaign setting and narrative tone.`;
           .map(m => `${m.characterName}: ${m.content}`)
           .join('\n');
 
+        // Get combat state if in combat
+        const combatState = await db.getCombatState(input.sessionId);
+        let combatContext = '';
+
+        if (combatState && combatState.inCombat === 1) {
+          const combatants = await db.getCombatants(combatState.id);
+          combatants.sort((a, b) => b.initiative - a.initiative);
+
+          const currentCombatant = combatants[combatState.currentTurnIndex];
+
+          combatContext = `\n[GAME STATE - STRICT]
+The following JSON defines the EXACT state of the game. You MUST use these exact names and stats. Do not invent new enemies or rename existing ones.
+
+${JSON.stringify({
+            round: combatState.currentRound,
+            currentTurn: {
+              name: currentCombatant?.name || 'Unknown',
+              initiative: currentCombatant?.initiative || 0
+            },
+            combatants: combatants.map(c => ({
+              name: c.name,
+              type: c.type,
+              initiative: c.initiative,
+              hp: `${c.hpCurrent}/${c.hpMax}`,
+              ac: c.ac,
+              status: c.hpCurrent <= 0 ? 'DEFEATED' : 'ACTIVE',
+              isCurrentTurn: c.id === currentCombatant?.id
+            }))
+          }, null, 2)}
+
+**Combat Instructions:**
+1. Use the EXACT "name" from the JSON above.
+2. Track HP changes based on the "hp" field.
+3. If status is "DEFEATED", that enemy is dead/unconscious.
+4. Narrate the action for "currentTurn".
+`;
+        }
+
         // Build enriched prompt with extracted context
         const enrichedPrompt = `[CAMPAIGN CONTEXT]
 **Known NPCs:**
@@ -435,7 +473,7 @@ ${questsText}
 
 [RECENT EVENTS - Last 10 Messages]
 ${recentEvents}
-
+${combatContext}
 [ACTIVE CHARACTER]
 Name: ${character.name}
 Class: ${character.className} Level ${character.level}
@@ -456,7 +494,8 @@ Respond as the Dungeon Master. Maintain consistency with established NPCs, locat
 Maintain narrative consistency based on the provided game state.
 Be creative but respect established facts and character conditions.
 During combat, track damage dealt and specify HP changes clearly.
-Use D&D 5e rules for all mechanics.`;
+Use D&D 5e rules for all mechanics.
+IMPORTANT: When narrating combat, use the EXACT names of enemies as listed in the context (e.g., "Dragon-Touched Revolutionary 1", not "Dragon Brute"). This is critical for tracking game state.`;
 
         let systemPrompt = userSettings?.systemPrompt || defaultSystemPrompt;
 
@@ -503,6 +542,7 @@ Follow this narrative guidance throughout all responses. Maintain the establishe
 
         // Extract context from the interaction
         const { extractContextFromResponse, mergeContext } = await import('./context-extraction');
+
         const extractedContext = await extractContextFromResponse(
           dmResponse,
           input.message,
@@ -517,11 +557,11 @@ Follow this narrative guidance throughout all responses. Maintain the establishe
         // Save updated context
         await db.upsertSessionContext(input.sessionId, mergedContext);
 
-        // Apply character updates from extracted context
+        // Apply character updates from extracted context (user can manually override via character sheet)
         console.log('[Character Updates] Extracted character updates:', extractedContext.characterUpdates);
         if (extractedContext.characterUpdates) {
           for (const update of extractedContext.characterUpdates) {
-            console.log('[Character Updates] Processing update for:', update.characterName, 'Current character:', character.name);
+            // Only update the active character for now to be safe
             if (update.characterName.toLowerCase() === character.name.toLowerCase()) {
               const updateData: any = {};
 
@@ -713,6 +753,466 @@ Focus on information needed for narrative continuity.`;
           systemPrompt: input.systemPrompt,
           campaignGenerationPrompt: input.campaignGenerationPrompt,
         });
+        return { success: true };
+      }),
+  }),
+
+  // Combat System Router
+  combat: router({
+    // Start combat mode
+    initiate: protectedProcedure
+      .input(z.object({ sessionId: z.number() }))
+      .mutation(async ({ input }) => {
+        const db = await import('./db');
+
+        // Create or reset combat state
+        const state = await db.createCombatState(input.sessionId);
+
+        return { success: true, combatStateId: state.id };
+      }),
+
+    // Generate enemies automatically based on context
+    generateEnemies: protectedProcedure
+      .input(z.object({
+        sessionId: z.number(),
+        context: z.string().optional(), // Recent narrative context
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await import('./db');
+        const { invokeLLMWithSettings } = await import('./llm-with-settings');
+        const { DiceRoller } = await import('./combat/dice-roller');
+
+        // Get session and characters
+        const session = await db.getSession(input.sessionId);
+        if (!session) throw new Error('Session not found');
+
+        const characters = await db.getSessionCharacters(input.sessionId);
+        if (characters.length === 0) throw new Error('No characters in session');
+
+        // Get recent messages for context
+        const recentMessages = await db.getSessionMessages(input.sessionId, 5);
+        const narrativeContext = recentMessages
+          .map(m => `${m.characterName}: ${m.content}`)
+          .join('\n');
+
+        // Calculate party average level
+        const avgLevel = Math.round(
+          characters.reduce((sum, c) => sum + c.level, 0) / characters.length
+        );
+
+        // Generate enemies using LLM
+        const prompt = `You are creating a D&D 5e combat encounter.
+
+PARTY INFORMATION:
+${characters.map(c => `- ${c.name} (${c.className} Level ${c.level}, AC ${c.ac}, HP ${c.hpCurrent}/${c.hpMax})`).join('\n')}
+Average Party Level: ${avgLevel}
+
+RECENT NARRATIVE CONTEXT:
+${narrativeContext}
+
+Generate 1-4 appropriate enemies for this encounter. The enemies should:
+1. Fit the narrative context
+2. Be challenging but fair for a level ${avgLevel} party
+3. Have proper D&D 5e stats
+
+Return ONLY a JSON array with this EXACT structure:
+[
+  {
+    "name": "Enemy name (e.g., 'Goblin Archer 1')",
+    "ac": armor_class_number,
+    "hpMax": hit_points_number,
+    "attackBonus": attack_bonus_number,
+    "damageFormula": "dice_formula (e.g., '1d6+2')",
+    "damageType": "damage type (e.g., 'slashing', 'piercing')"
+  }
+]
+
+CRITICAL: Return ONLY the JSON array. No markdown, no explanation.`;
+
+        const response = await invokeLLMWithSettings(ctx.user.id, {
+          messages: [
+            { role: 'system', content: 'You are a D&D 5e encounter generator. Return only valid JSON.' },
+            { role: 'user', content: prompt },
+          ],
+        });
+
+        if (!response.choices?.[0]?.message?.content) {
+          throw new Error('Failed to generate enemies: Invalid LLM response');
+        }
+
+        const content = response.choices[0].message.content;
+        if (typeof content !== 'string') {
+          throw new Error('Failed to generate enemies: Invalid content type');
+        }
+
+        let jsonContent = content.trim();
+
+        // Clean up markdown if present
+        if (jsonContent.startsWith('```')) {
+          jsonContent = jsonContent.replace(/^```(?:json)?\s*\n/, '').replace(/\n```\s*$/, '');
+        }
+
+        let enemies;
+        try {
+          enemies = JSON.parse(jsonContent);
+        } catch (e) {
+          console.error('Failed to parse enemy JSON:', jsonContent);
+          throw new Error('Failed to parse generated enemies');
+        }
+
+        if (!Array.isArray(enemies) || enemies.length === 0) {
+          throw new Error('No enemies generated');
+        }
+
+        // Get combat state
+        const state = await db.getCombatState(input.sessionId);
+        if (!state) throw new Error('Combat state not found');
+
+        // Add each enemy to combat with rolled initiative
+        const addedEnemies = [];
+
+        for (const enemy of enemies) {
+          const initiativeRoll = DiceRoller.roll('1d20');
+
+          const combatant = await db.addCombatant({
+            sessionId: input.sessionId,
+            combatStateId: state.id,
+            name: enemy.name,
+            type: 'enemy',
+            characterId: null,
+            initiative: initiativeRoll,
+            ac: enemy.ac,
+            hpCurrent: enemy.hpMax,
+            hpMax: enemy.hpMax,
+            attackBonus: enemy.attackBonus,
+            damageFormula: enemy.damageFormula,
+            damageType: enemy.damageType,
+            specialAbilities: null,
+            position: null,
+          });
+
+          addedEnemies.push({
+            ...combatant,
+            initiativeRoll: initiativeRoll,
+          });
+        }
+
+        return {
+          success: true,
+          enemies: addedEnemies,
+          count: addedEnemies.length
+        };
+      }),
+
+
+    // Add enemy to combat
+    addEnemy: protectedProcedure
+      .input(z.object({
+        sessionId: z.number(),
+        name: z.string().min(1),
+        ac: z.number().min(1),
+        hpMax: z.number().min(1),
+        attackBonus: z.number(),
+        damageFormula: z.string().min(1), // e.g., "1d6+2"
+        damageType: z.string().default('slashing'),
+        initiative: z.number(),
+        position: z.string().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        const db = await import('./db');
+        const { DiceRoller } = await import('./combat/dice-roller');
+
+        // Get combat state
+        const state = await db.getCombatState(input.sessionId);
+        if (!state) throw new Error('Combat state not found. Call combat.initiate first.');
+
+        // Add enemy to database
+        const combatant = await db.addCombatant({
+          sessionId: input.sessionId,
+          combatStateId: state.id,
+          name: input.name,
+          type: 'enemy',
+          characterId: null,
+          initiative: input.initiative,
+          ac: input.ac,
+          hpCurrent: input.hpMax,
+          hpMax: input.hpMax,
+          attackBonus: input.attackBonus,
+          damageFormula: input.damageFormula,
+          damageType: input.damageType,
+          specialAbilities: null,
+          position: input.position || null,
+        });
+
+        return { success: true, combatant };
+      }),
+
+    // Add player character to combat
+    addPlayer: protectedProcedure
+      .input(z.object({
+        sessionId: z.number(),
+        characterId: z.number(),
+        initiative: z.number(),
+        position: z.string().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        const db = await import('./db');
+
+        // Get character data
+        const character = await db.getCharacter(input.characterId);
+        if (!character) throw new Error('Character not found');
+
+        // Get combat state
+        const state = await db.getCombatState(input.sessionId);
+        if (!state) throw new Error('Combat state not found. Call combat.initiate first.');
+
+        // Add player to combat
+        const combatant = await db.addCombatant({
+          sessionId: input.sessionId,
+          combatStateId: state.id,
+          name: character.name,
+          type: 'player',
+          characterId: character.id,
+          initiative: input.initiative,
+          ac: character.ac,
+          hpCurrent: character.hpCurrent,
+          hpMax: character.hpMax,
+          attackBonus: character.attackBonus || 0,
+          damageFormula: character.damageFormula || null,
+          damageType: null,
+          specialAbilities: null,
+          position: input.position || null,
+        });
+
+        return { success: true, combatant };
+      }),
+
+    // Sort initiative order
+    sortInitiative: protectedProcedure
+      .input(z.object({ sessionId: z.number() }))
+      .mutation(async ({ input }) => {
+        const db = await import('./db');
+
+        // Get all combatants and sort by initiative (descending)
+        const combatants = await db.getCombatantsBySession(input.sessionId);
+        combatants.sort((a, b) => b.initiative - a.initiative);
+
+        return {
+          success: true,
+          initiativeOrder: combatants.map(c => ({
+            name: c.name,
+            initiative: c.initiative,
+            type: c.type,
+          })),
+        };
+      }),
+
+    // Resolve attack
+    resolveAttack: protectedProcedure
+      .input(z.object({
+        sessionId: z.number(),
+        actorName: z.string(),
+        targetName: z.string(),
+        attackRoll: z.number(),
+        damage: z.number().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        const db = await import('./db');
+
+        // Get combat state
+        const state = await db.getCombatState(input.sessionId);
+        if (!state) throw new Error('Combat state not found');
+
+        // Get combatants
+        const combatants = await db.getCombatants(state.id);
+        const target = combatants.find(c => c.name === input.targetName);
+
+        if (!target) throw new Error(`Target not found: ${input.targetName}`);
+
+        // Check if hit
+        const isHit = input.attackRoll >= target.ac;
+        const isCritical = input.attackRoll === 20;
+
+        let result: any = {
+          isHit,
+          isCritical,
+          attackRoll: input.attackRoll,
+          targetAC: target.ac,
+        };
+
+        if (isHit && input.damage !== undefined) {
+          // Apply damage
+          const newHP = Math.max(0, target.hpCurrent - input.damage);
+          const isDead = newHP === 0;
+
+          // Update combatant HP
+          await db.updateCombatant(target.id, { hpCurrent: newHP });
+
+          // If dead, remove from combat
+          if (isDead) {
+            await db.removeCombatant(target.id);
+          }
+
+          result = {
+            ...result,
+            damage: input.damage,
+            targetNewHP: newHP,
+            targetMaxHP: target.hpMax,
+            isDead,
+          };
+        }
+
+        // Log the action
+        await db.logCombatAction({
+          sessionId: input.sessionId,
+          combatStateId: state.id,
+          round: state.currentRound,
+          actorName: input.actorName,
+          actionType: 'attack',
+          targetName: input.targetName,
+          rollType: 'attack',
+          rollResult: input.attackRoll,
+          outcome: isHit ? (result.isDead ? 'killed' : 'hit') : 'miss',
+          damageDealt: input.damage || null,
+          narrative: null,
+        });
+
+        return result;
+      }),
+
+    // Advance turn
+    advanceTurn: protectedProcedure
+      .input(z.object({ sessionId: z.number() }))
+      .mutation(async ({ input }) => {
+        const db = await import('./db');
+
+        // Get combat state
+        const state = await db.getCombatState(input.sessionId);
+        if (!state) throw new Error('Combat state not found');
+
+        // Get combatants (sorted by initiative)
+        const combatants = await db.getCombatants(state.id);
+        combatants.sort((a, b) => b.initiative - a.initiative);
+
+        if (combatants.length === 0) {
+          throw new Error('No combatants in combat');
+        }
+
+        // Advance turn index
+        let newTurnIndex = state.currentTurnIndex + 1;
+        let newRound = state.currentRound;
+
+        // If we've wrapped around, increment round
+        if (newTurnIndex >= combatants.length) {
+          newTurnIndex = 0;
+          newRound++;
+        }
+
+        // Update combat state
+        await db.updateCombatState(input.sessionId, {
+          currentTurnIndex: newTurnIndex,
+          currentRound: newRound,
+        });
+
+        const currentCombatant = combatants[newTurnIndex];
+
+        return {
+          success: true,
+          currentTurn: {
+            name: currentCombatant.name,
+            type: currentCombatant.type,
+            initiative: currentCombatant.initiative,
+          },
+          round: newRound,
+        };
+      }),
+
+    // Get current combat state
+    getState: protectedProcedure
+      .input(z.object({ sessionId: z.number() }))
+      .query(async ({ input }) => {
+        const db = await import('./db');
+
+        // Get combat state
+        const state = await db.getCombatState(input.sessionId);
+        if (!state) {
+          return {
+            inCombat: false,
+            round: 0,
+            combatants: [],
+            currentTurnIndex: 0,
+          };
+        }
+
+        // Get combatants (sorted by initiative)
+        const combatants = await db.getCombatants(state.id);
+        combatants.sort((a, b) => b.initiative - a.initiative);
+
+        const currentCombatant = combatants[state.currentTurnIndex];
+
+        return {
+          inCombat: state.inCombat === 1,
+          round: state.currentRound,
+          currentTurnIndex: state.currentTurnIndex,
+          combatants: combatants.map(c => ({
+            id: c.id,
+            name: c.name,
+            type: c.type,
+            initiative: c.initiative,
+            ac: c.ac,
+            hpCurrent: c.hpCurrent,
+            hpMax: c.hpMax,
+            attackBonus: c.attackBonus,
+            damageFormula: c.damageFormula,
+            damageType: c.damageType,
+            position: c.position,
+          })),
+          currentTurn: currentCombatant ? {
+            name: currentCombatant.name,
+            type: currentCombatant.type,
+            initiative: currentCombatant.initiative,
+          } : null,
+        };
+      }),
+
+    // End combat
+    end: protectedProcedure
+      .input(z.object({ sessionId: z.number() }))
+      .mutation(async ({ input }) => {
+        const db = await import('./db');
+
+        // End combat (deletes combatants and sets inCombat = 0)
+        await db.endCombat(input.sessionId);
+
+        return { success: true };
+      }),
+
+    // Remove a single combatant (for manual deletion)
+    removeCombatant: protectedProcedure
+      .input(z.object({ combatantId: z.number() }))
+      .mutation(async ({ input }) => {
+        const db = await import('./db');
+
+        // Delete the combatant
+        await db.removeCombatant(input.combatantId);
+
+        return { success: true };
+      }),
+
+    // Update a combatant's HP manually
+    updateCombatantHP: protectedProcedure
+      .input(z.object({
+        combatantId: z.number(),
+        newHP: z.number()
+      }))
+      .mutation(async ({ input }) => {
+        const db = await import('./db');
+
+        // Update the combatant's HP
+        await db.updateCombatant(input.combatantId, {
+          hpCurrent: input.newHP
+        });
+
         return { success: true };
       }),
   }),

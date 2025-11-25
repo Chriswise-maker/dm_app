@@ -6,12 +6,16 @@ import { Card } from '@/components/ui/card';
 import { Loader2, Send, Volume2, VolumeX } from 'lucide-react';
 import { toast } from 'sonner';
 import { Streamdown } from 'streamdown';
+import { useCombatState } from '@/hooks/combat/useCombatState';
+import InitiativeDisplay from '@/components/combat/InitiativeDisplay';
 
 interface ChatInterfaceProps {
   sessionId: number | null;
   characterId: number | null;
   characterName: string | null;
   onCreateCharacter: () => void;
+  combatState?: any;
+  refetchCombatState?: () => void;
 }
 
 interface Message {
@@ -23,17 +27,33 @@ interface Message {
   timestamp: Date | string;
 }
 
-export default function ChatInterface({ sessionId, characterId, characterName, onCreateCharacter }: ChatInterfaceProps) {
+export default function ChatInterface({
+  sessionId,
+  characterId,
+  characterName,
+  onCreateCharacter,
+  combatState,
+  refetchCombatState
+}: ChatInterfaceProps) {
   const [message, setMessage] = useState('');
-  const [streamingText, setStreamingText] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
+  const [streamingText, setStreamingText] = useState('');
   const [pendingUserMessage, setPendingUserMessage] = useState<string | null>(null);
   const [playingMessageId, setPlayingMessageId] = useState<number | null>(null);
   const [audioCache, setAudioCache] = useState<Map<number, string>>(new Map());
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [awaitingInitiativeFrom, setAwaitingInitiativeFrom] = useState<string[]>([]);
+
   const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const utils = trpc.useUtils();
+
+  // const { combatState, refetchCombatState } = useCombatState(sessionId); // Removed internal hook
+
+  // Combat state
+  const [showEnemyDialog, setShowEnemyDialog] = useState(false);
+  // The following line is commented out as combatState and refetchCombatState are now passed via props
+  // const { combatState, initiateCombat, addPlayer, sortInitiative, refetchCombatState } = useCombatState(sessionId);
 
   const { data: messages, isLoading, refetch } = trpc.messages.list.useQuery(
     { sessionId: sessionId!, limit: 100 },
@@ -41,6 +61,26 @@ export default function ChatInterface({ sessionId, characterId, characterName, o
   );
 
   const { data: settings } = trpc.settings.get.useQuery();
+
+  const generateEnemiesMutation = trpc.combat.generateEnemies.useMutation();
+
+  const initiateCombat = trpc.combat.initiate.useMutation({
+    onSuccess: () => {
+      refetchCombatState?.();
+    }
+  });
+
+  const addPlayer = trpc.combat.addPlayer.useMutation({
+    onSuccess: () => {
+      refetchCombatState?.();
+    }
+  });
+
+  const sortInitiative = trpc.combat.sortInitiative.useMutation({
+    onSuccess: () => {
+      refetchCombatState?.();
+    }
+  });
 
   const ttsMutation = trpc.tts.generate.useMutation({
     onSuccess: (data, variables) => {
@@ -87,6 +127,11 @@ export default function ChatInterface({ sessionId, characterId, characterName, o
       // Clear pending user message since it's now in the database
       setPendingUserMessage(null);
 
+      // Check for combat initiation
+      if (data.response.toLowerCase().includes('roll for initiative')) {
+        handleCombatInitiation();
+      }
+
       // Start streaming effect
       const fullText = data.response;
       setIsStreaming(true);
@@ -117,42 +162,37 @@ export default function ChatInterface({ sessionId, characterId, characterName, o
     },
   });
 
-  // Track if user has manually scrolled away from bottom
-  const userScrolledAwayRef = useRef(false);
-
-  // Smart auto-scroll: only scroll if user is already near the bottom
-  const scrollToBottom = (force: boolean = false) => {
-    if (!messagesContainerRef.current) return;
-
-    const container = messagesContainerRef.current;
-    const scrollHeight = container.scrollHeight;
-    const scrollTop = container.scrollTop;
-    const clientHeight = container.clientHeight;
-    const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
-
-    // Update scroll tracking
-    userScrolledAwayRef.current = distanceFromBottom > 100;
-
-    // Only auto-scroll if forced OR user is already at the bottom (within 100px)
-    if (force || distanceFromBottom < 100) {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-      userScrolledAwayRef.current = false;
+  // Scroll to bottom on new messages
+  useEffect(() => {
+    if (messagesContainerRef.current) {
+      messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
     }
+  }, [messages, streamingText, pendingUserMessage]);
+
+  // Poll for combat state updates if we don't have the hook doing it
+  // Actually, the hook in Home.tsx handles polling, so we just receive updates via props
+
+  const playAudio = (url: string, messageId: number) => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+    }
+
+    const audio = new Audio(url);
+    audioRef.current = audio;
+
+    audio.onended = () => {
+      setPlayingMessageId(null);
+      audioRef.current = null;
+    };
+
+    setPlayingMessageId(messageId);
+
+    audio.play().catch((err) => {
+      toast.error('Failed to play audio: ' + err.message);
+      setPlayingMessageId(null);
+      audioRef.current = null;
+    });
   };
-
-  // Separate effect for initial load
-  useEffect(() => {
-    if (messages && !isStreaming) {
-      scrollToBottom(true); // Force scroll on initial load
-    }
-  }, [messages]);
-
-  // During streaming, only scroll if user hasn't scrolled away
-  useEffect(() => {
-    if ((isStreaming || pendingUserMessage) && !userScrolledAwayRef.current) {
-      scrollToBottom();
-    }
-  }, [streamingText, pendingUserMessage, isStreaming]);
 
   const handleSend = () => {
     if (!sessionId || !characterId) {
@@ -193,23 +233,18 @@ export default function ChatInterface({ sessionId, characterId, characterName, o
     }
 
     // Check if we have cached audio
-    const cachedAudio = audioCache.get(messageId);
-    if (cachedAudio) {
-      // Play cached audio
+    const existingAudio = document.querySelector(`audio[data-message-id="${messageId}"]`) as HTMLAudioElement;
+    if (existingAudio) {
       if (audioRef.current) {
         audioRef.current.pause();
       }
-
-      const audio = new Audio(cachedAudio);
-      audioRef.current = audio;
+      audioRef.current = existingAudio;
       setPlayingMessageId(messageId);
-
-      audio.onended = () => {
+      existingAudio.onended = () => {
         setPlayingMessageId(null);
         audioRef.current = null;
       };
-
-      audio.play().catch((err) => {
+      existingAudio.play().catch((err) => {
         toast.error('Failed to play audio: ' + err.message);
         setPlayingMessageId(null);
         audioRef.current = null;
@@ -226,6 +261,87 @@ export default function ChatInterface({ sessionId, characterId, characterName, o
       audioRef.current = null;
     }
     setPlayingMessageId(null);
+  };
+
+  // Combat handlers
+  const handleCombatInitiation = async () => {
+    if (!sessionId) return;
+
+    try {
+      // Initiate combat
+      await initiateCombat.mutateAsync({ sessionId });
+
+      toast.info('Generating enemies for this encounter...', { duration: 2000 });
+
+      // Automatically generate enemies based on context
+      const result = await generateEnemiesMutation.mutateAsync({ sessionId });
+
+      if (result.success && result.count > 0) {
+        toast.success(`${result.count} ${result.count === 1 ? 'enemy' : 'enemies'} appeared!`);
+
+        // Now prompt for player initiative
+        await handleEnemiesAdded();
+        refetchCombatState?.();
+      } else {
+        toast.error('Failed to generate enemies');
+      }
+    } catch (error: any) {
+      toast.error('Failed to initiate combat: ' + error.message);
+    }
+  };
+
+  const handleEnemiesAdded = async () => {
+    if (!sessionId || !characterId) return;
+
+    try {
+      // Get characters to add to combat
+      const characters = await utils.characters.list.fetch({ sessionId });
+
+      // Prompt for initiative for all characters
+      const characterNames = characters.map(c => c.name);
+      setAwaitingInitiativeFrom(characterNames);
+
+      toast.info('Roll initiative for your character! (Type: "Initiative: [number]")');
+    } catch (error: any) {
+      toast.error('Failed to setup combat: ' + error.message);
+    }
+  };
+
+  const handleInitiativeInput = async (characterName: string, initiative: number) => {
+    if (!sessionId) return;
+
+    try {
+      // Find character
+      const characters = await utils.characters.list.fetch({ sessionId });
+      const character = characters.find(c => c.name.toLowerCase() === characterName.toLowerCase());
+
+      if (!character) {
+        toast.error(`Character ${characterName} not found`);
+        return;
+      }
+
+      // Add player to combat
+      await addPlayer.mutateAsync({
+        sessionId,
+        characterId: character.id,
+        initiative,
+      });
+
+      // Remove from awaiting list
+      setAwaitingInitiativeFrom(prev => prev.filter(n => n !== characterName));
+
+      toast.success(`${characterName} added to combat with initiative ${initiative}`);
+
+      // If all initiatives collected, sort and start combat
+      const updatedAwaiting = awaitingInitiativeFrom.filter(n => n !== characterName);
+      if (updatedAwaiting.length === 0) {
+        await sortInitiative.mutateAsync({ sessionId });
+        refetchCombatState?.();
+        toast.success('Combat begins!', { duration: 3000 });
+      }
+    } catch (error: any) {
+      toast.error('Failed to add character to combat: ' + error.message);
+    }
   };
 
   // Cleanup audio on unmount
@@ -246,12 +362,12 @@ export default function ChatInterface({ sessionId, characterId, characterName, o
     );
   }
 
-  // Combine regular messages with pending user message, thinking indicator, and streaming message
+  // Combine history messages with pending/streaming messages
   const allMessages: (Message | { id: string; characterName: string; content: string; isDm: number; timestamp: string; isStreaming?: boolean; isThinking?: boolean; isPending?: boolean })[] = [
     ...(messages || []),
   ];
 
-  // Show pending user message immediately
+  // Show pending user message
   if (pendingUserMessage) {
     allMessages.push({
       id: 'pending-user',
@@ -294,6 +410,8 @@ export default function ChatInterface({ sessionId, characterId, characterName, o
         ref={messagesContainerRef}
         className="flex-1 overflow-y-auto p-4 space-y-4"
       >
+        {/* Combat Initiative Display - REMOVED (Moved to Sidebar) */}
+
         {isLoading ? (
           <div className="flex justify-center items-center h-full">
             <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
@@ -372,27 +490,39 @@ export default function ChatInterface({ sessionId, characterId, characterName, o
       {/* Input Area */}
       <div className="border-t p-4">
         {characterId ? (
-          <div className="flex gap-2">
-            <Textarea
-              value={message}
-              onChange={(e) => setMessage(e.target.value)}
-              onKeyDown={handleKeyPress}
-              placeholder={`What does ${characterName} do?`}
-              className="flex-1 min-h-[60px] max-h-[200px]"
-              disabled={sendMutation.isPending}
-            />
-            <Button
-              onClick={handleSend}
-              disabled={sendMutation.isPending || !message.trim()}
-              size="icon"
-              className="h-[60px] w-[60px]"
-            >
-              {sendMutation.isPending ? (
-                <Loader2 className="h-5 w-5 animate-spin" />
-              ) : (
-                <Send className="h-5 w-5" />
-              )}
-            </Button>
+          <div className="space-y-2">
+            <div className="flex gap-2">
+              <Textarea
+                value={message}
+                onChange={(e) => setMessage(e.target.value)}
+                onKeyDown={handleKeyPress}
+                placeholder={`What does ${characterName} do?`}
+                className="flex-1 min-h-[60px] max-h-[200px]"
+                disabled={sendMutation.isPending}
+              />
+              <Button
+                onClick={handleSend}
+                disabled={sendMutation.isPending || !message.trim()}
+                size="icon"
+                className="h-[60px] w-[60px]"
+              >
+                {sendMutation.isPending ? (
+                  <Loader2 className="h-5 w-5 animate-spin" />
+                ) : (
+                  <Send className="h-5 w-5" />
+                )}
+              </Button>
+            </div>
+            {!combatState?.inCombat && (
+              <Button
+                onClick={handleCombatInitiation}
+                variant="outline"
+                className="w-full"
+                disabled={initiateCombat.isPending}
+              >
+                {initiateCombat.isPending ? 'Starting Combat...' : '⚔️ Start Combat'}
+              </Button>
+            )}
           </div>
         ) : (
           <Button
@@ -407,3 +537,4 @@ export default function ChatInterface({ sessionId, characterId, characterName, o
     </div>
   );
 }
+

@@ -54,6 +54,10 @@ export const characters = pgTable("characters", {
   // Inventory as JSON array
   inventory: text("inventory").notNull(),
   notes: text("notes"),
+  // Combat-specific fields
+  initiativeBonus: integer("initiativeBonus").default(0),
+  attackBonus: integer("attackBonus").default(0),
+  damageFormula: text("damageFormula"), // e.g., "1d8+3"
   createdAt: timestamp("createdAt", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updatedAt", { withTimezone: true }).defaultNow().notNull(),
 });
@@ -123,3 +127,65 @@ export const sessionContext = pgTable("sessionContext", {
 
 export type SessionContext = typeof sessionContext.$inferSelect;
 export type InsertSessionContext = typeof sessionContext.$inferInsert;
+
+// Combat System Tables
+export const combatState = pgTable("combatState", {
+  id: integer("id").primaryKey().generatedByDefaultAsIdentity(),
+  sessionId: integer("sessionId").notNull().unique().references(() => sessions.id),
+  inCombat: integer("inCombat").notNull().default(0), // 0 = false, 1 = true
+  currentRound: integer("currentRound").notNull().default(0),
+  currentTurnIndex: integer("currentTurnIndex").notNull().default(0),
+  createdAt: timestamp("createdAt", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const combatants = pgTable("combatants", {
+  id: integer("id").primaryKey().generatedByDefaultAsIdentity(),
+  sessionId: integer("sessionId").notNull().references(() => sessions.id),
+  combatStateId: integer("combatStateId").notNull().references(() => combatState.id),
+
+  // Identity
+  name: text("name").notNull(),
+  type: varchar("type", { length: 10 }).notNull(), // 'player' or 'enemy'
+  characterId: integer("characterId").references(() => characters.id), // NULL for enemies
+
+  // Combat Stats
+  initiative: integer("initiative").notNull(),
+  ac: integer("ac").notNull(),
+  hpCurrent: integer("hpCurrent").notNull(),
+  hpMax: integer("hpMax").notNull(),
+
+  // Enemy-specific (NULL for players)
+  attackBonus: integer("attackBonus"),
+  damageFormula: text("damageFormula"), // e.g., "1d6+2"
+  damageType: text("damageType"), // e.g., "slashing"
+  specialAbilities: text("specialAbilities"), // JSON array
+
+  // Position (narrative distance)
+  position: text("position"), // e.g., "20 ft from Alice"
+
+  createdAt: timestamp("createdAt", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const combatLog = pgTable("combatLog", {
+  id: integer("id").primaryKey().generatedByDefaultAsIdentity(),
+  sessionId: integer("sessionId").notNull().references(() => sessions.id),
+  combatStateId: integer("combatStateId").notNull().references(() => combatState.id),
+  round: integer("round").notNull(),
+  actorName: text("actorName").notNull(),
+  actionType: varchar("actionType", { length: 20 }).notNull(), // 'attack', 'spell', 'move', 'other'
+  targetName: text("targetName"),
+  rollType: varchar("rollType", { length: 20 }), // 'attack', 'damage', 'save'
+  rollResult: integer("rollResult"),
+  outcome: text("outcome"), // 'hit', 'miss', 'killed', etc.
+  damageDealt: integer("damageDealt"),
+  narrative: text("narrative"), // LLM-generated description
+  timestamp: timestamp("timestamp", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export type CombatState = typeof combatState.$inferSelect;
+export type InsertCombatState = typeof combatState.$inferInsert;
+export type Combatant = typeof combatants.$inferSelect;
+export type InsertCombatant = typeof combatants.$inferInsert;
+export type CombatLog = typeof combatLog.$inferSelect;
+export type InsertCombatLog = typeof combatLog.$inferInsert;
