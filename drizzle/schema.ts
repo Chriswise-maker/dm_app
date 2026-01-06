@@ -94,6 +94,10 @@ export const userSettings = pgTable("userSettings", {
   ttsApiKey: text("ttsApiKey"),
   systemPrompt: text("systemPrompt"),
   campaignGenerationPrompt: text("campaignGenerationPrompt"),
+  characterGenerationPrompt: text("characterGenerationPrompt"),
+  combatTurnPrompt: text("combatTurnPrompt"),
+  combatNarrationPrompt: text("combatNarrationPrompt"),
+  combatSummaryPrompt: text("combatSummaryPrompt"),
   createdAt: timestamp("createdAt", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updatedAt", { withTimezone: true }).defaultNow().notNull(),
 });

@@ -15,25 +15,61 @@
 
 ## Proposed Changes
 
-### 1. Database Schema Updates
-*   We likely need a field to store the "Campaign Description" or "World State" on the `campaigns` table.
-*   Maybe a `prologue` field if we want to cache the initial message.
+### Phase 1: Architecture (Centralization & UI)
+Goal: Centralize prompts in backend, update DB schema, and expose them in UI.
 
-### 2. UI/UX Updates
-*   **Campaign Creation Modal/Page**:
-    *   Add "Generate Campaign" button.
-    *   Add "Prompt" input (optional).
-    *   Add Textarea for the generated campaign description (editable).
-*   **Campaign View**:
-    *   Ensure the description is visible/editable in the campaign settings or dashboard.
+#### [MODIFY] [schema.ts](file:///Users/christian/Documents/DM APP/dm_app/server/drizzle/schema.ts)
+- Add new columns to `user_settings` table:
+    - `characterGenerationPrompt` (text, nullable)
+    - `combatTurnPrompt` (text, nullable)
+    - `combatNarrationPrompt` (text, nullable)
+    - `combatSummaryPrompt` (text, nullable)
 
-### 3. Backend / API
-*   **Generation Endpoint**:
-    *   New API route (e.g., `/api/ai/generate-campaign`) that calls the LLM.
-    *   Inputs: User prompt, DM System Prompt (from settings).
-    *   Output: Campaign Title, Description/Premise, Initial Prologue.
-*   **Campaign Creation**:
-    *   Save the generated description and prologue when creating the campaign.
+#### [MODIFY] [db.ts](file:///Users/christian/Documents/DM APP/dm_app/server/db.ts)
+- Update `upsertUserSettings` and `getUserSettings` to handle the new columns.
+
+#### [NEW] [prompts.ts](file:///Users/christian/Documents/DM APP/dm_app/server/prompts.ts)
+Create a new file to house all system prompts. It will export functions to generate prompts based on inputs.
+- `buildCampaignGenerationPrompt(input)` (uses `userSettings.campaignGenerationPrompt`)
+- `buildCharacterGenerationPrompt(input)` (uses `userSettings.characterGenerationPrompt`)
+- `buildDMPrompt(context, settings)` (uses `userSettings.systemPrompt`)
+- `buildCombatEncounterPrompt(party, context)` (uses `userSettings.combatTurnPrompt` etc.)
+- `buildSummaryPrompt(history)` (uses `userSettings.combatSummaryPrompt`)
+
+#### [MODIFY] [routers.ts](file:///Users/christian/Documents/DM APP/dm_app/server/routers.ts)
+- Update `settings.update` procedure to accept new prompt fields.
+- Update `settings.get` procedure to return new prompt fields.
+- Import prompt builders from `prompts.ts`.
+- Replace hardcoded strings with function calls.
+
+#### [MODIFY] [SettingsDialog.tsx](file:///Users/christian/Documents/DM APP/dm_app/client/src/components/SettingsDialog.tsx)
+- Add new tabs or sections for "Prompts".
+- Add text areas for:
+    - Campaign Generation Prompt
+    - Character Generation Prompt
+    - Combat Prompts (Turn, Narration, Summary)
+- Ensure these save to the backend.
+
+#### [MODIFY] [combat-prompts.ts](file:///Users/christian/Documents/DM APP/dm_app/server/combat/combat-prompts.ts)
+- Deprecate this file or merge it into `prompts.ts`.
+
+### Phase 2: Content (Unification)
+Goal: Rewrite the prompts to ensure a consistent "Chaos Weaver" narrative voice across the application.
+
+#### [MODIFY] [prompts.ts](file:///Users/christian/Documents/DM APP/dm_app/server/prompts.ts)
+- Update `buildDMPrompt` to use Chaos Weaver style (currently generic).
+- Update `buildCampaignGenerationPrompt` to align with the tone.
+- Update `buildCharacterGenerationPrompt` to ensure consistent formatting.
+- Refine combat prompts if necessary.
+
+## Verification Plan
+
+### Phase 1 Verification (Architecture)
+1.  **Regression Testing**: Ensure all features (Chat, Combat, Generation) still work exactly as before.
+
+### Phase 2 Verification (Content)
+1.  **Manual Review**: Check the "personality" of the responses.
+2.  **Consistency Check**: Ensure the DM doesn't switch personalities between combat and narrative.
 
 ### 4. Flow Modification
 *   **New Campaign Flow**:

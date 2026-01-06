@@ -11,33 +11,33 @@ export async function invokeLLMWithSettings(
 ): Promise<InvokeResult> {
   try {
     const settings = await getUserSettings(userId);
-    
+
     // If using Manus built-in or no settings, use default invokeLLM
     if (!settings || settings.llmProvider === 'manus') {
       return invokeLLM(params);
     }
-    
+
     // Build provider-specific API URL
     const apiUrls: Record<string, string> = {
       openai: 'https://api.openai.com/v1/chat/completions',
       anthropic: 'https://api.anthropic.com/v1/messages',
       google: 'https://generativelanguage.googleapis.com/v1beta/models',
     };
-    
+
     const apiUrl = apiUrls[settings.llmProvider];
     if (!apiUrl) {
       throw new Error(`Unsupported LLM provider: ${settings.llmProvider}`);
     }
-    
+
     if (!settings.llmApiKey) {
       throw new Error(`API key not configured for provider: ${settings.llmProvider}`);
     }
-    
+
     // Use configured model or provider default
     const model = settings.llmModel || getDefaultModel(settings.llmProvider);
-    
+
     console.log(`[LLM] Using provider: ${settings.llmProvider}, model: ${model}`);
-    
+
     // Handle provider-specific API formats
     if (settings.llmProvider === 'anthropic') {
       return await invokeAnthropic(apiUrl, settings.llmApiKey, model, params);
@@ -72,7 +72,7 @@ async function invokeOpenAI(
     model,
     messages: params.messages,
   };
-  
+
   if (params.tools) payload.tools = params.tools;
   if (params.tool_choice || params.toolChoice) {
     payload.tool_choice = params.tool_choice || params.toolChoice;
@@ -83,7 +83,7 @@ async function invokeOpenAI(
   if (params.response_format || params.responseFormat) {
     payload.response_format = params.response_format || params.responseFormat;
   }
-  
+
   const response = await fetch(apiUrl, {
     method: 'POST',
     headers: {
@@ -92,32 +92,32 @@ async function invokeOpenAI(
     },
     body: JSON.stringify(payload),
   });
-  
+
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(
       `OpenAI API failed: ${response.status} ${response.statusText} – ${errorText}`
     );
   }
-  
+
   const result = await response.json();
-  
+
   // Validate OpenAI response structure
   if (!result || typeof result !== 'object') {
     console.error('[OpenAI] Invalid response - not an object:', result);
     throw new Error('OpenAI API returned invalid response format');
   }
-  
+
   if (!result.choices || !Array.isArray(result.choices) || result.choices.length === 0) {
     console.error('[OpenAI] Invalid response - no choices array:', result);
     throw new Error('OpenAI API returned response without choices');
   }
-  
+
   if (!result.choices[0].message) {
     console.error('[OpenAI] Invalid response - no message in first choice:', result);
     throw new Error('OpenAI API returned response without message');
   }
-  
+
   return result as InvokeResult;
 }
 
@@ -130,22 +130,37 @@ async function invokeAnthropic(
   // Extract system message
   const systemMessage = params.messages.find(m => m.role === 'system');
   const userMessages = params.messages.filter(m => m.role !== 'system');
-  
+
+  // Check if JSON mode is requested
+  const wantsJson = params.response_format?.type === 'json_object' ||
+    params.responseFormat?.type === 'json_object';
+
+  // Build messages array, potentially with JSON prefill
+  let messagesArray = userMessages.map(m => ({
+    role: m.role === 'assistant' ? 'assistant' : 'user',
+    content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
+  }));
+
+  // For JSON mode, add assistant prefill to encourage JSON output
+  if (wantsJson) {
+    messagesArray.push({
+      role: 'assistant',
+      content: '{',
+    });
+  }
+
   const payload: Record<string, unknown> = {
     model,
-    messages: userMessages.map(m => ({
-      role: m.role === 'assistant' ? 'assistant' : 'user',
-      content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
-    })),
+    messages: messagesArray,
     max_tokens: params.max_tokens || params.maxTokens || 4096,
   };
-  
+
   if (systemMessage) {
-    payload.system = typeof systemMessage.content === 'string' 
-      ? systemMessage.content 
+    payload.system = typeof systemMessage.content === 'string'
+      ? systemMessage.content
       : JSON.stringify(systemMessage.content);
   }
-  
+
   const response = await fetch(apiUrl, {
     method: 'POST',
     headers: {
@@ -155,26 +170,31 @@ async function invokeAnthropic(
     },
     body: JSON.stringify(payload),
   });
-  
+
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(
       `Anthropic API failed: ${response.status} ${response.statusText} – ${errorText}`
     );
   }
-  
+
   const result = await response.json();
-  
+
   // Validate response structure
   if (!result || !result.content || !Array.isArray(result.content) || result.content.length === 0) {
     throw new Error(`Invalid Anthropic API response structure: ${JSON.stringify(result)}`);
   }
-  
-  const textContent = result.content[0]?.text;
+
+  let textContent = result.content[0]?.text;
   if (typeof textContent !== 'string') {
     throw new Error(`Anthropic API response missing text content: ${JSON.stringify(result.content[0])}`);
   }
-  
+
+  // If we used JSON prefill, prepend the opening brace back
+  if (wantsJson && !textContent.startsWith('{')) {
+    textContent = '{' + textContent;
+  }
+
   // Convert Anthropic format to OpenAI format
   return {
     id: result.id || 'anthropic-' + Date.now(),
@@ -203,7 +223,7 @@ async function invokeGoogle(
   params: InvokeParams
 ): Promise<InvokeResult> {
   const apiUrl = `${baseUrl}/${model}:generateContent?key=${apiKey}`;
-  
+
   // Convert messages to Gemini format
   const contents = params.messages
     .filter(m => m.role !== 'system')
@@ -213,23 +233,34 @@ async function invokeGoogle(
         text: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
       }],
     }));
-  
+
   const systemInstruction = params.messages.find(m => m.role === 'system');
-  
+
+  // Check if JSON mode is requested
+  const wantsJson = params.response_format?.type === 'json_object' ||
+    params.responseFormat?.type === 'json_object';
+
   const payload: Record<string, unknown> = {
     contents,
   };
-  
+
   if (systemInstruction) {
     payload.systemInstruction = {
       parts: [{
-        text: typeof systemInstruction.content === 'string' 
-          ? systemInstruction.content 
+        text: typeof systemInstruction.content === 'string'
+          ? systemInstruction.content
           : JSON.stringify(systemInstruction.content),
       }],
     };
   }
-  
+
+  // Add JSON mode configuration for Google/Gemini
+  if (wantsJson) {
+    payload.generationConfig = {
+      responseMimeType: 'application/json',
+    };
+  }
+
   const response = await fetch(apiUrl, {
     method: 'POST',
     headers: {
@@ -237,31 +268,31 @@ async function invokeGoogle(
     },
     body: JSON.stringify(payload),
   });
-  
+
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(
       `Google API failed: ${response.status} ${response.statusText} – ${errorText}`
     );
   }
-  
+
   const result = await response.json();
-  
+
   // Validate response structure
   if (!result || !result.candidates || !Array.isArray(result.candidates) || result.candidates.length === 0) {
     throw new Error(`Invalid Google API response structure: ${JSON.stringify(result)}`);
   }
-  
+
   const candidate = result.candidates[0];
   if (!candidate || !candidate.content || !candidate.content.parts || !Array.isArray(candidate.content.parts) || candidate.content.parts.length === 0) {
     throw new Error(`Invalid Google API candidate structure: ${JSON.stringify(candidate)}`);
   }
-  
+
   const textContent = candidate.content.parts[0]?.text;
   if (typeof textContent !== 'string') {
     throw new Error(`Google API response missing text content: ${JSON.stringify(candidate.content.parts[0])}`);
   }
-  
+
   // Convert Gemini format to OpenAI format
   return {
     id: 'gemini-' + Date.now(),

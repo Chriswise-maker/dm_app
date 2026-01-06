@@ -43,17 +43,17 @@ async function startServer() {
   console.log('[2] Express created');
   const server = createServer(app);
   console.log('[3] HTTP server created');
-  
+
   // Configure body parser with larger size limit for file uploads
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
   console.log('[4] Body parser configured');
-  
+
   // OAuth callback under /api/oauth/callback
   console.log('[5] Registering OAuth routes...');
   registerOAuthRoutes(app);
   console.log('[6] OAuth routes registered');
-  
+
   // tRPC API
   console.log('[7] Setting up tRPC...');
   app.use(
@@ -64,7 +64,7 @@ async function startServer() {
     })
   );
   console.log('[8] tRPC configured');
-  
+
   // development mode uses Vite, production mode uses static files
   if (process.env.NODE_ENV === "development") {
     console.log('[9] Setting up Vite...');

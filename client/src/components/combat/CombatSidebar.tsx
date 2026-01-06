@@ -84,7 +84,10 @@ export default function CombatSidebar({ combatState, sessionId, refetchCombatSta
         if (newHPStr !== undefined && newHPStr !== null) {
             const newHP = Math.max(0, Math.min(combatant.hpMax, parseInt(newHPStr) || 0));
             updateHPMutation.mutate({ combatantId: combatant.id, newHP });
-            setEditingHP({ ...editingHP, [combatant.id]: undefined });
+            // Remove the editing state for this combatant
+            const updated = { ...editingHP };
+            delete updated[combatant.id];
+            setEditingHP(updated);
         }
     };
 

@@ -3,6 +3,7 @@ import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
 import { z } from "zod";
+import type { Combatant } from "../drizzle/schema";
 
 export const appRouter = router({
   // if you need to use socket.io, read and register route in server/_core/index.ts, all api should start with '/api/' so that the gateway can route correctly
@@ -61,43 +62,15 @@ export const appRouter = router({
         // 1. Get user settings
         const userSettings = await db.getUserSettings(ctx.user.id);
 
-        // Use a dedicated, language-neutral system prompt for campaign generation
-        // This ensures the generator focuses on the task (JSON creation) and respects the user's language instructions
-        // without being influenced by the "DM Persona" (which might be English-biased).
-        const campaignSystemPrompt = `You are an expert campaign generator.
-Generate creative, engaging campaign settings exactly as instructed.
-CRITICAL: Respect ALL language requirements. If the user specifies languages, follow them precisely.`;
-
         // 2. Construct Generation Prompt
-        const customGenerationPrompt = userSettings?.campaignGenerationPrompt;
-
-        let generationPrompt;
-        if (customGenerationPrompt) {
-          generationPrompt = `${customGenerationPrompt}
-${input.prompt ? `\nAdditional Request: "${input.prompt}"` : ''}
-
-IMPORTANT: Return ONLY a JSON object. Respect any language instructions above.
-{
-  "title": "Campaign title (in the requested language if specified)",
-  "narrativePrompt": "Detailed world description (in the requested language if specified)",
-  "prologue": "Opening DM message (in the requested language if specified)"
-}`;
-        } else {
-          generationPrompt = `Generate a D&D 5e campaign setting.
-${input.prompt ? `User Request/Theme: "${input.prompt}"` : 'Theme: Create a random, creative, and engaging setting.'}
-
-Return ONLY a JSON object with this exact structure:
-{
-  "title": "A short, evocative campaign title",
-  "narrativePrompt": "A detailed paragraph describing the world, tone, major factions, and central conflict. This will serve as the 'World Bible' for the AI DM.",
-  "prologue": "An immersive opening message from the DM to the player. It should set the scene, establish the atmosphere, and end with a question or prompt that invites the player to introduce their character (e.g., 'Who are you?', 'What brings you to this wretched hive?')."
-}`;
-        }
+        const { buildCampaignGenerationPrompt, buildCampaignUserPrompt } = await import('./prompts');
+        const systemPrompt = buildCampaignGenerationPrompt(userSettings);
+        const generationPrompt = buildCampaignUserPrompt(userSettings, input.prompt);
 
         // 3. Call LLM
         const response = await invokeLLMWithSettings(ctx.user.id, {
           messages: [
-            { role: 'system', content: campaignSystemPrompt + '\nReturn ONLY raw JSON. No markdown formatting.' },
+            { role: 'system', content: systemPrompt + '\nReturn ONLY raw JSON. No markdown formatting.' },
             { role: 'user', content: generationPrompt },
           ],
         });
@@ -260,57 +233,15 @@ Return ONLY a JSON object with this exact structure:
         const session = await db.getSession(input.sessionId);
         if (!session) throw new Error('Session not found');
 
-        const prompt = `Generate a D&D 5th Edition character with the following parameters:
-${input.className ? `Class: ${input.className}` : 'Class: Choose an appropriate class'}
-${input.race ? `Race: ${input.race}` : 'Race: Choose an appropriate race'}
-${input.background ? `Background: ${input.background}` : 'Background: Choose an appropriate background'}
-Level: ${input.level}
-
-Create a complete, rules-compliant D&D 5e character. Follow these rules:
-
-1. **Ability Scores**: Use standard array (15, 14, 13, 12, 10, 8) distributed appropriately for the class
-2. **Hit Points**: Calculate based on class hit dice (e.g., Fighter d10, Wizard d6) + CON modifier × level
-3. **Armor Class**: Based on starting equipment and DEX modifier
-4. **Starting Equipment**: Use Player's Handbook starting equipment for the class and background
-5. **Personality**: Create a brief but engaging personality description
-
-Return ONLY a JSON object with this exact structure:
-{
-  "name": "character name",
-  "className": "class name",
-  "race": "race name",
-  "level": ${input.level},
-  "hpMax": calculated_hp,
-  "hpCurrent": calculated_hp,
-  "ac": calculated_ac,
-  "stats": {
-    "str": number,
-    "dex": number,
-    "con": number,
-    "int": number,
-    "wis": number,
-    "cha": number
-  },
-  "inventory": ["item1", "item2", "item3"],
-  "notes": "Brief personality, background, and appearance description (2-3 sentences)"
-}`;
-
-        let systemPrompt = 'You are a D&D 5e character creation expert. Return ONLY raw JSON with no markdown formatting, no code blocks, no explanatory text. Just the JSON object.';
-
-        // Add campaign narrative prompt if it exists
-        if (session.narrativePrompt) {
-          systemPrompt += `
-
-[CAMPAIGN NARRATIVE SETTING]
-${session.narrativePrompt}
-
-Create a character that fits within this campaign setting and narrative tone.`;
-        }
+        const { buildCharacterGenerationPrompt, buildCharacterUserPrompt } = await import('./prompts');
+        const userSettings = await db.getUserSettings(ctx.user.id);
+        const systemPrompt = buildCharacterGenerationPrompt(userSettings, session.narrativePrompt);
+        const userPrompt = buildCharacterUserPrompt(input);
 
         const response = await invokeLLMWithSettings(ctx.user.id, {
           messages: [
             { role: 'system', content: systemPrompt },
-            { role: 'user', content: prompt },
+            { role: 'user', content: userPrompt },
           ],
         });
 
@@ -362,17 +293,15 @@ Create a character that fits within this campaign setting and narrative tone.`;
         return db.getSessionMessages(input.sessionId, input.limit);
       }),
 
-    send: protectedProcedure
+    previewContext: protectedProcedure
       .input(z.object({
         sessionId: z.number(),
         characterId: z.number(),
-        message: z.string().min(1),
-        apiKey: z.string().optional(),
-        model: z.enum(['claude', 'gpt']).default('claude'),
+        message: z.string().optional(),
       }))
-      .mutation(async ({ ctx, input }) => {
+      .query(async ({ ctx, input }) => {
         const db = await import('./db');
-        const { invokeLLMWithSettings } = await import('./llm-with-settings');
+        const { buildChatSystemPrompt, buildChatUserPrompt } = await import('./prompts');
 
         // Get context
         const character = await db.getCharacter(input.characterId);
@@ -389,132 +318,100 @@ Create a character that fits within this campaign setting and narrative tone.`;
         const storedContext = await db.getSessionContext(input.sessionId);
         const context = db.parseSessionContext(storedContext);
 
-        // Format context sections
-        const npcsText = context.npcs && context.npcs.length > 0
-          ? context.npcs.map(npc => `- ${npc.name}: ${npc.description} (${npc.disposition || 'unknown'})`).join('\n')
-          : 'None encountered yet';
-
-        const locationsText = context.locations && context.locations.length > 0
-          ? context.locations.map(loc => `- ${loc.name}: ${loc.description}`).join('\n')
-          : 'None visited yet';
-
-        const plotPointsText = context.plotPoints && context.plotPoints.length > 0
-          ? context.plotPoints.filter(p => !p.resolved).map(p => `- [${p.importance}] ${p.summary}`).join('\n')
-          : 'None established yet';
-
-        const itemsText = context.items && context.items.length > 0
-          ? context.items.map(i => `- ${i.name}: ${i.description} (${i.location || 'unknown location'})`).join('\n')
-          : 'None tracked yet';
-
-        const questsText = context.quests && context.quests.length > 0
-          ? context.quests.filter(q => q.progress !== 'completed' && q.progress !== 'failed')
-            .map(q => `- ${q.name} (${q.progress}): ${q.description}`).join('\n')
-          : 'None active';
-
-        // Format last 10 messages for immediate context
-        const recentEvents = recentMessages
-          .map(m => `${m.characterName}: ${m.content}`)
-          .join('\n');
-
         // Get combat state if in combat
         const combatState = await db.getCombatState(input.sessionId);
-        let combatContext = '';
-
+        let combatants: Combatant[] = [];
         if (combatState && combatState.inCombat === 1) {
-          const combatants = await db.getCombatants(combatState.id);
+          combatants = await db.getCombatants(combatState.id);
           combatants.sort((a, b) => b.initiative - a.initiative);
-
-          const currentCombatant = combatants[combatState.currentTurnIndex];
-
-          combatContext = `\n[GAME STATE - STRICT]
-The following JSON defines the EXACT state of the game. You MUST use these exact names and stats. Do not invent new enemies or rename existing ones.
-
-${JSON.stringify({
-            round: combatState.currentRound,
-            currentTurn: {
-              name: currentCombatant?.name || 'Unknown',
-              initiative: currentCombatant?.initiative || 0
-            },
-            combatants: combatants.map(c => ({
-              name: c.name,
-              type: c.type,
-              initiative: c.initiative,
-              hp: `${c.hpCurrent}/${c.hpMax}`,
-              ac: c.ac,
-              status: c.hpCurrent <= 0 ? 'DEFEATED' : 'ACTIVE',
-              isCurrentTurn: c.id === currentCombatant?.id
-            }))
-          }, null, 2)}
-
-**Combat Instructions:**
-1. Use the EXACT "name" from the JSON above.
-2. Track HP changes based on the "hp" field.
-3. If status is "DEFEATED", that enemy is dead/unconscious.
-4. Narrate the action for "currentTurn".
-`;
         }
-
-        // Build enriched prompt with extracted context
-        const enrichedPrompt = `[CAMPAIGN CONTEXT]
-**Known NPCs:**
-${npcsText}
-
-**Visited Locations:**
-${locationsText}
-
-**Active Plot Points:**
-${plotPointsText}
-
-**Notable Items:**
-${itemsText}
-
-**Active Quests:**
-${questsText}
-
-[RECENT EVENTS - Last 10 Messages]
-${recentEvents}
-${combatContext}
-[ACTIVE CHARACTER]
-Name: ${character.name}
-Class: ${character.className} Level ${character.level}
-HP: ${character.hpCurrent}/${character.hpMax}
-AC: ${character.ac}
-Stats: STR ${stats.str}, DEX ${stats.dex}, CON ${stats.con}, INT ${stats.int}, WIS ${stats.wis}, CHA ${stats.cha}
-Inventory: ${inventory.join(', ') || 'Empty'}
-Notes: ${character.notes || 'None'}
-
-[CURRENT ACTION]
-${character.name}: ${input.message}
-
-Respond as the Dungeon Master. Maintain consistency with established NPCs, locations, and plot points. If combat occurs, clearly state damage dealt and HP changes.`;
 
         // Get user's custom system prompt or use default
         const userSettings = await db.getUserSettings(ctx.user.id);
-        const defaultSystemPrompt = `You are an expert Dungeon Master for D&D 5th Edition.
-Maintain narrative consistency based on the provided game state.
-Be creative but respect established facts and character conditions.
-During combat, track damage dealt and specify HP changes clearly.
-Use D&D 5e rules for all mechanics.
-IMPORTANT: When narrating combat, use the EXACT names of enemies as listed in the context (e.g., "Dragon-Touched Revolutionary 1", not "Dragon Brute"). This is critical for tracking game state.`;
 
-        let systemPrompt = userSettings?.systemPrompt || defaultSystemPrompt;
+        const systemPrompt = buildChatSystemPrompt(userSettings, session.narrativePrompt);
+        const enrichedPrompt = buildChatUserPrompt(
+          character,
+          stats,
+          inventory,
+          session,
+          recentMessages,
+          context,
+          combatState,
+          combatants,
+          input.message || '(User is typing...)'
+        );
 
-        // Add campaign narrative prompt if it exists
-        if (session.narrativePrompt) {
-          systemPrompt += `
+        return {
+          systemPrompt,
+          enrichedPrompt,
+          databaseState: context
+        };
+      }),
 
-[CAMPAIGN NARRATIVE SETTING & TONE]
-${session.narrativePrompt}
+    send: protectedProcedure
+      .input(z.object({
+        sessionId: z.number(),
+        characterId: z.number(),
+        message: z.string().min(1),
+        apiKey: z.string().optional(),
+        model: z.enum(['claude', 'gpt']).default('claude'),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await import('./db');
+        const { invokeLLMWithSettings } = await import('./llm-with-settings');
+        const { buildChatSystemPrompt, buildChatUserPrompt } = await import('./prompts');
+        const { parseStructuredResponse, hasCombatInitiation, hasCombatEnd, getEnemies } = await import('./response-parser');
+        const { handleAutoCombatInitiation, handleAutoCombatEnd } = await import('./combat/combat-helpers');
 
-Follow this narrative guidance throughout all responses. Maintain the established setting, tone, themes, and style.`;
+        // Get context
+        const character = await db.getCharacter(input.characterId);
+        if (!character) throw new Error('Character not found');
+
+        const session = await db.getSession(input.sessionId);
+        if (!session) throw new Error('Session not found');
+
+        const recentMessages = await db.getSessionMessages(input.sessionId, 10);
+        const stats = JSON.parse(character.stats);
+        const inventory = JSON.parse(character.inventory);
+
+        // Get extracted context
+        const storedContext = await db.getSessionContext(input.sessionId);
+        const context = db.parseSessionContext(storedContext);
+
+        // Get combat state if in combat
+        const existingCombatState = await db.getCombatState(input.sessionId);
+        let combatants: Combatant[] = [];
+        if (existingCombatState && existingCombatState.inCombat === 1) {
+          combatants = await db.getCombatants(existingCombatState.id);
+          combatants.sort((a, b) => b.initiative - a.initiative);
         }
 
-        // Get LLM response using user settings
+        // Get user's custom system prompt or use default
+        // Enable structured output for automatic combat detection
+        const userSettings = await db.getUserSettings(ctx.user.id);
+        const systemPrompt = buildChatSystemPrompt(userSettings, session.narrativePrompt, true); // Enable structured output
+
+        const enrichedPrompt = buildChatUserPrompt(
+          character,
+          stats,
+          inventory,
+          session,
+          recentMessages,
+          context,
+          existingCombatState,
+          combatants,
+          input.message
+        );
+
+        // Get LLM response with JSON mode enabled
+        // This triggers prefill technique for Anthropic and native JSON mode for OpenAI/Google
         const response = await invokeLLMWithSettings(ctx.user.id, {
           messages: [
             { role: 'system', content: systemPrompt },
             { role: 'user', content: enrichedPrompt },
           ],
+          response_format: { type: 'json_object' },
         });
 
         if (!response.choices || !response.choices[0] || !response.choices[0].message) {
@@ -522,10 +419,48 @@ Follow this narrative guidance throughout all responses. Maintain the establishe
           throw new Error('Failed to get DM response: Invalid response from LLM');
         }
 
-        const content = response.choices[0].message.content;
-        const dmResponse = typeof content === 'string' ? content : 'The DM is thinking...';
+        const rawContent = response.choices[0].message.content;
+        const contentString = typeof rawContent === 'string' ? rawContent : JSON.stringify(rawContent);
 
-        // Save messages
+        // Debug: Log the raw response to see if LLM is returning JSON
+        console.log('[Chat] Raw LLM response (first 500 chars):', contentString.substring(0, 500));
+
+        // Parse the structured response
+        const structured = parseStructuredResponse(contentString);
+        const dmNarrative = structured.narrative;
+
+        // Debug: Log parsing result
+        console.log('[Chat] Parsed response - hasGameStateChanges:', !!structured.gameStateChanges);
+        console.log('[Chat] Parsed response - combatInitiated:', structured.gameStateChanges?.combatInitiated);
+
+        // Track if combat was triggered
+        let combatTriggered = false;
+        let enemiesAdded = 0;
+
+        // Handle automatic combat initiation
+        if (hasCombatInitiation(structured) && !existingCombatState?.inCombat) {
+          console.log('[AutoCombat] Combat triggered by DM response');
+          const enemies = getEnemies(structured);
+
+          // Initiate combat even if no enemies are provided (fallback detection case)
+          // This allows manual enemy entry later
+          const result = await handleAutoCombatInitiation(
+            input.sessionId,
+            input.characterId,
+            enemies // May be empty for keyword-detected combat
+          );
+          combatTriggered = result.success;
+          enemiesAdded = result.enemiesAdded;
+          console.log(`[AutoCombat] Result: ${enemiesAdded} enemies added, success: ${combatTriggered}`);
+        }
+
+        // Handle automatic combat end
+        if (hasCombatEnd(structured) && existingCombatState?.inCombat) {
+          console.log('[AutoCombat] Combat ended by DM response');
+          await handleAutoCombatEnd(input.sessionId);
+        }
+
+        // Save messages (only the narrative part, not the full JSON)
         await db.saveMessage({
           sessionId: input.sessionId,
           characterName: character.name,
@@ -536,15 +471,15 @@ Follow this narrative guidance throughout all responses. Maintain the establishe
         await db.saveMessage({
           sessionId: input.sessionId,
           characterName: 'DM',
-          content: dmResponse,
+          content: dmNarrative,
           isDm: 1,
         });
 
-        // Extract context from the interaction
+        // Extract context from the interaction (using narrative only)
         const { extractContextFromResponse, mergeContext } = await import('./context-extraction');
 
         const extractedContext = await extractContextFromResponse(
-          dmResponse,
+          dmNarrative,
           input.message,
           character.name
         );
@@ -612,19 +547,8 @@ Follow this narrative guidance throughout all responses. Maintain the establishe
             .map(m => `${m.characterName}: ${m.content}`)
             .join('\n');
 
-          const summaryPrompt = `Previous summary: ${session.currentSummary || 'None'}
-
-Recent messages:
-${messageHistory}
-
-Create a concise summary (max 500 words) that captures:
-1. Current location and situation
-2. Active quest/objective
-3. Important NPCs met
-4. Key items acquired or lost
-5. Unresolved plot threads
-
-Focus on information needed for narrative continuity.`;
+          const { buildSummaryPrompt } = await import('./prompts');
+          const summaryPrompt = buildSummaryPrompt(session.currentSummary || 'None', messageHistory);
 
           const summaryResponse = await invokeLLMWithSettings(ctx.user.id, {
             messages: [{ role: 'user', content: summaryPrompt }],
@@ -641,7 +565,12 @@ Focus on information needed for narrative continuity.`;
           }
         }
 
-        return { response: dmResponse };
+        // Return response with combat state info
+        return {
+          response: dmNarrative,
+          combatTriggered,
+          enemiesAdded,
+        };
       }),
 
 
@@ -722,6 +651,10 @@ Focus on information needed for narrative continuity.`;
         ttsApiKey: settings.ttsApiKey,
         systemPrompt: settings.systemPrompt,
         campaignGenerationPrompt: settings.campaignGenerationPrompt,
+        characterGenerationPrompt: settings.characterGenerationPrompt,
+        combatTurnPrompt: settings.combatTurnPrompt,
+        combatNarrationPrompt: settings.combatNarrationPrompt,
+        combatSummaryPrompt: settings.combatSummaryPrompt,
       };
     }),
 
@@ -737,6 +670,10 @@ Focus on information needed for narrative continuity.`;
         ttsApiKey: z.string().nullable(),
         systemPrompt: z.string().nullable(),
         campaignGenerationPrompt: z.string().nullable(),
+        characterGenerationPrompt: z.string().nullable(),
+        combatTurnPrompt: z.string().nullable(),
+        combatNarrationPrompt: z.string().nullable(),
+        combatSummaryPrompt: z.string().nullable(),
       }))
       .mutation(async ({ ctx, input }) => {
         const db = await import('./db');
@@ -752,6 +689,10 @@ Focus on information needed for narrative continuity.`;
           ttsApiKey: input.ttsApiKey,
           systemPrompt: input.systemPrompt,
           campaignGenerationPrompt: input.campaignGenerationPrompt,
+          characterGenerationPrompt: input.characterGenerationPrompt,
+          combatTurnPrompt: input.combatTurnPrompt,
+          combatNarrationPrompt: input.combatNarrationPrompt,
+          combatSummaryPrompt: input.combatSummaryPrompt,
         });
         return { success: true };
       }),
@@ -781,6 +722,7 @@ Focus on information needed for narrative continuity.`;
         const db = await import('./db');
         const { invokeLLMWithSettings } = await import('./llm-with-settings');
         const { DiceRoller } = await import('./combat/dice-roller');
+        const { buildEnemyGenerationSystemPrompt, buildEnemyGenerationUserPrompt } = await import('./prompts');
 
         // Get session and characters
         const session = await db.getSession(input.sessionId);
@@ -801,38 +743,13 @@ Focus on information needed for narrative continuity.`;
         );
 
         // Generate enemies using LLM
-        const prompt = `You are creating a D&D 5e combat encounter.
-
-PARTY INFORMATION:
-${characters.map(c => `- ${c.name} (${c.className} Level ${c.level}, AC ${c.ac}, HP ${c.hpCurrent}/${c.hpMax})`).join('\n')}
-Average Party Level: ${avgLevel}
-
-RECENT NARRATIVE CONTEXT:
-${narrativeContext}
-
-Generate 1-4 appropriate enemies for this encounter. The enemies should:
-1. Fit the narrative context
-2. Be challenging but fair for a level ${avgLevel} party
-3. Have proper D&D 5e stats
-
-Return ONLY a JSON array with this EXACT structure:
-[
-  {
-    "name": "Enemy name (e.g., 'Goblin Archer 1')",
-    "ac": armor_class_number,
-    "hpMax": hit_points_number,
-    "attackBonus": attack_bonus_number,
-    "damageFormula": "dice_formula (e.g., '1d6+2')",
-    "damageType": "damage type (e.g., 'slashing', 'piercing')"
-  }
-]
-
-CRITICAL: Return ONLY the JSON array. No markdown, no explanation.`;
+        const systemPrompt = buildEnemyGenerationSystemPrompt();
+        const userPrompt = buildEnemyGenerationUserPrompt(characters, avgLevel, narrativeContext);
 
         const response = await invokeLLMWithSettings(ctx.user.id, {
           messages: [
-            { role: 'system', content: 'You are a D&D 5e encounter generator. Return only valid JSON.' },
-            { role: 'user', content: prompt },
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt },
           ],
         });
 
@@ -1180,6 +1097,52 @@ CRITICAL: Return ONLY the JSON array. No markdown, no explanation.`;
       .input(z.object({ sessionId: z.number() }))
       .mutation(async ({ input }) => {
         const db = await import('./db');
+        const { mergeContext } = await import('./context-extraction');
+
+        // Helper function to detect if an enemy has a proper name
+        const isNamedEnemy = (name: string): boolean => {
+          // Check if name ends with a number (e.g., "Guard 2", "Goblin 1")
+          if (/\s+\d+$/.test(name)) return false;
+
+          // Check if name is just "Type Number" pattern
+          if (/^[A-Z][a-z]+\s+\d+$/.test(name)) return false;
+
+          // Otherwise, assume it's a named enemy
+          return true;
+        };
+
+        // Get combat state and combatants before ending
+        const combatState = await db.getCombatState(input.sessionId);
+        if (combatState) {
+          const combatants = await db.getCombatants(combatState.id);
+
+          // Filter for named enemies
+          const namedEnemies = combatants.filter(c =>
+            c.type === 'enemy' && isNamedEnemy(c.name)
+          );
+
+          if (namedEnemies.length > 0) {
+            // Get existing context
+            const storedContext = await db.getSessionContext(input.sessionId);
+            const existingContext = db.parseSessionContext(storedContext);
+
+            // Create NPC entries for named enemies
+            const newNpcs = namedEnemies.map(enemy => ({
+              name: enemy.name,
+              description: `${enemy.hpCurrent <= 0 ? 'Defeated' : 'Survived'} in combat. AC ${enemy.ac}, HP ${enemy.hpMax}`,
+              disposition: enemy.hpCurrent <= 0 ? 'hostile (defeated)' : 'hostile (escaped)',
+              notes: `Encountered in combat. ${enemy.hpCurrent <= 0 ? 'Was killed.' : 'Survived the encounter.'}`
+            }));
+
+            // Merge with existing context
+            const mergedContext = mergeContext(existingContext, { npcs: newNpcs });
+
+            // Save updated context
+            await db.upsertSessionContext(input.sessionId, mergedContext);
+
+            console.log(`[Combat End] Saved ${namedEnemies.length} named enemies to permanent NPC database:`, newNpcs.map(n => n.name).join(', '));
+          }
+        }
 
         // End combat (deletes combatants and sets inCombat = 0)
         await db.endCombat(input.sessionId);
@@ -1214,6 +1177,138 @@ CRITICAL: Return ONLY the JSON array. No markdown, no explanation.`;
         });
 
         return { success: true };
+      }),
+
+    // Get combat action log for debugging
+    getCombatLog: protectedProcedure
+      .input(z.object({
+        sessionId: z.number(),
+        limit: z.number().optional().default(20),
+      }))
+      .query(async ({ input }) => {
+        const db = await import('./db');
+
+        // Get combat state
+        const state = await db.getCombatState(input.sessionId);
+        if (!state) {
+          return { log: [] };
+        }
+
+        const log = await db.getCombatLog(state.id, input.limit);
+
+        return {
+          log: log.map(entry => ({
+            id: entry.id,
+            round: entry.round,
+            actorName: entry.actorName,
+            actionType: entry.actionType,
+            targetName: entry.targetName,
+            rollType: entry.rollType,
+            rollResult: entry.rollResult,
+            outcome: entry.outcome,
+            damageDealt: entry.damageDealt,
+            timestamp: entry.timestamp,
+          })),
+        };
+      }),
+
+    // Process a player attack with manual dice roll
+    processPlayerAttack: protectedProcedure
+      .input(z.object({
+        sessionId: z.number(),
+        targetName: z.string(),
+        attackRoll: z.number(), // Player's d20 + attack bonus
+        damageRoll: z.number().optional(), // Player's damage roll (if hit)
+        characterId: z.number().optional(), // For logging purposes
+      }))
+      .mutation(async ({ input }) => {
+        const db = await import('./db');
+
+        // 1. Get combat state
+        const state = await db.getCombatState(input.sessionId);
+        if (!state || state.inCombat !== 1) {
+          throw new Error('Not in combat');
+        }
+
+        // 2. Find the target
+        const combatants = await db.getCombatants(state.id);
+        const target = combatants.find(c =>
+          c.name.toLowerCase().includes(input.targetName.toLowerCase()) ||
+          input.targetName.toLowerCase().includes(c.name.toLowerCase())
+        );
+
+        if (!target) {
+          throw new Error(`Target not found: ${input.targetName}`);
+        }
+
+        // 3. Check if hit
+        const isHit = input.attackRoll >= target.ac;
+        const isCritical = input.attackRoll >= 20; // Natural 20 assumed if roll is 20+
+
+        let result: {
+          isHit: boolean;
+          isCritical: boolean;
+          attackRoll: number;
+          targetAC: number;
+          targetName: string;
+          damage?: number;
+          targetNewHP?: number;
+          targetMaxHP?: number;
+          isDead?: boolean;
+          mechanicalOutcome: string; // For DM context
+        } = {
+          isHit,
+          isCritical,
+          attackRoll: input.attackRoll,
+          targetAC: target.ac,
+          targetName: target.name,
+          mechanicalOutcome: '',
+        };
+
+        // 4. Apply damage if hit and damage provided
+        if (isHit && input.damageRoll !== undefined) {
+          const damage = Math.max(0, input.damageRoll);
+          const newHP = Math.max(0, target.hpCurrent - damage);
+          const isDead = newHP === 0;
+
+          await db.updateCombatant(target.id, { hpCurrent: newHP });
+
+          // Remove from combat if dead
+          if (isDead) {
+            await db.removeCombatant(target.id);
+          }
+
+          result = {
+            ...result,
+            damage,
+            targetNewHP: newHP,
+            targetMaxHP: target.hpMax,
+            isDead,
+          };
+
+          result.mechanicalOutcome = `[COMBAT] Attack roll ${input.attackRoll} vs AC ${target.ac} = ${isCritical ? 'CRITICAL HIT!' : 'HIT'}. ${damage} damage dealt. ${target.name}: ${newHP}/${target.hpMax} HP${isDead ? ' - DEFEATED!' : ''}.`;
+        } else if (isHit) {
+          result.mechanicalOutcome = `[COMBAT] Attack roll ${input.attackRoll} vs AC ${target.ac} = ${isCritical ? 'CRITICAL HIT!' : 'HIT'}. Awaiting damage roll.`;
+        } else {
+          result.mechanicalOutcome = `[COMBAT] Attack roll ${input.attackRoll} vs AC ${target.ac} = MISS.`;
+        }
+
+        // 5. Log the action
+        await db.logCombatAction({
+          sessionId: input.sessionId,
+          combatStateId: state.id,
+          round: state.currentRound,
+          actorName: 'Player', // Could be enhanced with character name
+          actionType: 'attack',
+          targetName: target.name,
+          rollType: 'attack',
+          rollResult: input.attackRoll,
+          outcome: isHit ? (result.isDead ? 'killed' : 'hit') : 'miss',
+          damageDealt: input.damageRoll || null,
+          narrative: null,
+        });
+
+        return result;
       }),
   }),
 });

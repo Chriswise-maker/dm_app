@@ -153,7 +153,12 @@ export async function deleteSession(sessionId: number) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
-  // Delete related data first (messages, characters, context)
+  // Delete combat-related data first (combatants references characters.id)
+  await db.delete(combatants).where(eq(combatants.sessionId, sessionId));
+  await db.delete(combatLog).where(eq(combatLog.sessionId, sessionId));
+  await db.delete(combatState).where(eq(combatState.sessionId, sessionId));
+
+  // Delete other related data
   await db.delete(messages).where(eq(messages.sessionId, sessionId));
   await db.delete(characters).where(eq(characters.sessionId, sessionId));
   await db.delete(sessionContext).where(eq(sessionContext.sessionId, sessionId));
@@ -283,6 +288,10 @@ export async function upsertUserSettings(settings: InsertUserSettings): Promise<
         ttsApiKey: settings.ttsApiKey,
         systemPrompt: settings.systemPrompt,
         campaignGenerationPrompt: settings.campaignGenerationPrompt,
+        characterGenerationPrompt: settings.characterGenerationPrompt,
+        combatTurnPrompt: settings.combatTurnPrompt,
+        combatNarrationPrompt: settings.combatNarrationPrompt,
+        combatSummaryPrompt: settings.combatSummaryPrompt,
         updatedAt: new Date(),
       },
     });

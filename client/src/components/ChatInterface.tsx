@@ -3,11 +3,13 @@ import { trpc } from '@/lib/trpc';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Card } from '@/components/ui/card';
-import { Loader2, Send, Volume2, VolumeX } from 'lucide-react';
+import { Loader2, Send, Volume2, VolumeX, Swords, Dices } from 'lucide-react';
 import { toast } from 'sonner';
 import { Streamdown } from 'streamdown';
 import { useCombatState } from '@/hooks/combat/useCombatState';
 import InitiativeDisplay from '@/components/combat/InitiativeDisplay';
+import ContextViewer from '@/components/ContextViewer';
+import { Input } from '@/components/ui/input';
 
 interface ChatInterfaceProps {
   sessionId: number | null;
@@ -42,6 +44,15 @@ export default function ChatInterface({
   const [playingMessageId, setPlayingMessageId] = useState<number | null>(null);
   const [audioCache, setAudioCache] = useState<Map<number, string>>(new Map());
   const [awaitingInitiativeFrom, setAwaitingInitiativeFrom] = useState<string[]>([]);
+
+  // Attack roll state
+  const [pendingAttack, setPendingAttack] = useState<{
+    targetName: string;
+    awaitingDamage: boolean;
+    attackRoll?: number;
+  } | null>(null);
+  const [attackRollInput, setAttackRollInput] = useState('');
+  const [damageRollInput, setDamageRollInput] = useState('');
 
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -80,6 +91,53 @@ export default function ChatInterface({
     onSuccess: () => {
       refetchCombatState?.();
     }
+  });
+
+  const processAttackMutation = trpc.combat.processPlayerAttack.useMutation({
+    onSuccess: (result) => {
+      refetchCombatState?.();
+
+      if (result.isHit) {
+        if (result.isDead) {
+          toast.success(`💀 ${result.targetName} defeated!`);
+          setPendingAttack(null);
+          // Send to DM for narration
+          sendMutation.mutate({
+            sessionId: sessionId!,
+            characterId: characterId!,
+            message: result.mechanicalOutcome,
+          });
+        } else if (result.damage !== undefined) {
+          toast.success(`🎯 Hit! ${result.damage} damage dealt.`);
+          setPendingAttack(null);
+          // Send to DM for narration
+          sendMutation.mutate({
+            sessionId: sessionId!,
+            characterId: characterId!,
+            message: result.mechanicalOutcome,
+          });
+        } else {
+          // Hit but awaiting damage
+          toast.info(`🎯 Hit! Roll damage.`);
+          setPendingAttack(prev => prev ? { ...prev, awaitingDamage: true, attackRoll: result.attackRoll } : null);
+        }
+      } else {
+        toast.info(`❌ Miss! (${result.attackRoll} vs AC ${result.targetAC})`);
+        setPendingAttack(null);
+        // Send to DM for narration
+        sendMutation.mutate({
+          sessionId: sessionId!,
+          characterId: characterId!,
+          message: result.mechanicalOutcome,
+        });
+      }
+
+      setAttackRollInput('');
+      setDamageRollInput('');
+    },
+    onError: (error) => {
+      toast.error('Attack failed: ' + error.message);
+    },
   });
 
   const ttsMutation = trpc.tts.generate.useMutation({
@@ -127,9 +185,10 @@ export default function ChatInterface({
       // Clear pending user message since it's now in the database
       setPendingUserMessage(null);
 
-      // Check for combat initiation
-      if (data.response.toLowerCase().includes('roll for initiative')) {
-        handleCombatInitiation();
+      // Handle automatic combat trigger from server
+      if (data.combatTriggered) {
+        toast.success(`⚔️ Combat initiated! ${data.enemiesAdded} ${data.enemiesAdded === 1 ? 'enemy' : 'enemies'} appeared!`);
+        refetchCombatState?.();
       }
 
       // Start streaming effect
@@ -153,6 +212,8 @@ export default function ChatInterface({
           if (sessionId) {
             utils.characters.list.invalidate({ sessionId });
           }
+          // Also refetch combat state in case it changed
+          refetchCombatState?.();
         }
       }, 30); // Adjust speed here (lower = faster)
     },
@@ -500,19 +561,137 @@ export default function ChatInterface({
                 className="flex-1 min-h-[60px] max-h-[200px]"
                 disabled={sendMutation.isPending}
               />
-              <Button
-                onClick={handleSend}
-                disabled={sendMutation.isPending || !message.trim()}
-                size="icon"
-                className="h-[60px] w-[60px]"
-              >
-                {sendMutation.isPending ? (
-                  <Loader2 className="h-5 w-5 animate-spin" />
-                ) : (
-                  <Send className="h-5 w-5" />
-                )}
-              </Button>
+              <div className="flex flex-col gap-2">
+                <Button
+                  onClick={handleSend}
+                  disabled={sendMutation.isPending || !message.trim()}
+                  size="icon"
+                  className="h-[60px] w-[60px]"
+                >
+                  {sendMutation.isPending ? (
+                    <Loader2 className="h-5 w-5 animate-spin" />
+                  ) : (
+                    <Send className="h-5 w-5" />
+                  )}
+                </Button>
+                <ContextViewer
+                  sessionId={sessionId}
+                  characterId={characterId}
+                  currentMessage={message}
+                />
+              </div>
             </div>
+
+            {/* Attack Roll Input Panel */}
+            {combatState?.inCombat && pendingAttack && (
+              <Card className="p-4 bg-destructive/5 border-destructive/30">
+                <div className="flex items-center gap-2 mb-3">
+                  <Dices className="h-5 w-5 text-destructive" />
+                  <span className="font-semibold">
+                    {pendingAttack.awaitingDamage
+                      ? `Roll Damage vs ${pendingAttack.targetName}`
+                      : `Attack Roll vs ${pendingAttack.targetName}`}
+                  </span>
+                </div>
+
+                {!pendingAttack.awaitingDamage ? (
+                  <div className="flex gap-2">
+                    <Input
+                      type="number"
+                      placeholder="d20 + modifier"
+                      value={attackRollInput}
+                      onChange={(e) => setAttackRollInput(e.target.value)}
+                      className="flex-1"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && attackRollInput) {
+                          processAttackMutation.mutate({
+                            sessionId: sessionId!,
+                            targetName: pendingAttack.targetName,
+                            attackRoll: parseInt(attackRollInput),
+                          });
+                        }
+                      }}
+                    />
+                    <Button
+                      onClick={() => {
+                        if (attackRollInput) {
+                          processAttackMutation.mutate({
+                            sessionId: sessionId!,
+                            targetName: pendingAttack.targetName,
+                            attackRoll: parseInt(attackRollInput),
+                          });
+                        }
+                      }}
+                      disabled={!attackRollInput || processAttackMutation.isPending}
+                    >
+                      {processAttackMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Roll Attack'}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      onClick={() => setPendingAttack(null)}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="flex gap-2">
+                    <Input
+                      type="number"
+                      placeholder="Damage roll total"
+                      value={damageRollInput}
+                      onChange={(e) => setDamageRollInput(e.target.value)}
+                      className="flex-1"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && damageRollInput) {
+                          processAttackMutation.mutate({
+                            sessionId: sessionId!,
+                            targetName: pendingAttack.targetName,
+                            attackRoll: pendingAttack.attackRoll!,
+                            damageRoll: parseInt(damageRollInput),
+                          });
+                        }
+                      }}
+                    />
+                    <Button
+                      onClick={() => {
+                        if (damageRollInput) {
+                          processAttackMutation.mutate({
+                            sessionId: sessionId!,
+                            targetName: pendingAttack.targetName,
+                            attackRoll: pendingAttack.attackRoll!,
+                            damageRoll: parseInt(damageRollInput),
+                          });
+                        }
+                      }}
+                      disabled={!damageRollInput || processAttackMutation.isPending}
+                    >
+                      {processAttackMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Apply Damage'}
+                    </Button>
+                  </div>
+                )}
+              </Card>
+            )}
+
+            {/* Quick Attack Button during combat */}
+            {combatState?.inCombat && !pendingAttack && combatState.combatants?.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {combatState.combatants
+                  .filter((c: any) => c.type === 'enemy' && c.hpCurrent > 0)
+                  .map((enemy: any) => (
+                    <Button
+                      key={enemy.id}
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setPendingAttack({ targetName: enemy.name, awaitingDamage: false })}
+                      className="gap-1"
+                    >
+                      <Swords className="h-4 w-4" />
+                      Attack {enemy.name}
+                    </Button>
+                  ))}
+              </div>
+            )}
+
             {!combatState?.inCombat && (
               <Button
                 onClick={handleCombatInitiation}
