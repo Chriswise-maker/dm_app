@@ -522,3 +522,58 @@ export async function endCombat(sessionId: number): Promise<void> {
     .set({ inCombat: 0, updatedAt: new Date() })
     .where(eq(combatState.sessionId, sessionId));
 }
+
+// ===== Combat Engine V2 State Functions =====
+
+/**
+ * Save CombatEngineV2 state to database
+ * This is the serialized BattleState JSON (excluding history)
+ */
+export async function saveCombatEngineState(sessionId: number, stateJson: string): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  // Ensure combat state row exists
+  const existing = await getCombatState(sessionId);
+  if (!existing) {
+    // Create a new combat state row with the engine state
+    await db.insert(combatState).values({
+      sessionId,
+      inCombat: 1,
+      currentRound: 1,
+      currentTurnIndex: 0,
+      engineStateJson: stateJson,
+    });
+  } else {
+    // Update existing row
+    await db.update(combatState)
+      .set({ engineStateJson: stateJson, updatedAt: new Date() })
+      .where(eq(combatState.sessionId, sessionId));
+  }
+}
+
+/**
+ * Load CombatEngineV2 state from database
+ * Returns null if no state is saved
+ */
+export async function loadCombatEngineState(sessionId: number): Promise<string | null> {
+  const db = await getDb();
+  if (!db) return null;
+
+  const state = await getCombatState(sessionId);
+  return state?.engineStateJson ?? null;
+}
+
+/**
+ * Delete CombatEngineV2 state from database
+ * Called when combat ends
+ */
+export async function deleteCombatEngineState(sessionId: number): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  await db.update(combatState)
+    .set({ engineStateJson: null, updatedAt: new Date() })
+    .where(eq(combatState.sessionId, sessionId));
+}
+

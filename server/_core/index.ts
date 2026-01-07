@@ -44,6 +44,15 @@ async function startServer() {
   const server = createServer(app);
   console.log('[3] HTTP server created');
 
+  // Normalize Content-Type charset to lowercase (body-parser rejects uppercase "UTF-8")
+  app.use((req, _res, next) => {
+    const contentType = req.headers['content-type'];
+    if (contentType && contentType.includes('charset=UTF-8')) {
+      req.headers['content-type'] = contentType.replace('charset=UTF-8', 'charset=utf-8');
+    }
+    next();
+  });
+
   // Configure body parser with larger size limit for file uploads
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));

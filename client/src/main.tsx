@@ -52,6 +52,24 @@ const trpcClient = trpc.createClient({
   ],
 });
 
+// Expose a vanilla tRPC client to window for console testing
+// This client handles superjson serialization properly for mutations
+if (typeof window !== "undefined") {
+  import("@trpc/client").then(({ createTRPCClient, httpBatchLink: vanillaHttpBatchLink }) => {
+    const vanillaClient = createTRPCClient<typeof import("../../../server/routers").AppRouter>({
+      links: [
+        vanillaHttpBatchLink({
+          url: "/api/trpc",
+          transformer: superjson,
+          // Note: Do NOT set Content-Type manually - tRPC handles it automatically
+        }),
+      ],
+    });
+    (window as any).trpc = vanillaClient;
+    console.log("[Dev] trpc client ready for console testing");
+  });
+}
+
 createRoot(document.getElementById("root")!).render(
   <trpc.Provider client={trpcClient} queryClient={queryClient}>
     <QueryClientProvider client={queryClient}>

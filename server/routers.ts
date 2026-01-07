@@ -1311,6 +1311,236 @@ export const appRouter = router({
         return result;
       }),
   }),
+
+  // =========================================================================
+  // Combat Engine V2 Router — New Deterministic Combat System
+  // =========================================================================
+  combatV2: router({
+    /**
+     * Get current combat state from the V2 engine
+     */
+    getState: protectedProcedure
+      .input(z.object({ sessionId: z.number() }))
+      .query(async ({ input }) => {
+        const { CombatEngineManager } = await import('./combat/combat-engine-manager');
+
+        // Try to get existing engine or load from DB
+        let engine = CombatEngineManager.get(input.sessionId);
+        if (!engine) {
+          engine = await CombatEngineManager.loadFromDb(input.sessionId);
+        }
+
+        const state = engine.getState();
+
+        // Return a serializable version (BattleState is already serializable except history)
+        return {
+          id: state.id,
+          sessionId: state.sessionId,
+          phase: state.phase,
+          round: state.round,
+          turnIndex: state.turnIndex,
+          turnOrder: state.turnOrder,
+          entities: state.entities.map(e => ({
+            id: e.id,
+            name: e.name,
+            type: e.type,
+            hp: e.hp,
+            maxHp: e.maxHp,
+            baseAC: e.baseAC,
+            initiative: e.initiative,
+            status: e.status,
+            attackModifier: e.attackModifier,
+            damageFormula: e.damageFormula,
+            damageType: e.damageType,
+          })),
+          currentTurnEntity: engine.getCurrentTurnEntity()?.name ?? null,
+          log: state.log.slice(-20), // Last 20 log entries
+        };
+      }),
+
+    /**
+     * Initiate combat with entities
+     */
+    initiate: protectedProcedure
+      .input(z.object({
+        sessionId: z.number(),
+        entities: z.array(z.object({
+          id: z.string(),
+          name: z.string(),
+          type: z.enum(['player', 'enemy', 'ally']),
+          hp: z.number(),
+          maxHp: z.number(),
+          baseAC: z.number(),
+          initiative: z.number().optional(),
+          initiativeModifier: z.number().optional(),
+          attackModifier: z.number().optional(),
+          damageFormula: z.string().optional(),
+          damageType: z.string().optional(),
+          isEssential: z.boolean().optional(),
+        })),
+      }))
+      .mutation(async ({ input }) => {
+        const { CombatEngineManager } = await import('./combat/combat-engine-manager');
+        const { CombatEntitySchema } = await import('./combat/combat-types');
+
+        // Create fresh engine for this session
+        const engine = CombatEngineManager.getOrCreate(input.sessionId);
+
+        // Parse and validate entities
+        const entities = input.entities.map(e => CombatEntitySchema.parse({
+          ...e,
+          initiative: e.initiative ?? 0,
+          initiativeModifier: e.initiativeModifier ?? 0,
+          attackModifier: e.attackModifier ?? 0,
+          damageFormula: e.damageFormula ?? '1d6',
+          damageType: e.damageType ?? 'bludgeoning',
+          isEssential: e.isEssential ?? (e.type === 'player'),
+          status: 'ALIVE',
+          conditions: [],
+          rangeTo: {},
+        }));
+
+        // Start combat
+        const logs = engine.initiateCombat(entities);
+
+        // Persist to database
+        await CombatEngineManager.persist(input.sessionId);
+
+        return {
+          success: true,
+          logs,
+          state: engine.getState(),
+        };
+      }),
+
+    /**
+     * Submit an action (attack, end turn, etc.)
+     */
+    submitAction: protectedProcedure
+      .input(z.object({
+        sessionId: z.number(),
+        action: z.discriminatedUnion('type', [
+          z.object({
+            type: z.literal('ATTACK'),
+            attackerId: z.string(),
+            targetId: z.string(),
+            weaponName: z.string().optional(),
+            isRanged: z.boolean().optional(),
+            advantage: z.boolean().optional(),
+            disadvantage: z.boolean().optional(),
+          }),
+          z.object({
+            type: z.literal('END_TURN'),
+            entityId: z.string(),
+          }),
+        ]),
+        dryRun: z.boolean().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        const { CombatEngineManager } = await import('./combat/combat-engine-manager');
+
+        // Get or load engine
+        let engine = CombatEngineManager.get(input.sessionId);
+        if (!engine) {
+          engine = await CombatEngineManager.loadFromDb(input.sessionId);
+        }
+
+        if (engine.getState().phase === 'IDLE') {
+          return {
+            success: false,
+            error: 'Combat not active. Call initiate first.',
+            logs: [],
+            newState: engine.getState(),
+          };
+        }
+
+        // Normalize action with defaults for optional fields
+        const normalizedAction = input.action.type === 'ATTACK'
+          ? {
+            ...input.action,
+            isRanged: input.action.isRanged ?? false,
+            advantage: input.action.advantage ?? false,
+            disadvantage: input.action.disadvantage ?? false,
+          }
+          : input.action;
+
+        // If dry run, clone state, apply action, return result without persisting
+        if (input.dryRun) {
+          const stateJson = engine.exportState();
+          const { createCombatEngine } = await import('./combat/combat-engine-v2');
+          const tempEngine = createCombatEngine(input.sessionId);
+          tempEngine.loadState(stateJson);
+
+          const result = tempEngine.submitAction(normalizedAction);
+          return {
+            success: result.success,
+            error: result.error,
+            logs: result.logs,
+            newState: result.newState,
+            isDryRun: true,
+          };
+        }
+
+        // Apply action for real
+        const result = engine.submitAction(normalizedAction);
+
+        // Persist if successful
+        if (result.success) {
+          await CombatEngineManager.persist(input.sessionId);
+        }
+
+        return {
+          success: result.success,
+          error: result.error,
+          logs: result.logs,
+          newState: result.newState,
+        };
+      }),
+
+    /**
+     * Undo the last action
+     */
+    undo: protectedProcedure
+      .input(z.object({ sessionId: z.number() }))
+      .mutation(async ({ input }) => {
+        const { CombatEngineManager } = await import('./combat/combat-engine-manager');
+
+        const engine = CombatEngineManager.get(input.sessionId);
+        if (!engine) {
+          return { success: false, error: 'No active combat engine' };
+        }
+
+        const undoSuccess = engine.undoLastAction();
+
+        if (undoSuccess) {
+          await CombatEngineManager.persist(input.sessionId);
+        }
+
+        return {
+          success: undoSuccess,
+          newState: engine.getState(),
+        };
+      }),
+
+    /**
+     * End combat and cleanup
+     */
+    endCombat: protectedProcedure
+      .input(z.object({ sessionId: z.number() }))
+      .mutation(async ({ input }) => {
+        const { CombatEngineManager } = await import('./combat/combat-engine-manager');
+
+        const engine = CombatEngineManager.get(input.sessionId);
+        if (engine) {
+          engine.endCombat('Combat ended by user');
+        }
+
+        // Destroy engine and remove persisted state
+        await CombatEngineManager.destroy(input.sessionId);
+
+        return { success: true };
+      }),
+  }),
 });
 
 export type AppRouter = typeof appRouter;

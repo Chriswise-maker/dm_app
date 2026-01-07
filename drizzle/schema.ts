@@ -139,6 +139,8 @@ export const combatState = pgTable("combatState", {
   inCombat: integer("inCombat").notNull().default(0), // 0 = false, 1 = true
   currentRound: integer("currentRound").notNull().default(0),
   currentTurnIndex: integer("currentTurnIndex").notNull().default(0),
+  // V2 Engine State: Serialized JSON of the full BattleState (excluding history)
+  engineStateJson: text("engineStateJson"),
   createdAt: timestamp("createdAt", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updatedAt", { withTimezone: true }).defaultNow().notNull(),
 });
