@@ -167,6 +167,54 @@ export async function deleteSession(sessionId: number) {
   await db.delete(sessions).where(eq(sessions.id, sessionId));
 }
 
+/**
+ * Reset a session to clean state for testing
+ * Keeps: session metadata (name, narrative prompt), characters
+ * Clears: messages, combat state, combat logs, context
+ */
+export async function resetSession(sessionId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  console.log(`[DB] Resetting session ${sessionId}...`);
+
+  // Clear combat-related data
+  await db.delete(combatants).where(eq(combatants.sessionId, sessionId));
+  await db.delete(combatLog).where(eq(combatLog.sessionId, sessionId));
+
+  // Reset combat state (don't delete, just reset)
+  await db.update(combatState)
+    .set({
+      inCombat: 0,
+      currentRound: 0,
+      currentTurnIndex: 0,
+      engineStateJson: null,
+      updatedAt: new Date()
+    })
+    .where(eq(combatState.sessionId, sessionId));
+
+  // Clear messages (chat history)
+  await db.delete(messages).where(eq(messages.sessionId, sessionId));
+
+  // Clear session context (NPCs, locations, etc.)
+  await db.delete(sessionContext).where(eq(sessionContext.sessionId, sessionId));
+
+  // Reset session summary
+  await db.update(sessions)
+    .set({ currentSummary: null, updatedAt: new Date() })
+    .where(eq(sessions.id, sessionId));
+
+  // Reset character HP to max for fresh start
+  const chars = await db.select().from(characters).where(eq(characters.sessionId, sessionId));
+  for (const char of chars) {
+    await db.update(characters)
+      .set({ hpCurrent: char.hpMax, updatedAt: new Date() })
+      .where(eq(characters.id, char.id));
+  }
+
+  console.log(`[DB] Session ${sessionId} reset complete`);
+}
+
 // Character helpers
 export async function createCharacter(data: Omit<InsertCharacter, 'id' | 'createdAt' | 'updatedAt'>) {
   const db = await getDb();
@@ -566,14 +614,19 @@ export async function loadCombatEngineState(sessionId: number): Promise<string |
 
 /**
  * Delete CombatEngineV2 state from database
- * Called when combat ends
+ * Called when combat ends - MUST also set inCombat to 0
  */
 export async function deleteCombatEngineState(sessionId: number): Promise<void> {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
+  // Clear engine state AND set inCombat to 0 so new combat can be initiated
   await db.update(combatState)
-    .set({ engineStateJson: null, updatedAt: new Date() })
+    .set({
+      engineStateJson: null,
+      inCombat: 0,
+      updatedAt: new Date()
+    })
     .where(eq(combatState.sessionId, sessionId));
 }
 

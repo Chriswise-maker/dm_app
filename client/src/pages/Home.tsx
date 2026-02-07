@@ -76,8 +76,8 @@ export default function Home() {
 
       {/* Main Content */}
       <div className="flex-1 flex overflow-hidden">
-        {/* Left Sidebar */}
-        <aside className="w-80 border-r bg-card p-4 overflow-y-auto space-y-4">
+        {/* Left Sidebar - hidden on mobile */}
+        <aside className="hidden md:block w-64 lg:w-80 border-r bg-card p-4 overflow-y-auto space-y-4 flex-shrink-0">
           <SessionManager
             selectedSessionId={selectedSessionId}
             onSessionSelect={handleSessionSelect}
@@ -101,8 +101,8 @@ export default function Home() {
         </aside>
 
         {/* Main Chat Area */}
-        <main className="flex-1 bg-background flex overflow-hidden">
-          <div className="flex-1">
+        <main className="flex-1 bg-background flex overflow-hidden min-w-0">
+          <div className="flex-1 min-w-0 overflow-hidden">
             <ChatInterface
               sessionId={selectedSessionId}
               characterId={selectedCharacterId}
@@ -113,13 +113,9 @@ export default function Home() {
             />
           </div>
 
-          {/* Right Sidebar - Combat */}
-          {combatState?.inCombat && selectedSessionId && (
-            <CombatSidebar
-              combatState={combatState}
-              sessionId={selectedSessionId}
-              refetchCombatState={refetchCombatState}
-            />
+          {/* Right Sidebar - Combat (V2) */}
+          {selectedSessionId && (
+            <CombatSidebar sessionId={selectedSessionId} />
           )}
         </main>
       </div>

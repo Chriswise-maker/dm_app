@@ -33,7 +33,7 @@ export interface StructuredDMResponse {
 
 /**
  * Parse a structured DM response from the LLM
- * Handles various edge cases including markdown wrapping and plain text fallback
+ * Handles various edge cases including markdown wrapping, malformed JSON, and plain text fallback
  */
 export function parseStructuredResponse(content: string): StructuredDMResponse {
     if (!content || typeof content !== 'string') {
@@ -49,38 +49,85 @@ export function parseStructuredResponse(content: string): StructuredDMResponse {
             .replace(/\n?```\s*$/, '');
     }
 
+    // Attempt to extract JSON object if the content is not just a clean JSON string
+    if (!jsonContent.startsWith('{')) {
+        const firstBrace = jsonContent.indexOf('{');
+        const lastBrace = jsonContent.lastIndexOf('}');
+        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+            jsonContent = jsonContent.substring(firstBrace, lastBrace + 1);
+        }
+    }
+
     // Try to parse as JSON
     try {
         const parsed = JSON.parse(jsonContent);
 
-        // Validate the structure
-        if (typeof parsed === 'object' && parsed !== null) {
-            // Check if it has the expected structure
-            if (typeof parsed.narrative === 'string') {
-                return {
-                    narrative: parsed.narrative,
-                    gameStateChanges: parseGameStateChanges(parsed.gameStateChanges),
-                };
-            }
-
-            // Maybe the LLM returned just a simple object without proper structure
-            // Try to extract any text content
-            if (parsed.response || parsed.text || parsed.message) {
-                return {
-                    narrative: parsed.response || parsed.text || parsed.message,
-                };
-            }
+        if (typeof parsed === 'object' && parsed !== null && typeof parsed.narrative === 'string') {
+            console.log('[ResponseParser] Successfully parsed JSON, narrative length:', parsed.narrative.length);
+            return {
+                narrative: parsed.narrative,
+                gameStateChanges: parseGameStateChanges(parsed.gameStateChanges),
+            };
         }
 
-        // If we got here, the JSON was valid but unexpected structure
-        // Use the stringified content as narrative
-        console.warn('[ResponseParser] Unexpected JSON structure:', parsed);
+        // Try alternate keys
+        if (parsed.response || parsed.text || parsed.message) {
+            return { narrative: parsed.response || parsed.text || parsed.message };
+        }
+
+        console.warn('[ResponseParser] Unexpected JSON structure:', Object.keys(parsed));
         return { narrative: JSON.stringify(parsed) };
 
     } catch (parseError) {
-        // JSON parsing failed - treat the entire content as narrative
-        // This is the fallback for when the LLM doesn't follow instructions
-        console.warn('[ResponseParser] Failed to parse JSON, treating as plain narrative:', parseError);
+        console.log('[ResponseParser] JSON.parse failed, attempting regex extraction...');
+
+        // JSON parse failed - try to extract narrative using regex
+        // This handles cases where the LLM includes unescaped newlines in strings
+        const narrativeMatch = jsonContent.match(/"narrative"\s*:\s*"([\s\S]*?)(?:"\s*,\s*"gameStateChanges"|"\s*}$)/);
+        if (narrativeMatch && narrativeMatch[1]) {
+            // Unescape any escaped quotes and clean up
+            const extractedNarrative = narrativeMatch[1]
+                .replace(/\\"/g, '"')
+                .replace(/\\n/g, '\n')
+                .trim();
+
+            console.log('[ResponseParser] Extracted narrative via regex, length:', extractedNarrative.length);
+
+            // Also try to extract gameStateChanges
+            const gameStateMatch = jsonContent.match(/"gameStateChanges"\s*:\s*(\{[\s\S]*?\})\s*\}$/);
+            let gameStateChanges: GameStateChanges | undefined;
+            if (gameStateMatch && gameStateMatch[1]) {
+                try {
+                    const cleanedGameState = gameStateMatch[1].replace(/[\n\r]/g, '');
+                    gameStateChanges = parseGameStateChanges(JSON.parse(cleanedGameState));
+                } catch (e) {
+                    console.log('[ResponseParser] Could not parse gameStateChanges');
+                }
+            }
+
+            return { narrative: extractedNarrative, gameStateChanges };
+        }
+
+        // Last resort: check if content looks like JSON at all
+        if (jsonContent.includes('"narrative"')) {
+            // It was supposed to be JSON but we couldn't extract it
+            // Try one more thing: remove all control characters and parse
+            const sanitized = jsonContent.replace(/[\x00-\x1F\x7F]/g, ' ');
+            try {
+                const parsed = JSON.parse(sanitized);
+                if (typeof parsed.narrative === 'string') {
+                    return {
+                        narrative: parsed.narrative,
+                        gameStateChanges: parseGameStateChanges(parsed.gameStateChanges),
+                    };
+                }
+            } catch (e) {
+                // Give up on JSON parsing
+            }
+        }
+
+        // Final fallback: return raw content (not ideal but better than crashing)
+        console.warn('[ResponseParser] All parsing attempts failed, returning raw content');
         return { narrative: content };
     }
 }

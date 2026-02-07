@@ -143,7 +143,7 @@ importers:
         specifier: ^8.6.0
         version: 8.6.0(react@19.2.3)
       express:
-        specifier: ^4.21.2
+        specifier: ^4.22.1
         version: 4.22.1
       framer-motion:
         specifier: ^12.23.22

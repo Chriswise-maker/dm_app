@@ -1,192 +1,161 @@
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Sword, X, ChevronRight } from 'lucide-react';
-import { useState } from 'react';
+import { Sword, X, ChevronRight, RefreshCw, Undo, Skull } from 'lucide-react';
 import { trpc } from '@/lib/trpc';
 import { toast } from 'sonner';
 
-interface Combatant {
-    id: number;
-    name: string;
-    type: string;
-    initiative: number;
-    ac: number;
-    hpCurrent: number;
-    hpMax: number;
-}
-
-interface CombatState {
-    inCombat: boolean;
-    round: number;
-    currentTurnIndex: number;
-    combatants: Combatant[];
-}
-
 interface CombatSidebarProps {
-    combatState: CombatState;
     sessionId: number;
-    refetchCombatState: () => void;
 }
 
-export default function CombatSidebar({ combatState, sessionId, refetchCombatState }: CombatSidebarProps) {
-    const [editingHP, setEditingHP] = useState<Record<number, string>>({});
+export default function CombatSidebar({ sessionId }: CombatSidebarProps) {
+    const utils = trpc.useUtils();
 
-    const endCombatMutation = trpc.combat.end.useMutation({
+    // Poll combat state from V2 engine
+    const { data: combatState, isLoading } = trpc.combatV2.getState.useQuery(
+        { sessionId },
+        {
+            refetchInterval: 2000,
+            refetchOnWindowFocus: true,
+        }
+    );
+
+    const endCombatMutation = trpc.combatV2.endCombat.useMutation({
         onSuccess: () => {
             toast.success('Combat ended');
-            refetchCombatState();
-        },
-        onError: (error) => {
-            toast.error(`Failed to end combat: ${error.message}`);
+            utils.combatV2.getState.invalidate({ sessionId });
         },
     });
 
-    const removeCombatantMutation = trpc.combat.removeCombatant.useMutation({
-        onSuccess: () => {
-            toast.success('Enemy removed');
-            refetchCombatState();
-        },
-        onError: (error) => {
-            toast.error(`Failed to remove enemy: ${error.message}`);
-        },
-    });
-
-    const updateHPMutation = trpc.combat.updateCombatantHP.useMutation({
-        onSuccess: () => {
-            refetchCombatState();
-        },
-        onError: (error: any) => {
-            toast.error(`Failed to update HP: ${error.message}`);
+    const undoMutation = trpc.combatV2.undo.useMutation({
+        onSuccess: (data) => {
+            if (data.success) {
+                toast.success('Undid last action');
+                utils.combatV2.getState.invalidate({ sessionId });
+            } else {
+                toast.error('Nothing to undo');
+            }
         },
     });
 
-    if (!combatState || !combatState.inCombat) return null;
-
-    const sortedCombatants = [...combatState.combatants].sort((a, b) => b.initiative - a.initiative);
+    if (isLoading) return null;
+    // Hide sidebar when no combat or combat has ended
+    // Show during ACTIVE and AWAIT_DAMAGE_ROLL phases
+    if (!combatState || combatState.phase === 'IDLE' || combatState.phase === 'RESOLVED') return null;
 
     const handleEndCombat = () => {
-        endCombatMutation.mutate({ sessionId });
-    };
-
-    const handleRemoveCombatant = (combatantId: number, name: string) => {
-        removeCombatantMutation.mutate({ combatantId });
-    };
-
-    const handleHPChange = (combatantId: number, value: string) => {
-        const updated = { ...editingHP };
-        updated[combatantId] = value;
-        setEditingHP(updated);
-    };
-
-    const handleHPBlur = (combatant: Combatant) => {
-        const newHPStr = editingHP[combatant.id];
-        if (newHPStr !== undefined && newHPStr !== null) {
-            const newHP = Math.max(0, Math.min(combatant.hpMax, parseInt(newHPStr) || 0));
-            updateHPMutation.mutate({ combatantId: combatant.id, newHP });
-            // Remove the editing state for this combatant
-            const updated = { ...editingHP };
-            delete updated[combatant.id];
-            setEditingHP(updated);
+        if (confirm('Are you sure you want to end combat?')) {
+            endCombatMutation.mutate({ sessionId });
         }
     };
 
+    const handleUndo = () => {
+        undoMutation.mutate({ sessionId });
+    };
+
+    // V2 engine already sorts by turn order in 'entities', but 'turnOrder' array has the IDs in order
+    // Accessing entities via map or find is inefficient if list is small, so let's just use the array 
+    // provided `entities` are not sorted? 
+    // The router returns `entities` mapped from state.entities (which are usually sorted by init).
+    // Let's rely on the router's `entities` list but sort by initiative just in case, or use turnOrder if strict.
+    // Actually, V2 logs show turnOrder.
+
+    // Sort by initiative descending for display
+    const sortedEntities = [...combatState.entities].sort((a, b) => b.initiative - a.initiative);
+
     return (
-        <aside className="w-80 border-l bg-card flex flex-col h-full">
+        <aside className="w-48 lg:w-64 border-l bg-card flex flex-col h-full flex-shrink-0 overflow-hidden">
             <div className="p-4 border-b flex items-center gap-2 justify-between bg-destructive/10">
                 <div className="flex items-center gap-2">
                     <Sword className="h-5 w-5 text-destructive" />
-                    <h3 className="font-semibold text-destructive">Combat - Round {combatState.round}</h3>
+                    <h3 className="font-semibold text-destructive">Combat V2 - R{combatState.round}</h3>
                 </div>
-                <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handleEndCombat}
-                    className="text-xs"
-                >
-                    End Combat
-                </Button>
+                <div className="flex gap-1">
+                    <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={handleUndo}
+                        title="Undo last action"
+                        className="h-8 w-8"
+                    >
+                        <Undo className="h-4 w-4" />
+                    </Button>
+                    <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={handleEndCombat}
+                        className="text-xs h-8"
+                    >
+                        End
+                    </Button>
+                </div>
             </div>
 
             <ScrollArea className="flex-1 p-4">
                 <div className="space-y-3">
-                    {sortedCombatants.map((combatant, idx) => {
-                        const isActive = idx === combatState.currentTurnIndex;
-                        const isDefeated = combatant.hpCurrent <= 0;
-                        const isPlayer = combatant.type === 'player';
+                    {sortedEntities.map((entity, idx) => {
+                        const isTurn = combatState.currentTurnEntity === entity.name;
+                        const isDefeated = entity.status === 'DEAD' || entity.status === 'UNCONSCIOUS';
+                        const isPlayer = entity.type === 'player';
 
                         return (
                             <div
-                                key={combatant.id}
+                                key={entity.id}
                                 className={`
                                     p-3 rounded-lg border-2 transition-colors
-                                    ${isActive ? 'border-primary bg-primary/5' : 'border-border'}
+                                    ${isTurn ? 'border-primary bg-primary/5' : 'border-border'}
                                     ${isDefeated ? 'opacity-50' : ''}
                                 `}
                             >
                                 <div className="flex items-start justify-between gap-2">
                                     <div className="flex-1 min-w-0">
                                         <div className="flex items-center gap-2">
-                                            {isActive && <ChevronRight className="h-4 w-4 text-primary flex-shrink-0" />}
+                                            {isTurn && <ChevronRight className="h-4 w-4 text-primary flex-shrink-0" />}
                                             <p className={`font-medium text-sm truncate ${isDefeated ? 'line-through' : ''}`}>
-                                                {combatant.name}
+                                                {entity.name}
                                             </p>
                                         </div>
                                         <p className="text-xs text-muted-foreground mt-1">
-                                            Init: {combatant.initiative} | AC: {combatant.ac}
+                                            Init: {entity.initiative} | AC: {entity.baseAC}
                                         </p>
                                     </div>
-                                    {!isPlayer && (
-                                        <Button
-                                            variant="ghost"
-                                            size="icon"
-                                            className="h-6 w-6 flex-shrink-0"
-                                            onClick={() => handleRemoveCombatant(combatant.id, combatant.name)}
-                                        >
-                                            <X className="h-4 w-4" />
-                                        </Button>
-                                    )}
-                                </div>
-
-                                <div className="mt-2 flex items-center gap-2">
-                                    <span className="text-xs text-muted-foreground">HP:</span>
-                                    {isPlayer ? (
-                                        // Players: Read-only (managed via character sheet)
-                                        <span className={`text-sm font-mono ${isDefeated ? 'text-destructive' : ''}`}>
-                                            {combatant.hpCurrent}/{combatant.hpMax}
+                                    <div className="flex flex-col items-end">
+                                        <span className={`text-sm font-mono font-bold ${entity.hp <= 0 ? 'text-destructive' : ''}`}>
+                                            {entity.hp}/{entity.maxHp}
                                         </span>
-                                    ) : (
-                                        // Enemies: Editable
-                                        <div className="flex items-center gap-1">
-                                            <Input
-                                                type="number"
-                                                min="0"
-                                                max={combatant.hpMax}
-                                                value={editingHP[combatant.id] ?? combatant.hpCurrent}
-                                                onChange={(e) => handleHPChange(combatant.id, e.target.value)}
-                                                onBlur={() => handleHPBlur(combatant)}
-                                                className={`
-                                                    h-7 w-14 text-xs font-mono text-center
-                                                    ${isDefeated ? 'text-destructive border-destructive' : ''}
-                                                `}
-                                            />
-                                            <span className="text-xs text-muted-foreground">/ {combatant.hpMax}</span>
-                                        </div>
-                                    )}
+                                        <span className="text-[10px] text-muted-foreground">HP</span>
+                                    </div>
                                 </div>
-
                                 {isDefeated && (
-                                    <p className="text-xs text-destructive mt-1 font-semibold">DEFEATED</p>
+                                    <div className="mt-2 flex items-center gap-1 text-xs text-destructive font-semibold">
+                                        <Skull className="h-3 w-3" />
+                                        {entity.status}
+                                    </div>
                                 )}
                             </div>
                         );
                     })}
                 </div>
 
-                <div className="mt-6 text-xs text-muted-foreground text-center space-y-1 pb-4">
-                    <p>Manually update enemy HP as combat progresses.</p>
-                    <p>Player HP is managed via character sheet.</p>
+                <div className="mt-6 text-xs text-muted-foreground text-center space-y-1 pb-4 border-t pt-4">
+                    <p className="font-semibold text-primary">Chat-Driven Combat</p>
+                    <p>Type actions in the chat:</p>
+                    <p className="italic">"I attack the goblin with my sword"</p>
+                    <p className="italic">"I cast Fireball at the group"</p>
                 </div>
+
+                {combatState.log.length > 0 && (
+                    <div className="mt-4 border rounded bg-muted/20 p-2">
+                        <p className="text-xs font-semibold mb-2">Battle Feed</p>
+                        <ul className="text-[10px] space-y-1 font-mono text-muted-foreground">
+                            {combatState.log.slice(-5).reverse().map(l => (
+                                <li key={l.id} className="truncate">
+                                    {l.description}
+                                </li>
+                            ))}
+                        </ul>
+                    </div>
+                )}
             </ScrollArea>
         </aside>
     );

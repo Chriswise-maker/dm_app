@@ -216,11 +216,16 @@ describe("CombatEngineV2", () => {
 
             engine.initiateCombat([player, goblin]);
 
-            engine.submitAction({
+            const attackResult = engine.submitAction({
                 type: "ATTACK",
                 attackerId: "player-1",
                 targetId: "goblin-1",
             });
+
+            // Player attacks pause for damage roll - need to apply damage
+            if (attackResult.awaitingDamageRoll) {
+                engine.applyDamage(999);  // Massive damage to kill goblin
+            }
 
             const deadGoblin = engine.getEntity("goblin-1");
             expect(deadGoblin?.hp).toBe(0);
@@ -314,11 +319,16 @@ describe("CombatEngineV2", () => {
 
             engine.initiateCombat([player, goblin]);
 
-            engine.submitAction({
+            const attackResult = engine.submitAction({
                 type: "ATTACK",
                 attackerId: "player-1",
                 targetId: "goblin-1",
             });
+
+            // Player attacks pause for damage roll - need to apply damage
+            if (attackResult.awaitingDamageRoll) {
+                engine.applyDamage(999);  // Massive damage to kill goblin
+            }
 
             // After killing the only enemy, end turn should end combat
             const result = engine.submitAction({

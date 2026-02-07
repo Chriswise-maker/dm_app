@@ -1,0 +1,208 @@
+
+> dm-app@1.0.0 test
+> vitest run server/combat/__tests__/combat-bridge.test.ts
+
+
+ RUN  v2.1.9 /Users/christian/Documents/DM APP/dm_app
+
+stdout | server/combat/__tests__/combat-bridge.test.ts > Combat Bridge Integration > should successfully initiate combat engine from enemy data
+[AutoCombat] Initiating V2 Combat for session: 99999
+[AutoCombat] Prepared enemy: Goblin Grunt
+[AutoCombat] Prepared enemy: Goblin Boss
+[AutoCombat] Prepared player: Test Hero
+
+stderr | server/combat/__tests__/combat-bridge.test.ts > Combat Bridge Integration > should successfully initiate combat engine from enemy data
+[AutoCombat] Failed to initiate combat: Error: [vitest] No "saveCombatEngineState" export is defined on the "../../db" mock. Did you forget to return it from "vi.mock"?
+If you need to partially mock a module, you can use "importOriginal" helper inside:
+
+    at VitestMocker.createError (file:///Users/christian/Documents/DM%20APP/dm_app/node_modules/.pnpm/vitest@2.1.9_@types+node@24.10.4_lightningcss@1.30.2/node_modules/vitest/dist/chunks/execute.2pr0rHgK.js:321:19)
+    at Object.get (file:///Users/christian/Documents/DM%20APP/dm_app/node_modules/.pnpm/vitest@2.1.9_@types+node@24.10.4_lightningcss@1.30.2/node_modules/vitest/dist/chunks/execute.2pr0rHgK.js:389:22)
+    at CombatEngineManagerClass.persist (/Users/christian/Documents/DM APP/dm_app/server/combat/combat-engine-manager.ts:87:18)
+    at processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at Module.handleAutoCombatInitiation (/Users/christian/Documents/DM APP/dm_app/server/combat/combat-helpers.ts:73:9)
+    at /Users/christian/Documents/DM APP/dm_app/server/combat/__tests__/combat-bridge.test.ts:72:24
+    at file:///Users/christian/Documents/DM%20APP/dm_app/node_modules/.pnpm/@vitest+runner@2.1.9/node_modules/@vitest/runner/dist/index.js:533:5
+    at runTest (file:///Users/christian/Documents/DM%20APP/dm_app/node_modules/.pnpm/@vitest+runner@2.1.9/node_modules/@vitest/runner/dist/index.js:1056:11)
+    at runSuite (file:///Users/christian/Documents/DM%20APP/dm_app/node_modules/.pnpm/@vitest+runner@2.1.9/node_modules/@vitest/runner/dist/index.js:1205:15)
+    at runSuite (file:///Users/christian/Documents/DM%20APP/dm_app/node_modules/.pnpm/@vitest+runner@2.1.9/node_modules/@vitest/runner/dist/index.js:1205:15) {
+  codeFrame: 'vi.mock(import("../../db"), async (importOriginal) => {\n' +
+    '  const actual = await importOriginal()\n' +
+    '  return {\n' +
+    '    ...actual,\n' +
+    '    // your mocked methods\n' +
+    '  }\n' +
+    '})'
+}
+
+stderr | server/combat/__tests__/combat-bridge.test.ts > Combat Bridge Integration > should destroy engine on combat end
+[AutoCombat] Failed to end combat: Error: [vitest] No "deleteCombatEngineState" export is defined on the "../../db" mock. Did you forget to return it from "vi.mock"?
+If you need to partially mock a module, you can use "importOriginal" helper inside:
+
+    at VitestMocker.createError (file:///Users/christian/Documents/DM%20APP/dm_app/node_modules/.pnpm/vitest@2.1.9_@types+node@24.10.4_lightningcss@1.30.2/node_modules/vitest/dist/chunks/execute.2pr0rHgK.js:321:19)
+    at Object.get (file:///Users/christian/Documents/DM%20APP/dm_app/node_modules/.pnpm/vitest@2.1.9_@types+node@24.10.4_lightningcss@1.30.2/node_modules/vitest/dist/chunks/execute.2pr0rHgK.js:389:22)
+    at CombatEngineManagerClass.destroy (/Users/christian/Documents/DM APP/dm_app/server/combat/combat-engine-manager.ts:99:18)
+    at processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at Module.handleAutoCombatEnd (/Users/christian/Documents/DM APP/dm_app/server/combat/combat-helpers.ts:95:9)
+    at /Users/christian/Documents/DM APP/dm_app/server/combat/__tests__/combat-bridge.test.ts:105:9
+    at file:///Users/christian/Documents/DM%20APP/dm_app/node_modules/.pnpm/@vitest+runner@2.1.9/node_modules/@vitest/runner/dist/index.js:533:5
+    at runTest (file:///Users/christian/Documents/DM%20APP/dm_app/node_modules/.pnpm/@vitest+runner@2.1.9/node_modules/@vitest/runner/dist/index.js:1056:11)
+    at runSuite (file:///Users/christian/Documents/DM%20APP/dm_app/node_modules/.pnpm/@vitest+runner@2.1.9/node_modules/@vitest/runner/dist/index.js:1205:15)
+    at runSuite (file:///Users/christian/Documents/DM%20APP/dm_app/node_modules/.pnpm/@vitest+runner@2.1.9/node_modules/@vitest/runner/dist/index.js:1205:15) {
+  codeFrame: 'vi.mock(import("../../db"), async (importOriginal) => {\n' +
+    '  const actual = await importOriginal()\n' +
+    '  return {\n' +
+    '    ...actual,\n' +
+    '    // your mocked methods\n' +
+    '  }\n' +
+    '})'
+}
+
+ ❯ server/combat/__tests__/combat-bridge.test.ts (2 tests | 1 failed) 13ms
+   × Combat Bridge Integration > should successfully initiate combat engine from enemy data 12ms
+     → expected false to be true // Object.is equality
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  server/combat/__tests__/combat-bridge.test.ts > Combat Bridge Integration > should successfully initiate combat engine from enemy data
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ server/combat/__tests__/combat-bridge.test.ts:75:32
+     73| 
+     74|         // Assertions
+     75|         expect(result.success).toBe(true);
+       |                                ^
+     76|         expect(result.enemiesAdded).toBe(2);
+     77| 
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+⎯⎯⎯⎯⎯⎯ Unhandled Errors ⎯⎯⎯⎯⎯⎯
+
+Vitest caught 4 unhandled errors during the test run.
+This might cause false positive tests. Resolve unhandled errors to make sure your tests are not affected.
+
+⎯⎯⎯⎯ Unhandled Rejection ⎯⎯⎯⎯⎯
+Error: [vitest] No "deleteCombatEngineState" export is defined on the "../../db" mock. Did you forget to return it from "vi.mock"?
+If you need to partially mock a module, you can use "importOriginal" helper inside:
+
+vi.mock(import("../../db"), async (importOriginal) => {
+  const actual = await importOriginal()
+  return {
+    ...actual,
+    // your mocked methods
+  }
+})
+
+ ❯ VitestMocker.createError ../../DM%20APP/dm_app/node_modules/.pnpm/vitest@2.1.9_@types+node@24.10.4_lightningcss@1.30.2/node_modules/vitest/dist/chunks/execute.2pr0rHgK.js:321:19
+ ❯ Object.get ../../DM%20APP/dm_app/node_modules/.pnpm/vitest@2.1.9_@types+node@24.10.4_lightningcss@1.30.2/node_modules/vitest/dist/chunks/execute.2pr0rHgK.js:389:22
+ ❯ CombatEngineManagerClass.destroy server/combat/combat-engine-manager.ts:99:18
+     97| 
+     98|         const db = await import("../db");
+     99|         await db.deleteCombatEngineState(sessionId);
+       |                  ^
+    100|         console.log(`[CombatEngineManager] Destroyed engine for sessio…
+    101|     }
+ ❯ processTicksAndRejections node:internal/process/task_queues:105:5
+
+This error originated in "server/combat/__tests__/combat-bridge.test.ts" test file. It doesn't mean the error was thrown inside the file itself, but while it was running.
+The latest test that might've caused the error is "server/combat/__tests__/combat-bridge.test.ts". It might mean one of the following:
+- The error was thrown, while Vitest was running this test.
+- If the error occurred after the test had been completed, this was the last documented test before it was thrown.
+
+⎯⎯⎯⎯ Unhandled Rejection ⎯⎯⎯⎯⎯
+Error: [vitest] No "deleteCombatEngineState" export is defined on the "../../db" mock. Did you forget to return it from "vi.mock"?
+If you need to partially mock a module, you can use "importOriginal" helper inside:
+
+vi.mock(import("../../db"), async (importOriginal) => {
+  const actual = await importOriginal()
+  return {
+    ...actual,
+    // your mocked methods
+  }
+})
+
+ ❯ VitestMocker.createError ../../DM%20APP/dm_app/node_modules/.pnpm/vitest@2.1.9_@types+node@24.10.4_lightningcss@1.30.2/node_modules/vitest/dist/chunks/execute.2pr0rHgK.js:321:19
+ ❯ Object.get ../../DM%20APP/dm_app/node_modules/.pnpm/vitest@2.1.9_@types+node@24.10.4_lightningcss@1.30.2/node_modules/vitest/dist/chunks/execute.2pr0rHgK.js:389:22
+ ❯ CombatEngineManagerClass.destroy server/combat/combat-engine-manager.ts:99:18
+     97| 
+     98|         const db = await import("../db");
+     99|         await db.deleteCombatEngineState(sessionId);
+       |                  ^
+    100|         console.log(`[CombatEngineManager] Destroyed engine for sessio…
+    101|     }
+ ❯ processTicksAndRejections node:internal/process/task_queues:105:5
+
+This error originated in "server/combat/__tests__/combat-bridge.test.ts" test file. It doesn't mean the error was thrown inside the file itself, but while it was running.
+The latest test that might've caused the error is "server/combat/__tests__/combat-bridge.test.ts". It might mean one of the following:
+- The error was thrown, while Vitest was running this test.
+- If the error occurred after the test had been completed, this was the last documented test before it was thrown.
+
+⎯⎯⎯⎯ Unhandled Rejection ⎯⎯⎯⎯⎯
+Error: [vitest] No "deleteCombatEngineState" export is defined on the "../../db" mock. Did you forget to return it from "vi.mock"?
+If you need to partially mock a module, you can use "importOriginal" helper inside:
+
+vi.mock(import("../../db"), async (importOriginal) => {
+  const actual = await importOriginal()
+  return {
+    ...actual,
+    // your mocked methods
+  }
+})
+
+ ❯ VitestMocker.createError ../../DM%20APP/dm_app/node_modules/.pnpm/vitest@2.1.9_@types+node@24.10.4_lightningcss@1.30.2/node_modules/vitest/dist/chunks/execute.2pr0rHgK.js:321:19
+ ❯ Object.get ../../DM%20APP/dm_app/node_modules/.pnpm/vitest@2.1.9_@types+node@24.10.4_lightningcss@1.30.2/node_modules/vitest/dist/chunks/execute.2pr0rHgK.js:389:22
+ ❯ CombatEngineManagerClass.destroy server/combat/combat-engine-manager.ts:99:18
+     97| 
+     98|         const db = await import("../db");
+     99|         await db.deleteCombatEngineState(sessionId);
+       |                  ^
+    100|         console.log(`[CombatEngineManager] Destroyed engine for sessio…
+    101|     }
+ ❯ processTicksAndRejections node:internal/process/task_queues:105:5
+
+This error originated in "server/combat/__tests__/combat-bridge.test.ts" test file. It doesn't mean the error was thrown inside the file itself, but while it was running.
+The latest test that might've caused the error is "server/combat/__tests__/combat-bridge.test.ts". It might mean one of the following:
+- The error was thrown, while Vitest was running this test.
+- If the error occurred after the test had been completed, this was the last documented test before it was thrown.
+
+⎯⎯⎯⎯ Unhandled Rejection ⎯⎯⎯⎯⎯
+Error: [vitest] No "deleteCombatEngineState" export is defined on the "../../db" mock. Did you forget to return it from "vi.mock"?
+If you need to partially mock a module, you can use "importOriginal" helper inside:
+
+vi.mock(import("../../db"), async (importOriginal) => {
+  const actual = await importOriginal()
+  return {
+    ...actual,
+    // your mocked methods
+  }
+})
+
+ ❯ VitestMocker.createError ../../DM%20APP/dm_app/node_modules/.pnpm/vitest@2.1.9_@types+node@24.10.4_lightningcss@1.30.2/node_modules/vitest/dist/chunks/execute.2pr0rHgK.js:321:19
+ ❯ Object.get ../../DM%20APP/dm_app/node_modules/.pnpm/vitest@2.1.9_@types+node@24.10.4_lightningcss@1.30.2/node_modules/vitest/dist/chunks/execute.2pr0rHgK.js:389:22
+ ❯ CombatEngineManagerClass.destroy server/combat/combat-engine-manager.ts:99:18
+     97| 
+     98|         const db = await import("../db");
+     99|         await db.deleteCombatEngineState(sessionId);
+       |                  ^
+    100|         console.log(`[CombatEngineManager] Destroyed engine for sessio…
+    101|     }
+ ❯ processTicksAndRejections node:internal/process/task_queues:105:5
+
+This error originated in "server/combat/__tests__/combat-bridge.test.ts" test file. It doesn't mean the error was thrown inside the file itself, but while it was running.
+The latest test that might've caused the error is "server/combat/__tests__/combat-bridge.test.ts". It might mean one of the following:
+- The error was thrown, while Vitest was running this test.
+- If the error occurred after the test had been completed, this was the last documented test before it was thrown.
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 1 passed (2)
+     Errors  4 errors
+   Start at  15:03:01
+   Duration  942ms (transform 59ms, setup 0ms, collect 611ms, tests 13ms, environment 0ms, prepare 55ms)
+

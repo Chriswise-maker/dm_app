@@ -5,7 +5,7 @@
  */
 
 import type { UserSettings, Character, Session, CombatState, Combatant, Message } from "../drizzle/schema";
-import type { CombatantData, CombatStateData, AttackResult } from "./combat/combat-engine";
+import type { BattleState, CombatEntity } from "./combat/combat-types";
 import type { ExtractedContext } from "./context-extraction";
 
 // Default Prompts (Chaos Weaver Style)
@@ -67,43 +67,75 @@ Create a D&D 5e character who is more than a stat block—they are a story waiti
 **OUTPUT**:
 Return ONLY the raw JSON object defining this character.`;
 
-const DEFAULT_COMBAT_TURN_PROMPT = `[COMBAT MODE: ACTIVE]
-FOCUS: {{actorName}} ({{actorType}})
+// =============================================================================
+// COMBAT ENGINE V2 PROMPTS
+// =============================================================================
 
-**BATTLEFIELD AWARENESS:**
-{{statusList}}
+/**
+ * Enemy AI Decision Prompt (V2)
+ * Used by enemy-ai-controller.ts to decide enemy actions
+ * Settings field: combatTurnPrompt
+ */
+const DEFAULT_ENEMY_AI_PROMPT = `You are a tactical combat AI for D&D 5e, controlling a monster in battle.
+Your role is to make intelligent, thematic attack decisions.
 
-**NARRATIVE INSTRUCTION:**
-{{instructions}}
-If this is a PLAYER: Set the scene for their turn. Describe the immediate threats, the chaos around them, and the opportunities present. End with: "The spotlight is yours. What do you do?"
-If this is an ENEMY: Describe their action with intent and menace. Do not resolve the outcome yet, just the attempt. "The Orc Warlord raises his greataxe, screaming a challenge as he charges..."`;
+**TACTICAL PRIORITIES:**
+1. Target wounded enemies (low HP) for kills
+2. Focus fire on dangerous threats (spellcasters, high damage dealers)
+3. Protect yourself if critically wounded
+4. Stay in character for the monster type (mindless undead attack nearest, cunning enemies flank)
 
-const DEFAULT_COMBAT_NARRATION_PROMPT = `**ACTION RESOLUTION:**
-Actor: {{actorName}}
-Target: {{targetName}}
-Outcome: {{outcome}}
-Damage Dealt: {{damage}}
-Target Status: {{targetHP}}
+**OUTPUT FORMAT (REQUIRED):**
+Return your decision in EXACTLY this format:
+ACTION: attack
+TARGET_ID: [the exact id of your target]
+FLAVOR: [one dramatic sentence describing HOW you attack]
 
-**CHAOS WEAVER NARRATION:**
-{{instructions}}
-*   **On HIT**: Make it visceral. Describe the impact, the reaction of the target, and the physical toll.
-*   **On MISS**: Describe *why* it missed. Was it parried? Dodged? Did the armor absorb the blow? Make the failure tactical, not incompetent.
-*   **On CRITICAL**: Amplify the effect. Bones break, armor shatters, morale breaks.
-*   **On KILL**: Give the target a memorable death. Whether it's a silent collapse or a final curse, make it matter.`;
+Example:
+ACTION: attack
+TARGET_ID: player-1
+FLAVOR: With a guttural snarl, it lunges for the warrior's exposed flank.`;
 
-const DEFAULT_COMBAT_SUMMARY_PROMPT = `**COMBAT RESOLVED**
-Victors: {{victor}}
-Duration: {{duration}} rounds
+/**
+ * Combat Narrative Prompt (V2)
+ * Used by combat-narrator.ts to narrate combat results
+ * Settings field: combatNarrationPrompt
+ */
+const DEFAULT_COMBAT_NARRATIVE_PROMPT = `You are the CHAOS WEAVER, narrating combat with vivid, visceral prose.
 
-**THE AFTERMATH:**
-The dust settles. The noise of battle fades, replaced by heavy breathing and the groans of the fallen.
-Describe the scene now that violence has ended.
-*   What is the condition of the survivors?
-*   What loot or clues are immediately visible?
-*   How does the environment reflect the battle (broken furniture, scorched earth)?
+**NARRATION STYLE:**
+- **On HIT**: Describe the impact—the sound of steel meeting flesh, the spray of blood, the target's reaction
+- **On MISS**: Show WHY it missed—a desperate dodge, a ringing parry, armor deflecting the blow
+- **On CRITICAL**: Amplify everything—bones crack, armor shatters, the crowd gasps
+- **On KILL**: Give a memorable death—a final breath, a curse, a dramatic collapse
 
-End with a transition back to exploration mode. "The immediate threat is gone, but the danger remains. What is your next move?"`;
+**FORMAT:**
+- 2-3 sentences maximum
+- Include the mechanical result naturally (damage amount, remaining HP)
+- End with whose turn is next, or if combat ended
+
+**EXAMPLE:**
+"The blade bites deep into the goblin's shoulder (8 damage), green ichor spattering across the stone floor. It staggers, clutching the wound—still standing at 4 HP, but barely. The Crystal Sentinel's turn begins."`;
+
+/**
+ * Action Parser Prompt (V2)
+ * Used by player-action-parser.ts to extract player intent
+ * Settings field: combatSummaryPrompt (repurposed)
+ */
+const DEFAULT_ACTION_PARSER_PROMPT = `You are a combat action parser for D&D 5e.
+Extract the player's combat intent from their natural language message.
+
+**RECOGNITION RULES:**
+- Roleplay attacks count as ATTACK: "I scream a battlecry and charge", "I rush at the enemy", "With a roar, I swing my axe"
+- Explicit attacks: "I attack", "I hit", "I strike", "I cast fireball at"
+- Passing turn: "I'm done", "I wait", "I hold my action", "I end my turn"
+- If only one enemy exists and player attacks, assume that target
+
+**OUTPUT (JSON ONLY):**
+{"actionType": "ATTACK", "targetName": "Goblin", "confidence": 0.9}
+{"actionType": "END_TURN", "confidence": 0.95}
+{"actionType": "UNKNOWN", "confidence": 0.3}`;
+
 
 // Structured Output Wrapper for automatic combat detection
 const STRUCTURED_OUTPUT_WRAPPER = `
@@ -272,7 +304,8 @@ export function buildChatUserPrompt(
     context: Partial<ExtractedContext>,
     combatState?: CombatState,
     combatants: Combatant[] = [],
-    userMessage: string = '(User is typing...)'
+    userMessage: string = '(User is typing...)',
+    v2BattleState?: BattleState | null
 ): string {
     // Format context sections
     const npcsText = context.npcs && context.npcs.length > 0
@@ -303,7 +336,25 @@ export function buildChatUserPrompt(
 
     let combatContext = '';
 
-    if (combatState && combatState.inCombat === 1) {
+    // V2 Combat Engine takes priority if active
+    if (v2BattleState && v2BattleState.phase === 'ACTIVE') {
+        const currentEntity = v2BattleState.entities[v2BattleState.turnIndex];
+        const sortedEntities = [...v2BattleState.entities].sort((a, b) => b.initiative - a.initiative);
+
+        combatContext = `\n[COMBAT ENGINE V2 - ACTIVE]\n`;
+        combatContext += `Round: ${v2BattleState.round}\n`;
+        combatContext += `Current Turn: ${currentEntity?.name || 'Unknown'} (Initiative: ${currentEntity?.initiative || 0})\n\n`;
+        combatContext += `Initiative Order:\n`;
+        sortedEntities.forEach((e: CombatEntity, idx: number) => {
+            const isCurrent = e.id === currentEntity?.id;
+            const status = e.status === 'ALIVE' ? '' : ` [${e.status}]`;
+            combatContext += `${idx + 1}. ${e.name} (${e.type}) - Init: ${e.initiative}, HP: ${e.hp}/${e.maxHp}, AC: ${e.baseAC}${status}${isCurrent ? ' ← CURRENT TURN' : ''}\n`;
+        });
+
+        combatContext += `\n**IMPORTANT:** Combat is being managed by the V2 engine. Initiative has already been rolled.\n`;
+        combatContext += `Do NOT ask the player to roll initiative. Simply narrate based on the current turn.\n`;
+    } else if (combatState && combatState.inCombat === 1) {
+        // Fallback to V1 combat state
         const currentCombatant = combatants[combatState.currentTurnIndex];
 
         combatContext = `\n[GAME STATE - STRICT]
@@ -429,152 +480,33 @@ Return ONLY a JSON array with this EXACT structure:
 CRITICAL: Return ONLY the JSON array. No markdown, no explanation.`;
 }
 
+// =============================================================================
+// COMBAT ENGINE V2 PROMPT GETTERS
+// =============================================================================
+
 /**
- * Build the combat turn prompt
+ * Get the enemy AI system prompt
+ * Used by enemy-ai-controller.ts
+ * @param settings User settings (uses combatTurnPrompt field)
  */
-export function buildCombatTurnPrompt(
-    combatState: CombatStateData,
-    currentActor: CombatantData,
-    settings?: UserSettings | null
-): string {
-    const enemies = combatState.combatants.filter(c => c.type === 'enemy');
-    const players = combatState.combatants.filter(c => c.type === 'player');
-
-    let statusList = `Players:\n`;
-    players.forEach(p => {
-        statusList += `- ${p.name}: HP ${p.hpCurrent}/${p.hpMax}, AC ${p.ac}${p.position ? `, ${p.position}` : ''}\n`;
-    });
-
-    statusList += `\nEnemies:\n`;
-    enemies.forEach(e => {
-        statusList += `- ${e.name}: HP ${e.hpCurrent}/${e.hpMax}, AC ${e.ac}${e.position ? `, ${e.position}` : ''}\n`;
-    });
-
-    let instructions = '';
-    if (currentActor.type === 'player') {
-        instructions += `Prompt ${currentActor.name} for their action using Chaos Weaver style.\n`;
-        instructions += `Format: "${currentActor.name}, your turn. [Brief tactical situation]. What do you do?"\n`;
-        instructions += `Include relevant enemy positions, threats, and opportunities in your description.`;
-    } else {
-        instructions += `This is an enemy turn. Describe what the enemy does narratively, but do NOT decide the mechanical outcome.\n`;
-        instructions += `The system will determine hit/miss and damage.\n`;
-        instructions += `Simply narrate the enemy's action (e.g., "The goblin snarls and lunges at Alice with its rusty blade...").`;
-    }
-
-    const basePrompt = settings?.combatTurnPrompt || DEFAULT_COMBAT_TURN_PROMPT;
-
-    return basePrompt
-        .replace('{{actorName}}', currentActor.name)
-        .replace('{{actorType}}', currentActor.type)
-        .replace('{{statusList}}', statusList)
-        .replace('{{instructions}}', instructions);
+export function getEnemyAIPrompt(settings?: UserSettings | null): string {
+    return settings?.combatTurnPrompt || DEFAULT_ENEMY_AI_PROMPT;
 }
 
 /**
- * Build the combat narration prompt (attack result)
+ * Get the combat narrative system prompt
+ * Used by combat-narrator.ts
+ * @param settings User settings (uses combatNarrationPrompt field)
  */
-export function buildCombatNarrationPrompt(
-    actorName: string,
-    targetName: string,
-    result: AttackResult,
-    weaponDescription?: string,
-    settings?: UserSettings | null
-): string {
-    let outcome = result.isHit ? 'HIT' : 'MISS';
-    if (result.isCritical) outcome = 'CRITICAL HIT';
-    if (result.isDead) outcome = 'KILLING BLOW';
-
-    let instructions = '';
-    if (result.isDead) {
-        instructions += `Generate a DRAMATIC, CINEMATIC death description:\n`;
-        instructions += `- Use vivid, specific sensory details\n`;
-        instructions += `- This is a finisher move - make it memorable\n`;
-        instructions += `- Include the exact damage amount\n`;
-        instructions += `- Use Chaos Weaver techniques (unexpected details, specific imagery)\n`;
-    } else if (result.isHit) {
-        instructions += `Generate a CONCISE but vivid hit description:\n`;
-        instructions += `- One or two sentences maximum\n`;
-        instructions += `- Include: physical action, sensory detail, result\n`;
-        instructions += `- Mention the damage amount\n`;
-        instructions += `- State remaining HP\n`;
-    } else {
-        instructions += `Generate a BRIEF miss description:\n`;
-        instructions += `- One sentence\n`;
-        instructions += `- Show what physically happened (dodge, deflection, near-miss)\n`;
-    }
-
-    const basePrompt = settings?.combatNarrationPrompt || DEFAULT_COMBAT_NARRATION_PROMPT;
-
-    return basePrompt
-        .replace('{{actorName}}', actorName)
-        .replace('{{targetName}}', targetName)
-        .replace('{{outcome}}', outcome)
-        .replace('{{damage}}', result.damage?.toString() || '0')
-        .replace('{{targetHP}}', `${result.targetNewHP}/${result.targetMaxHP}`)
-        .replace('{{instructions}}', instructions);
+export function getCombatNarrativePrompt(settings?: UserSettings | null): string {
+    return settings?.combatNarrationPrompt || DEFAULT_COMBAT_NARRATIVE_PROMPT;
 }
 
 /**
- * Build the combat summary prompt
+ * Get the action parser system prompt
+ * Used by player-action-parser.ts
+ * @param settings User settings (uses combatSummaryPrompt field, repurposed for V2)
  */
-export function buildCombatSummaryPrompt(
-    combatState: CombatStateData,
-    victor: 'players' | 'enemies',
-    settings?: UserSettings | null
-): string {
-    const basePrompt = settings?.combatSummaryPrompt || DEFAULT_COMBAT_SUMMARY_PROMPT;
-
-    return basePrompt
-        .replace('{{victor}}', victor === 'players' ? 'The party' : 'The enemies')
-        .replace('{{duration}}', combatState.round.toString());
-}
-
-/**
- * Build prompt for enemy AI decision-making
- */
-export function buildEnemyDecisionPrompt(
-    enemy: CombatantData,
-    combatState: CombatStateData
-): string {
-    const players = combatState.combatants.filter(c => c.type === 'player');
-    const otherEnemies = combatState.combatants.filter(
-        c => c.type === 'enemy' && c.name !== enemy.name
-    );
-
-    let prompt = `You are controlling: ${enemy.name}\n\n`;
-    prompt += `Your stats:\n`;
-    prompt += `- HP: ${enemy.hpCurrent}/${enemy.hpMax}\n`;
-    prompt += `- AC: ${enemy.ac}\n`;
-    prompt += `- Attack: +${enemy.attackBonus} to hit\n`;
-    prompt += `- Damage: ${enemy.damageFormula} ${enemy.damageType}\n`;
-    if (enemy.specialAbilities && enemy.specialAbilities.length > 0) {
-        prompt += `- Abilities: ${enemy.specialAbilities.join(', ')}\n`;
-    }
-
-    prompt += `\nAllies:\n`;
-    if (otherEnemies.length > 0) {
-        otherEnemies.forEach(e => {
-            prompt += `- ${e.name}: HP ${e.hpCurrent}/${e.hpMax}\n`;
-        });
-    } else {
-        prompt += `- None (you are alone)\n`;
-    }
-
-    prompt += `\nEnemies (player characters):\n`;
-    players.forEach(p => {
-        prompt += `- ${p.name}: HP ${p.hpCurrent}/${p.hpMax}, AC ${p.ac}${p.position ? `, ${p.position}` : ''}\n`;
-    });
-
-    prompt += `\n---\n\n`;
-    prompt += `Decide your action. For Phase 1, only basic attacks are supported.\n\n`;
-    prompt += `Return your decision in this format:\n`;
-    prompt += `ACTION: attack\n`;
-    prompt += `TARGET: [character name]\n`;
-    prompt += `REASONING: [brief tactical explanation from enemy's perspective]\n\n`;
-    prompt += `Example:\n`;
-    prompt += `ACTION: attack\n`;
-    prompt += `TARGET: Alice\n`;
-    prompt += `REASONING: The warrior who just killed my companion. Revenge.`;
-
-    return prompt;
+export function getActionParserPrompt(settings?: UserSettings | null): string {
+    return settings?.combatSummaryPrompt || DEFAULT_ACTION_PARSER_PROMPT;
 }

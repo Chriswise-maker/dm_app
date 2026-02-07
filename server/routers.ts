@@ -51,6 +51,25 @@ export const appRouter = router({
         return { success: true };
       }),
 
+    reset: protectedProcedure
+      .input(z.object({ sessionId: z.number() }))
+      .mutation(async ({ input }) => {
+        const db = await import('./db');
+        const { CombatEngineManager } = await import('./combat/combat-engine-manager');
+        const { clearActivityLog } = await import('./activity-log');
+
+        // Destroy V2 engine if active
+        await CombatEngineManager.destroy(input.sessionId);
+
+        // Clear activity log (in-memory)
+        clearActivityLog(input.sessionId);
+
+        // Reset DB state
+        await db.resetSession(input.sessionId);
+
+        return { success: true };
+      }),
+
     generate: protectedProcedure
       .input(z.object({
         prompt: z.string().optional(),
@@ -349,6 +368,19 @@ export const appRouter = router({
         };
       }),
 
+    // Get activity log for debugging
+    getActivityLog: protectedProcedure
+      .input(z.object({
+        sessionId: z.number(),
+        limit: z.number().default(50),
+      }))
+      .query(async ({ input }) => {
+        const { getActivityLog } = await import('./activity-log');
+        return {
+          entries: getActivityLog(input.sessionId, input.limit),
+        };
+      }),
+
     send: protectedProcedure
       .input(z.object({
         sessionId: z.number(),
@@ -363,6 +395,9 @@ export const appRouter = router({
         const { buildChatSystemPrompt, buildChatUserPrompt } = await import('./prompts');
         const { parseStructuredResponse, hasCombatInitiation, hasCombatEnd, getEnemies } = await import('./response-parser');
         const { handleAutoCombatInitiation, handleAutoCombatEnd } = await import('./combat/combat-helpers');
+        const { CombatEngineManager } = await import('./combat/combat-engine-manager');
+        const { isPlayerTurn, parsePlayerAction } = await import('./combat/player-action-parser');
+        const { generateCombatNarrative } = await import('./combat/combat-narrator');
 
         // Get context
         const character = await db.getCharacter(input.characterId);
@@ -387,10 +422,322 @@ export const appRouter = router({
           combatants.sort((a, b) => b.initiative - a.initiative);
         }
 
+        // =====================================================================
+        // PHASE 4.2: COMBAT ENGINE V2 INTEGRATION
+        // =====================================================================
+
+        // Check if V2 engine is active
+        const engine = CombatEngineManager.get(input.sessionId);
+        const enginePhase = engine?.getState().phase;
+
+        // Handle AWAIT_DAMAGE_ROLL phase - player needs to provide damage roll
+        if (engine && enginePhase === 'AWAIT_DAMAGE_ROLL') {
+          console.log('[CombatV2] In damage roll phase, extracting damage value');
+
+          // Extract damage number from message
+          const damageMatch = input.message.match(/(\d+)/);
+          if (!damageMatch) {
+            // No number found, prompt player to provide damage
+            await db.saveMessage({
+              sessionId: input.sessionId,
+              characterName: character.name,
+              content: input.message,
+              isDm: 0
+            });
+            await db.saveMessage({
+              sessionId: input.sessionId,
+              characterName: 'DM',
+              content: `I need the damage roll result. Roll your damage dice (${engine.getState().pendingAttack?.damageFormula}) and tell me the number.`,
+              isDm: 1
+            });
+            return {
+              response: `I need the damage roll result. Roll your damage dice (${engine.getState().pendingAttack?.damageFormula}) and tell me the number.`,
+              combatTriggered: false,
+              enemiesAdded: 0,
+            };
+          }
+
+          const damageRoll = parseInt(damageMatch[1], 10);
+          console.log(`[CombatV2] Extracted damage roll: ${damageRoll}`);
+
+          // Apply damage through engine
+          const result = engine.applyDamage(damageRoll);
+
+          if (result.success) {
+            await CombatEngineManager.persist(input.sessionId);
+          }
+
+          // Generate narrative
+          const currentState = engine.getState();
+          const narrative = await generateCombatNarrative(
+            input.sessionId,
+            ctx.user.id,
+            result.logs,
+            input.message,
+            character.name,
+            currentState.entities
+          );
+
+          // Save messages
+          await db.saveMessage({
+            sessionId: input.sessionId,
+            characterName: character.name,
+            content: input.message,
+            isDm: 0
+          });
+          await db.saveMessage({
+            sessionId: input.sessionId,
+            characterName: 'DM',
+            content: narrative,
+            isDm: 1
+          });
+
+          // Check if combat ended
+          if (currentState.phase === 'RESOLVED') {
+            console.log('[CombatV2] Combat ended after damage, destroying engine');
+            await CombatEngineManager.destroy(input.sessionId);
+          } else {
+            // Trigger Enemy AI if turn passed
+            const nextEntity = engine.getCurrentTurnEntity();
+            if (nextEntity && nextEntity.type === 'enemy') {
+              const { runAILoop } = await import('./combat/enemy-ai-controller');
+              console.log(`[CombatV2] Turn passed to ${nextEntity.name} (enemy), triggering AI loop...`);
+              runAILoop(input.sessionId, ctx.user.id).catch(err => {
+                console.error('[CombatV2] AI loop error:', err);
+              });
+            }
+          }
+
+          return {
+            response: narrative,
+            combatTriggered: false,
+            enemiesAdded: 0,
+          };
+        }
+
+        // Handle AWAIT_INITIATIVE phase - player needs to provide initiative roll
+        if (engine && enginePhase === 'AWAIT_INITIATIVE') {
+          console.log('[CombatV2] In initiative phase, extracting initiative value');
+
+          // Extract initiative number from message
+          const initiativeMatch = input.message.match(/(\d+)/);
+          if (!initiativeMatch) {
+            // No number found, prompt player to provide initiative
+            await db.saveMessage({
+              sessionId: input.sessionId,
+              characterName: character.name,
+              content: input.message,
+              isDm: 0
+            });
+            await db.saveMessage({
+              sessionId: input.sessionId,
+              characterName: 'DM',
+              content: `I need your initiative roll. Roll a d20 and add your initiative modifier, then tell me the result!`,
+              isDm: 1
+            });
+            return {
+              response: `I need your initiative roll. Roll a d20 and add your initiative modifier, then tell me the result!`,
+              combatTriggered: true,
+              enemiesAdded: 0,
+            };
+          }
+
+          const initiativeRoll = parseInt(initiativeMatch[1], 10);
+          console.log(`[CombatV2] Extracted initiative roll: ${initiativeRoll}`);
+
+          // Find which player entity this character corresponds to
+          const playerEntityId = `player-${character.id}`;
+          const result = engine.applyInitiative(playerEntityId, initiativeRoll);
+
+          if (result.logs.length > 0) {
+            await CombatEngineManager.persist(input.sessionId);
+          }
+
+          // Save player message
+          await db.saveMessage({
+            sessionId: input.sessionId,
+            characterName: character.name,
+            content: input.message,
+            isDm: 0
+          });
+
+          if (result.combatStarted) {
+            // Combat started! Generate narrative about turn order
+            const currentState = engine.getState();
+            const turnOrderNames = currentState.turnOrder.map(id => {
+              const entity = currentState.entities.find(e => e.id === id);
+              return entity ? `${entity.name} (${entity.initiative})` : id;
+            }).join(' → ');
+
+            const firstEntity = currentState.entities.find(e => e.id === currentState.turnOrder[0]);
+            const narrativeResponse = `**Initiative set!** The battle begins!\n\n**Turn Order:** ${turnOrderNames}\n\n*${firstEntity?.name}'s turn!*`;
+
+            await db.saveMessage({
+              sessionId: input.sessionId,
+              characterName: 'DM',
+              content: narrativeResponse,
+              isDm: 1
+            });
+
+            // Trigger enemy AI if first turn is an enemy
+            if (firstEntity && firstEntity.type === 'enemy') {
+              const { runAILoop } = await import('./combat/enemy-ai-controller');
+              console.log(`[CombatV2] First turn is ${firstEntity.name} (enemy), triggering AI loop...`);
+              runAILoop(input.sessionId, ctx.user.id).catch(err => {
+                console.error('[CombatV2] AI loop error:', err);
+              });
+            }
+
+            return {
+              response: narrativeResponse,
+              combatTriggered: true,
+              enemiesAdded: 0,
+            };
+          } else {
+            // Still waiting for other players
+            const remainingNames = result.remainingPlayers.map(id => {
+              const entity = engine.getState().entities.find(e => e.id === id);
+              return entity?.name || id;
+            }).join(', ');
+
+            const waitingMessage = `Got it! Still waiting for initiative from: **${remainingNames}**`;
+
+            await db.saveMessage({
+              sessionId: input.sessionId,
+              characterName: 'DM',
+              content: waitingMessage,
+              isDm: 1
+            });
+
+            return {
+              response: waitingMessage,
+              combatTriggered: true,
+              enemiesAdded: 0,
+            };
+          }
+        }
+
+        const isV2CombatActive = engine && enginePhase === 'ACTIVE';
+
+        if (isV2CombatActive && isPlayerTurn(input.sessionId)) {
+          console.log('[CombatV2] Intercepting chat for player turn');
+
+          // 1. Parse player action from chat
+          const parsed = await parsePlayerAction(input.sessionId, ctx.user.id, input.message);
+
+          if (parsed.error) {
+            // If parsing failed fundamentally, we might want to let normal chat handle it?
+            // But for now, let's just warn in the log and proceed with whatever action we got (likely END_TURN)
+            console.warn('[CombatV2] Action parsing warning:', parsed.error);
+          }
+
+          // 2. Execute action through engine
+          // Note: parsePlayerAction returns a valid ActionPayload
+          const result = engine!.submitAction(parsed.action);
+
+          // 3. Persist state
+          if (result.success) {
+            await CombatEngineManager.persist(input.sessionId);
+          }
+
+          // 4. Check if waiting for damage roll
+          if (result.awaitingDamageRoll) {
+            const pendingAttack = engine!.getState().pendingAttack;
+            const targetName = engine!.getState().entities.find(e => e.id === pendingAttack?.targetId)?.name || 'the enemy';
+
+            // Generate hit narrative and prompt for damage
+            const hitNarrative = await generateCombatNarrative(
+              input.sessionId,
+              ctx.user.id,
+              result.logs,
+              parsed.flavorText,
+              character.name,
+              engine!.getState().entities
+            );
+
+            const damagePrompt = `${hitNarrative}\n\n**Roll your damage!** (${pendingAttack?.damageFormula}${pendingAttack?.isCritical ? ' - DOUBLE DICE for crit!' : ''})`;
+
+            await db.saveMessage({
+              sessionId: input.sessionId,
+              characterName: character.name,
+              content: input.message,
+              isDm: 0
+            });
+            await db.saveMessage({
+              sessionId: input.sessionId,
+              characterName: 'DM',
+              content: damagePrompt,
+              isDm: 1
+            });
+
+            return {
+              response: damagePrompt,
+              combatTriggered: false,
+              enemiesAdded: 0,
+            };
+          }
+
+          // 5. Generate narrative from logs + flavor (for miss or non-attack actions)
+          const currentState = engine!.getState(); // Get fresh state for entities
+          const narrative = await generateCombatNarrative(
+            input.sessionId,
+            ctx.user.id,
+            result.logs,
+            parsed.flavorText,
+            character.name,
+            currentState.entities
+          );
+
+          // 5. Save messages
+          await db.saveMessage({
+            sessionId: input.sessionId,
+            characterName: character.name,
+            content: input.message,
+            isDm: 0
+          });
+
+          await db.saveMessage({
+            sessionId: input.sessionId,
+            characterName: 'DM',
+            content: narrative,
+            isDm: 1
+          });
+
+          // 6. Check if combat ended
+          const updatedState = engine!.getState();
+          if (updatedState.phase === 'RESOLVED') {
+            console.log('[CombatV2] Combat ended, destroying engine');
+            await CombatEngineManager.destroy(input.sessionId);
+          } else {
+            // 7. Trigger Enemy AI if turn passed
+            const nextEntity = engine!.getCurrentTurnEntity();
+            if (nextEntity && nextEntity.type === 'enemy') {
+              const { runAILoop } = await import('./combat/enemy-ai-controller');
+              console.log(`[CombatV2] Turn passed to ${nextEntity.name} (enemy), triggering AI loop...`);
+              runAILoop(input.sessionId, ctx.user.id).catch(err => {
+                console.error('[CombatV2] AI loop error:', err);
+              });
+            }
+          }
+
+          return {
+            response: narrative,
+            combatTriggered: false,
+            enemiesAdded: 0,
+          };
+        }
+
+        // =====================================================================
+        // END COMBAT V2 INTEGRATION - FALLBACK TO STANDARD FLOW
+        // =====================================================================
+
         // Get user's custom system prompt or use default
         // Enable structured output for automatic combat detection
         const userSettings = await db.getUserSettings(ctx.user.id);
         const systemPrompt = buildChatSystemPrompt(userSettings, session.narrativePrompt, true); // Enable structured output
+
+        // Get V2 Battle State if engine is active (to pass to DM)
+        const v2BattleState = engine?.getState() ?? null;
 
         const enrichedPrompt = buildChatUserPrompt(
           character,
@@ -401,7 +748,8 @@ export const appRouter = router({
           context,
           existingCombatState,
           combatants,
-          input.message
+          input.message,
+          v2BattleState
         );
 
         // Get LLM response with JSON mode enabled
@@ -427,7 +775,7 @@ export const appRouter = router({
 
         // Parse the structured response
         const structured = parseStructuredResponse(contentString);
-        const dmNarrative = structured.narrative;
+        let dmNarrative = structured.narrative;
 
         // Debug: Log parsing result
         console.log('[Chat] Parsed response - hasGameStateChanges:', !!structured.gameStateChanges);
@@ -447,11 +795,17 @@ export const appRouter = router({
           const result = await handleAutoCombatInitiation(
             input.sessionId,
             input.characterId,
-            enemies // May be empty for keyword-detected combat
+            enemies, // May be empty for keyword-detected combat
+            ctx.user.id
           );
           combatTriggered = result.success;
           enemiesAdded = result.enemiesAdded;
           console.log(`[AutoCombat] Result: ${enemiesAdded} enemies added, success: ${combatTriggered}`);
+
+          // If awaiting initiative, append prompt to narrative
+          if (result.awaitingInitiative) {
+            dmNarrative += '\n\n**Roll for initiative!**';
+          }
         }
 
         // Handle automatic combat end
@@ -1436,7 +1790,7 @@ export const appRouter = router({
         ]),
         dryRun: z.boolean().optional(),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         const { CombatEngineManager } = await import('./combat/combat-engine-manager');
 
         // Get or load engine
@@ -1487,6 +1841,16 @@ export const appRouter = router({
         // Persist if successful
         if (result.success) {
           await CombatEngineManager.persist(input.sessionId);
+
+          // If it's now an enemy's turn, trigger AI loop
+          const nextEntity = engine.getCurrentTurnEntity();
+          if (nextEntity && nextEntity.type === 'enemy') {
+            const { runAILoop } = await import('./combat/enemy-ai-controller');
+            console.log(`[CombatV2] Next turn is ${nextEntity.name} (enemy), triggering AI loop...`);
+            runAILoop(input.sessionId, ctx.user.id).catch(err => {
+              console.error('[CombatV2] AI loop error:', err);
+            });
+          }
         }
 
         return {

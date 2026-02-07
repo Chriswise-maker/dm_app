@@ -4,88 +4,107 @@
  */
 
 import type { EnemyData } from '../response-parser';
+import { CombatEngineManager } from './combat-engine-manager';
+import { createPlayerEntity, createEnemyEntity, type CombatEntity } from './combat-types';
+import { runAILoop, shouldExecuteAI } from './enemy-ai-controller';
 
 /**
  * Handle automatic combat initiation from structured DM response
- * Creates combat state, adds enemies, adds player, and sorts initiative
+ * Creates combat engine, adds enemies and player, and starts combat
+ * 
+ * @param sessionId - The session ID
+ * @param characterId - The player character ID
+ * @param enemies - Enemy data from LLM response
+ * @param userId - The user ID (for LLM settings when running AI loop)
  */
 export async function handleAutoCombatInitiation(
     sessionId: number,
     characterId: number,
-    enemies: EnemyData[]
-): Promise<{ success: boolean; enemiesAdded: number; error?: string }> {
+    enemies: EnemyData[],
+    userId: number
+): Promise<{ success: boolean; enemiesAdded: number; awaitingInitiative?: boolean; error?: string }> {
     try {
         const db = await import('../db');
-        const { DiceRoller } = await import('./dice-roller');
 
-        // 1. Create or reset combat state
-        const state = await db.createCombatState(sessionId);
-        console.log('[AutoCombat] Created combat state:', state.id);
+        console.log('[AutoCombat] Initiating V2 Combat for session:', sessionId);
 
-        // 2. Add each enemy with initiative
+        const entities: CombatEntity[] = [];
+
+        // 1. Convert enemies to CombatEntities
         let enemiesAdded = 0;
         for (const enemy of enemies) {
-            // Use provided initiative or roll
-            const initiative = enemy.initiative ?? DiceRoller.roll('1d20');
-
-            await db.addCombatant({
-                sessionId,
-                combatStateId: state.id,
-                name: enemy.name,
-                type: 'enemy',
-                characterId: null,
-                initiative,
-                ac: enemy.ac,
-                hpCurrent: enemy.hpMax,
-                hpMax: enemy.hpMax,
-                attackBonus: enemy.attackBonus,
-                damageFormula: enemy.damageFormula,
-                damageType: enemy.damageType,
-                specialAbilities: null,
-                position: null,
-            });
-
-            console.log(`[AutoCombat] Added enemy: ${enemy.name} (Init: ${initiative})`);
+            const entity = createEnemyEntity(
+                `enemy-${enemiesAdded + 1}-${Date.now()}`, // Temporary ID, engine might generate better ones if we let it, but factory needs one
+                enemy.name,
+                enemy.hpMax,
+                enemy.ac,
+                enemy.attackBonus,
+                enemy.damageFormula,
+                {
+                    damageType: enemy.damageType,
+                    initiative: enemy.initiative || 0, // 0 triggers auto-roll in engine
+                }
+            );
+            entities.push(entity);
             enemiesAdded++;
+            console.log(`[AutoCombat] Prepared enemy: ${enemy.name}`);
         }
 
-        // 3. Add player character with rolled initiative
-        const character = await db.getCharacter(characterId);
-        if (character) {
+        // 2. Fetch and convert ALL session players to CombatEntities
+        // Issue 4 Fix: Query all characters in the session, not just the active one
+        const sessionCharacters = await db.getSessionCharacters(sessionId);
+        console.log(`[AutoCombat] Found ${sessionCharacters.length} characters in session`);
+
+        for (const character of sessionCharacters) {
             const stats = JSON.parse(character.stats || '{}');
-            const dexMod = Math.floor((stats.dex || 10 - 10) / 2);
-            const playerInitiative = DiceRoller.roll('1d20') + dexMod;
+            const dexMod = Math.floor(((stats.dex || 10) - 10) / 2);
 
-            await db.addCombatant({
-                sessionId,
-                combatStateId: state.id,
-                name: character.name,
-                type: 'player',
-                characterId: character.id,
-                initiative: playerInitiative,
-                ac: character.ac,
-                hpCurrent: character.hpCurrent,
-                hpMax: character.hpMax,
-                attackBonus: null,
-                damageFormula: null,
-                damageType: null,
-                specialAbilities: null,
-                position: null,
-            });
-
-            console.log(`[AutoCombat] Added player: ${character.name} (Init: ${playerInitiative})`);
+            const playerEntity = createPlayerEntity(
+                `player-${character.id}`,
+                character.name,
+                character.hpCurrent,
+                character.hpMax,
+                character.ac,
+                0, // Initiative 0 triggers roll
+                {
+                    initiativeModifier: dexMod,
+                    dbCharacterId: character.id,
+                }
+            );
+            entities.push(playerEntity);
+            console.log(`[AutoCombat] Prepared player: ${character.name}`);
         }
 
-        // 4. Sort combatants by initiative (handled by sortCombatantsByInitiative if it exists, or manually)
-        // The combat.sortInitiative mutation will be called by the client after receiving the response
+        // 3. Get Engine and Prepare Combat (may pause for initiative)
+        const engine = CombatEngineManager.getOrCreate(sessionId);
+        const { awaitingInitiative } = engine.prepareCombat(entities);
 
-        return { success: true, enemiesAdded };
+        // 4. Persist initial state
+        await CombatEngineManager.persist(sessionId);
+
+        if (awaitingInitiative) {
+            console.log('[AutoCombat] Combat V2 prepared - awaiting player initiative rolls');
+            return { success: true, enemiesAdded, awaitingInitiative: true };
+        }
+
+        console.log('[AutoCombat] Combat V2 initiated successfully (no initiative wait)');
+
+        // 5. Trigger AI loop if first turn is an enemy (fire and forget)
+        if (shouldExecuteAI(sessionId)) {
+            console.log('[AutoCombat] First turn is enemy, triggering AI loop...');
+            runAILoop(sessionId, userId).catch(err => {
+                console.error('[AutoCombat] AI loop error:', err);
+            });
+        }
+
+        return { success: true, enemiesAdded, awaitingInitiative: false };
 
     } catch (error) {
         console.error('[AutoCombat] Failed to initiate combat:', error);
         return {
             success: false,
             enemiesAdded: 0,
+            awaitingInitiative: false,
             error: error instanceof Error ? error.message : 'Unknown error',
         };
     }
@@ -93,13 +112,12 @@ export async function handleAutoCombatInitiation(
 
 /**
  * Handle automatic combat end from structured DM response
- * Cleans up combat state
+ * Destroys the combat engine instance
  */
 export async function handleAutoCombatEnd(sessionId: number): Promise<void> {
     try {
-        const db = await import('../db');
-        await db.deleteCombatState(sessionId);
-        console.log('[AutoCombat] Combat ended for session:', sessionId);
+        await CombatEngineManager.destroy(sessionId);
+        console.log('[AutoCombat] Combat V2 ended for session:', sessionId);
     } catch (error) {
         console.error('[AutoCombat] Failed to end combat:', error);
     }

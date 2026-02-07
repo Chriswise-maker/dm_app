@@ -6,7 +6,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
-import { Loader2, Plus, Trash2, Sparkles, Pencil } from 'lucide-react';
+import { Loader2, Plus, Trash2, Sparkles, Pencil, RotateCcw } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   AlertDialog,
@@ -33,7 +33,10 @@ export default function SessionManager({ selectedSessionId, onSessionSelect }: S
   const [isEditNarrativeOpen, setIsEditNarrativeOpen] = useState(false);
   const [editingSessionId, setEditingSessionId] = useState<number | null>(null);
   const [editingNarrativePrompt, setEditingNarrativePrompt] = useState('');
+  const [resetDialogOpen, setResetDialogOpen] = useState(false);
+  const [sessionToReset, setSessionToReset] = useState<number | null>(null);
 
+  const utils = trpc.useUtils();
   const { data: sessions, isLoading, refetch } = trpc.sessions.list.useQuery();
 
   const createMutation = trpc.sessions.create.useMutation({
@@ -88,6 +91,23 @@ export default function SessionManager({ selectedSessionId, onSessionSelect }: S
     },
   });
 
+  const resetMutation = trpc.sessions.reset.useMutation({
+    onSuccess: (_data, variables) => {
+      toast.success('Campaign reset! Chat history cleared, characters restored to full HP.');
+      refetch();
+      // Invalidate messages and activity log queries so UI refreshes
+      const { sessionId } = variables;
+      utils.messages.list.invalidate({ sessionId });
+      utils.messages.getActivityLog.invalidate({ sessionId });
+      utils.characters.list.invalidate({ sessionId });
+      setResetDialogOpen(false);
+      setSessionToReset(null);
+    },
+    onError: (error) => {
+      toast.error('Failed to reset campaign: ' + error.message);
+    },
+  });
+
   const handleCreate = () => {
     if (!campaignName.trim()) {
       toast.error('Please enter a campaign name');
@@ -124,6 +144,18 @@ export default function SessionManager({ selectedSessionId, onSessionSelect }: S
         sessionId: editingSessionId,
         narrativePrompt: editingNarrativePrompt,
       });
+    }
+  };
+
+  const handleResetClick = (sessionId: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setSessionToReset(sessionId);
+    setResetDialogOpen(true);
+  };
+
+  const handleResetConfirm = () => {
+    if (sessionToReset) {
+      resetMutation.mutate({ sessionId: sessionToReset });
     }
   };
 
@@ -255,6 +287,15 @@ export default function SessionManager({ selectedSessionId, onSessionSelect }: S
                 <Button
                   size="sm"
                   variant="ghost"
+                  className="h-6 w-6 p-0 hover:bg-transparent mr-1"
+                  onClick={(e) => handleResetClick(session.id, e)}
+                  title="Reset Campaign (clear chat, keep characters)"
+                >
+                  <RotateCcw className="h-3.5 w-3.5" />
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
                   className="h-6 w-6 p-0 hover:bg-transparent"
                   onClick={(e) => handleDeleteClick(session.id, e)}
                   title="Delete campaign"
@@ -288,6 +329,28 @@ export default function SessionManager({ selectedSessionId, onSessionSelect }: S
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Reset Confirmation Dialog */}
+      <AlertDialog open={resetDialogOpen} onOpenChange={setResetDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Reset Campaign?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will clear all chat history, combat logs, and game context.
+              Characters will be restored to full HP. The campaign name and narrative prompt will be preserved.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleResetConfirm}
+              className="bg-amber-500 text-white hover:bg-amber-600"
+            >
+              Reset Campaign
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

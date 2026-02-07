@@ -35,14 +35,18 @@ export enum RangeBand {
  * Combat Phases — What the engine is currently doing
  * 
  * - IDLE: No combat happening
+ * - AWAIT_INITIATIVE: Combat starting, waiting for player initiative rolls
  * - ACTIVE: Someone's turn, waiting for action
  * - AWAIT_ROLL: Paused, waiting for user to roll dice (3D dice UI)
+ * - AWAIT_DAMAGE_ROLL: Hit confirmed, waiting for damage roll from player
  * - RESOLVED: Combat ended (all enemies dead or fled)
  */
 export const CombatPhaseSchema = z.enum([
     "IDLE",
+    "AWAIT_INITIATIVE",
     "ACTIVE",
     "AWAIT_ROLL",
+    "AWAIT_DAMAGE_ROLL",
     "RESOLVED",
 ]);
 export type CombatPhase = z.infer<typeof CombatPhaseSchema>;
@@ -222,6 +226,8 @@ export const AttackPayloadSchema = z.object({
     isRanged: z.boolean().default(false),
     advantage: z.boolean().default(false),
     disadvantage: z.boolean().default(false),
+    /** Optional: Player-provided attack roll (if they rolled themselves) */
+    attackRoll: z.number().int().optional(),
 });
 export type AttackPayload = z.infer<typeof AttackPayloadSchema>;
 
@@ -264,6 +270,35 @@ export const RollRequestSchema = z.object({
 export type RollRequest = z.infer<typeof RollRequestSchema>;
 
 /**
+ * Pending Attack — Stored when waiting for player's damage roll
+ * 
+ * After a successful attack roll, the engine enters AWAIT_DAMAGE_ROLL phase
+ * and stores this so we know who hit whom and whether it was a crit.
+ */
+export const PendingAttackSchema = z.object({
+    attackerId: z.string(),
+    targetId: z.string(),
+    isCritical: z.boolean(),
+    weaponName: z.string().optional(),
+    damageFormula: z.string(),      // Expected damage formula (e.g., "1d8+3")
+    createdAt: z.number(),
+});
+export type PendingAttack = z.infer<typeof PendingAttackSchema>;
+
+/**
+ * Pending Initiative — Stored when waiting for player initiative rolls
+ * 
+ * After combat is triggered, the engine enters AWAIT_INITIATIVE phase
+ * and tracks which players still need to roll.
+ */
+export const PendingInitiativeSchema = z.object({
+    pendingEntityIds: z.array(z.string()),  // Players who haven't rolled yet
+    rolledEntityIds: z.array(z.string()),   // Players who have rolled
+    createdAt: z.number(),
+});
+export type PendingInitiative = z.infer<typeof PendingInitiativeSchema>;
+
+/**
  * Game Settings — Configuration for the combat engine
  * 
  * Can be changed at runtime via UI in the future.
@@ -273,7 +308,7 @@ export const GameSettingsSchema = z.object({
     aiModels: z.object({
         minionTier: z.string().default("gpt-4o-mini"),
         bossTier: z.string().default("gpt-4o"),
-    }).default({}),
+    }).default({ minionTier: "gpt-4o-mini", bossTier: "gpt-4o" }),
 
     // Gameplay options
     autoCritDamage: z.boolean().default(true),  // Auto-max crit damage?
@@ -284,49 +319,65 @@ export const GameSettingsSchema = z.object({
 });
 export type GameSettings = z.infer<typeof GameSettingsSchema>;
 
-/**
- * Battle State — Everything about the current combat
- * 
- * This is the "source of truth" that the engine operates on.
- * It contains:
- * - All combatants (entities)
- * - The turn order and current turn
- * - The combat log (what happened)
- * - History for undo (previous states)
- * - Any pending dice rolls
- */
-export const BattleStateSchema = z.object({
+export type BattleState = {
+    id: string;
+    sessionId: number;
+    entities: CombatEntity[];
+    turnOrder: string[];
+    round: number;
+    turnIndex: number;
+    phase: CombatPhase;
+    log: CombatLogEntry[];
+    pendingRoll?: RollRequest;
+    pendingAttack?: PendingAttack;  // When waiting for damage roll
+    pendingInitiative?: PendingInitiative;  // When waiting for player initiative rolls
+    history: BattleState[];
+    settings: GameSettings;
+    createdAt: number;
+    updatedAt: number;
+};
+
+export const BattleStateSchema: z.ZodType<BattleState> = z.lazy(() => z.object({
     // Identity
     id: z.string(),
-    sessionId: z.number().int(),  // Link to database session
+    sessionId: z.number().int(),
 
     // Combatants
     entities: z.array(CombatEntitySchema),
-    turnOrder: z.array(z.string()),  // Entity IDs in initiative order
+    turnOrder: z.array(z.string()),
 
     // Turn tracking
     round: z.number().int().default(1),
-    turnIndex: z.number().int().default(0),  // Index into turnOrder
+    turnIndex: z.number().int().default(0),
     phase: CombatPhaseSchema.default("IDLE"),
 
     // Event log
     log: z.array(CombatLogEntrySchema).default([]),
 
-    // Pending roll (if in AWAIT_ROLL phase)
+    // Pending roll
     pendingRoll: RollRequestSchema.optional(),
 
-    // History stack for undo (most recent first)
-    // NOTE: This is NOT persisted to database (too expensive)
-    history: z.array(z.lazy(() => BattleStateSchema)).default([]),
+    // Pending attack (waiting for damage roll)
+    pendingAttack: PendingAttackSchema.optional(),
+
+    // Pending initiative (waiting for player initiative rolls)
+    pendingInitiative: PendingInitiativeSchema.optional(),
+
+    // History stack
+    history: z.array(BattleStateSchema).default([]),
 
     // Settings
-    settings: GameSettingsSchema.default({}),
+    settings: GameSettingsSchema.default({
+        aiModels: { minionTier: "gpt-4o-mini", bossTier: "gpt-4o" },
+        autoCritDamage: true,
+        allowNegativeHP: false,
+        debugMode: false,
+    }),
 
     // Timestamps
     createdAt: z.number().default(() => Date.now()),
     updatedAt: z.number().default(() => Date.now()),
-});
-export type BattleState = z.infer<typeof BattleStateSchema>;
+}));
 
 // =============================================================================
 // HELPER TYPES
@@ -340,6 +391,7 @@ export interface ActionResult {
     logs: CombatLogEntry[];
     newState: BattleState;
     error?: string;
+    awaitingDamageRoll?: boolean;  // True if waiting for player to roll damage
 }
 
 /**
