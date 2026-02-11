@@ -394,6 +394,7 @@ export const appRouter = router({
         const { invokeLLMWithSettings } = await import('./llm-with-settings');
         const { buildChatSystemPrompt, buildChatUserPrompt } = await import('./prompts');
         const { parseStructuredResponse, hasCombatInitiation, hasCombatEnd, getEnemies } = await import('./response-parser');
+        const { stripCombatMechanics } = await import('./combat/combat-transition');
         const { handleAutoCombatInitiation, handleAutoCombatEnd } = await import('./combat/combat-helpers');
         const { CombatEngineManager } = await import('./combat/combat-engine-manager');
         const { isPlayerTurn, parsePlayerAction } = await import('./combat/player-action-parser');

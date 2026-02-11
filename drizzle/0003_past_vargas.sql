@@ -1,0 +1,1 @@
+ALTER TABLE "combatState" ADD COLUMN "engineStateJson" text;
