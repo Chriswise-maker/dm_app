@@ -121,6 +121,16 @@ The following incomplete tasks have been moved to [Phase 6: UI Polish](./phase-6
 
 > **Note**: Clarifying questions deferred to Phase 5 (needs spell system).
 
+### 4.10 Combat Transition / Strict Mode ✅
+
+**Goal**: Prevent LLM from hallucinating mechanic resolutions (damage, rolls) during the transition from narrative to combat.
+
+**Files**: `server/combat/combat-transition.ts`, `server/prompts.ts`, `server/routers.ts`
+
+- [x] **Strict Mode Prompts**: `STRUCTURED_OUTPUT_WRAPPER` explicitly forbids resolved mechanics in initiation.
+- [x] **Transition Guard**: `stripCombatMechanics()` regex cleaner removes any leaked mechanical artifacts (HP updates, dice rolls) from the narrative before sending to client.
+- [x] **Router Logic**: `hasCombatInitiation` trigger routes narrative through the stripper, ensuring clean handoff to the Combat Engine.
+
 ---
 
 ## Verification
