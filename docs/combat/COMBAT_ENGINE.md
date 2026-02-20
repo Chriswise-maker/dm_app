@@ -1,7 +1,7 @@
 # Combat Engine V2
 
-> **Status**: Phase 4 In Progress (4.1-4.2 done, bug fixes applied)  
-> **Last Updated**: 2026-01-14
+> **Status**: Phase 4 Complete, moving to Phase 5
+> **Last Updated**: 2026-02-20
 
 ## Overview
 
@@ -22,7 +22,7 @@ Frontend (React)  →  combatV2 tRPC Router  →  CombatEngineManager  →  Comb
 | **1. Core Engine** | ✅ Done | Types, state machine, undo, tests |
 | **2. tRPC Integration** | ✅ Done | Endpoints, DB persistence, manager |
 | **3. Enemy AI** | ✅ Done | LLM-driven enemy turns |
-| **4. UI Integration** | 🟡 In Progress | [→ Phase 4 Plan](./phase-4-ui-integration.md) |
+| **4. UI Integration** | ✅ Done | Chat-driven parsing, logging |
 | **5. Advanced Features** | 📋 Future | [→ Phase 5 Roadmap](./phase-5-roadmap.md) |
 
 ---

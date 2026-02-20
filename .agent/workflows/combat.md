@@ -6,43 +6,28 @@ description: Work on the combat engine system
 
 1. Read `docs/combat/COMBAT_ENGINE.md` for current status
 2. Check which phase you're working on:
-   - `docs/combat/phase-1-3-completed.md` — reference for what's done
-   - `docs/combat/phase-4-ui-integration.md` — current work (in progress)
-   - `docs/combat/phase-5-roadmap.md` — future features
+   - `docs/combat/phase-1-4-completed.md` — reference for what's done
+   - `docs/combat/phase-5-roadmap.md` — current work (in progress)
+   - `docs/combat/phase-6-ui-polish.md` — UI polish deferred tasks
 
 ---
 
-## Current State (as of 2026-01-11)
+## Current State (as of 2026-02-20)
 
-**Phase 4 UI Integration** is in progress. Here's what's done:
+**Phase 4 UI Integration** is ✅ Complete.
 
-### ✅ Completed This Session
-1. **Player Action Parser** (`server/combat/player-action-parser.ts`)
-   - LLM-based intent extraction from chat messages
-   - Fuzzy entity matching ("the goblin" → `g1`)
-   - Returns `ActionPayload` + raw message as flavor
+**Phase 5 Advanced Features Roadmap** is in progress. Here's what's next:
 
-2. **Activity Log Service** (`server/activity-log.ts`)
-   - In-memory backend event logging
-   - Types: parser, engine, roll, damage, death, ai, llm, narrator, system, error
-   - Exposed via `messages.getActivityLog` tRPC endpoint
-
-3. **ContextViewer Redesign** (`client/src/components/ContextViewer.tsx`)
-   - 3 tabs: Activity, Game State, LLM Context
-   - Activity tab auto-refreshes every 2s
-   - Game State shows BattleState with entities/HP/turn
-
-4. **Activity Logging Wiring**
-   - Added `activity.*` calls to `player-action-parser.ts`
-   - Added `activity.*` calls to `enemy-ai-controller.ts`
-   - Added `activity.*` calls to `combat-engine-v2.ts`
-
-### 🔜 Next Up (4.2 Chat Integration)
-1. Detect when combat is active and it's player's turn in chat flow
-2. Route player message through `parsePlayerAction()`
-3. Call `combatV2.submitAction` with parsed action
-4. Generate narrative using combat logs + flavor
-5. Trigger enemy AI loop after player action
+### 🔜 Next Up (Phase 5)
+1. **Visual Dice** (5.1)
+   - 3D dice library (`dice-box` or `react-dice-roll`)
+   - Engine pauses at `AWAIT_ROLL` state
+   - Frontend shows dice animation
+   - Result submitted via `combat.submitRoll`
+2. **Saving Throws** (5.2)
+   - DEX/CON/WIS saves with DC calculation
+   - Advantage/disadvantage from conditions
+   - Damage modifiers: Resistance (½), Immunity (0), Vulnerability (2×)
 
 ---
 
@@ -60,7 +45,7 @@ description: Work on the combat engine system
 
 **IMPORTANT**: Update docs before finishing!
 
-1. Move completed tasks from `phase-X.md` to `phase-1-3-completed.md` (or rename to include new phase)
+1. Move completed tasks from `phase-X.md` to `phase-1-4-completed.md` (or rename to include new phase)
 2. Update `COMBAT_ENGINE.md` phase table:
    ```
    | **Phase X** | ✅ Done | Brief summary |
