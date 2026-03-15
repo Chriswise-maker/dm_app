@@ -1,15 +1,30 @@
 # Phase 5: Advanced Features Roadmap
 
-> **Status**: 📋 Future
+> **Status**: 🔄 In Progress
+> **Combat Engine Rework**: Stage 1 (Bug Fixes) ✅ Complete — see plan for Stages 2–7.
 
 ---
 
-## 5.1 Visual Dice
+## Stage 1: Bug Fixes and Hardening ✅ (2026-03-15)
 
-- 3D dice library (`dice-box` or `react-dice-roll`)
-- Engine pauses at `AWAIT_ROLL` state
-- Frontend shows dice animation
-- Result submitted via `combat.submitRoll`
+- [x] Dice mocking via optional `rollFn` in engine constructor (deterministic tests)
+- [x] `getState()` returns deep copy (`structuredClone`) — mutations don't affect engine
+- [x] Log persistence: entries pushed to `state.log`, capped at 200
+- [x] Crit/fumble from player rolls: `rawD20` on `AttackPayload`, used in `processAttack` and `resolveAttackRoll`
+- [x] `endTurn` round boundary: increment round when skip-dead loop wraps past turn order end
+- [x] `submitRoll` validation: d20 rolls 1–20, damage rolls validated against formula max
+- [x] Concurrency: `CombatEngineManager.withLock(sessionId, fn)`; `submitRoll`/`submitAction` wrapped; AI loop re-entrancy guard in `runAILoop`
+- [x] Error handling: AWAIT_DAMAGE_ROLL / AWAIT_ATTACK_ROLL check `result.success` before narrative; `submitAction` destroys engine when `phase === 'RESOLVED'`
+- [x] Dead code: removed `CombatEntityWithHooks`, `autoCritDamage`, `allowNegativeHP` from settings
+
+---
+
+## 5.1 Visual Dice ✅
+
+- [x] 2D animated dice (framer-motion) in CombatSidebar
+- [x] Engine pauses at `AWAIT_INITIATIVE`, `AWAIT_ATTACK_ROLL`, `AWAIT_DAMAGE_ROLL`
+- [x] Result submitted via `combatV2.submitRoll`
+- [x] Chat fallback for typing rolls manually
 
 ## 5.2 Saving Throws
 

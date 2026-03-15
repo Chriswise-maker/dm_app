@@ -28,6 +28,8 @@ import {
  */
 class CombatEngineManagerClass {
     private engines: Map<number, CombatEngineV2> = new Map();
+    private locks: Map<number, Promise<void>> = new Map();
+    private runningAILoops: Set<number> = new Set();
 
     /**
      * Get an existing engine for a session, or return null if none exists
@@ -98,6 +100,45 @@ class CombatEngineManagerClass {
         const db = await import("../db");
         await db.deleteCombatEngineState(sessionId);
         console.log(`[CombatEngineManager] Destroyed engine for session ${sessionId}`);
+    }
+
+    /**
+     * Serialize concurrent mutations on the same session to prevent race conditions.
+     * Operations are queued and executed one at a time per session.
+     */
+    async withLock<T>(sessionId: number, fn: () => Promise<T>): Promise<T> {
+        const existing = this.locks.get(sessionId) ?? Promise.resolve();
+        let resolve!: () => void;
+        const next = new Promise<void>(r => { resolve = r; });
+        this.locks.set(sessionId, next);
+        await existing;
+        try {
+            return await fn();
+        } finally {
+            resolve();
+            // Clean up lock entry if it's still ours
+            if (this.locks.get(sessionId) === next) {
+                this.locks.delete(sessionId);
+            }
+        }
+    }
+
+    /**
+     * Check if an AI loop is already running for a session (prevents re-entry)
+     */
+    isAILoopRunning(sessionId: number): boolean {
+        return this.runningAILoops.has(sessionId);
+    }
+
+    /**
+     * Mark an AI loop as running or finished for a session
+     */
+    setAILoopRunning(sessionId: number, running: boolean): void {
+        if (running) {
+            this.runningAILoops.add(sessionId);
+        } else {
+            this.runningAILoops.delete(sessionId);
+        }
     }
 
     /**

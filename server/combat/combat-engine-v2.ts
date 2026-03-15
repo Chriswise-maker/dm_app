@@ -30,6 +30,7 @@ import {
     LogEntryTypeSchema,
     type LogEntryType,
 } from "./combat-types";
+import { validateDiceRoll } from "./combat-validators";
 
 // =============================================================================
 // HELPER FUNCTIONS
@@ -84,11 +85,15 @@ function generateId(prefix: string = ""): string {
 // COMBAT ENGINE V2
 // =============================================================================
 
+export type RollFn = (formula: string) => { total: number; rolls: number[]; isCritical: boolean; isFumble: boolean };
+
 export class CombatEngineV2 {
     private state: BattleState;
     private maxHistorySize: number = 20;  // Keep last 20 states for undo
+    private rollFn: RollFn;
 
-    constructor(sessionId: number, settings?: Partial<GameSettings>) {
+    constructor(sessionId: number, settings?: Partial<GameSettings>, rollFn?: RollFn) {
+        this.rollFn = rollFn ?? rollDice;
         this.state = BattleStateSchema.parse({
             id: generateId("battle"),
             sessionId,
@@ -111,7 +116,7 @@ export class CombatEngineV2 {
      * Get current state (read-only copy)
      */
     getState(): Readonly<BattleState> {
-        return { ...this.state };
+        return structuredClone(this.state) as Readonly<BattleState>;
     }
 
     /**
@@ -234,6 +239,29 @@ export class CombatEngineV2 {
         }
 
         // Apply initiative (roll + modifier)
+        // Validate roll (which is the raw die roll here, usually 1-20)
+        // The signature is (entityId, roll). The caller (routers.ts) passes the raw extracted roll e.g. "18".
+        // Wait, check routers.ts usage.
+        // If router extracts "18" from "I rolled 18", is 18 the TOTAL or the DIE?
+        // Usually players say the total.
+        // But the `applyInitiative` function adds `entity.initiativeModifier`.
+        // So checking the parsing logic (router/parser) is important.
+        // 
+        // Based on `entity.initiative = roll + entity.initiativeModifier;` it assumes `roll` is the RAW d20.
+        // So we validate it against "1d20".
+
+        const validation = validateDiceRoll(roll, "1d20");
+        if (!validation.valid) {
+            // We can't return error easily here as the signature returns logs.
+            // We'll log an error and NOT apply the roll?
+            // Or update the signature?
+            // For now let's just create an error log and return.
+            logs.push(this.createLogEntry("CUSTOM", {
+                description: `Invalid initiative roll: ${roll}. Must be 1-20.`
+            }));
+            return { logs, combatStarted: false, remainingPlayers: this.state.pendingInitiative.pendingEntityIds };
+        }
+
         entity.initiative = roll + entity.initiativeModifier;
 
         logs.push(this.createLogEntry("INITIATIVE_ROLLED", {
@@ -283,7 +311,7 @@ export class CombatEngineV2 {
         // Roll initiative for enemies/allies (those with initiative === 0)
         for (const entity of this.state.entities) {
             if (entity.initiative === 0) {
-                const roll = rollDice("1d20");
+                const roll = this.rollFn("1d20");
                 entity.initiative = roll.total + entity.initiativeModifier;
 
                 logs.push(this.createLogEntry("INITIATIVE_ROLLED", {
@@ -371,7 +399,7 @@ export class CombatEngineV2 {
         // Roll initiative for ALL entities with initiative === 0
         for (const entity of this.state.entities) {
             if (entity.initiative === 0) {
-                const roll = rollDice("1d20");
+                const roll = this.rollFn("1d20");
                 entity.initiative = roll.total + entity.initiativeModifier;
 
                 logs.push(this.createLogEntry("INITIATIVE_ROLLED", {
@@ -513,7 +541,7 @@ export class CombatEngineV2 {
             }));
         }
 
-        // Skip dead/fled entities
+        // Skip dead/fled entities; track round wrapping during skip
         let attempts = 0;
         while (attempts < this.state.turnOrder.length) {
             const nextEntityId = this.state.turnOrder[this.state.turnIndex];
@@ -523,7 +551,20 @@ export class CombatEngineV2 {
                 break;
             }
 
+            const prevIndex = this.state.turnIndex;
             this.state.turnIndex = (this.state.turnIndex + 1) % this.state.turnOrder.length;
+
+            // Wrapped past end → new round
+            if (prevIndex === this.state.turnOrder.length - 1) {
+                this.state.round++;
+                logs.push(this.createLogEntry("ROUND_END", {
+                    description: `Round ${this.state.round - 1} ends.`,
+                }));
+                logs.push(this.createLogEntry("ROUND_START", {
+                    description: `Round ${this.state.round} begins.`,
+                }));
+            }
+
             attempts++;
         }
 
@@ -612,8 +653,15 @@ export class CombatEngineV2 {
         this.pushHistory();
 
         switch (payload.type) {
-            case "ATTACK":
-                return this.processAttack(payload as AttackPayload);
+            case "ATTACK": {
+                const attackPayload = payload as AttackPayload;
+                const attacker = this.getEntity(attackPayload.attackerId);
+                // If a player attacks without providing a roll → pause for visual dice roller
+                if (attacker?.type === 'player' && attackPayload.attackRoll === undefined) {
+                    return this.enterAwaitAttackRoll(attackPayload);
+                }
+                return this.processAttack(attackPayload);
+            }
 
             case "END_TURN":
                 return {
@@ -633,8 +681,115 @@ export class CombatEngineV2 {
     }
 
     /**
+     * Pause combat to await the player's attack roll from the visual dice roller.
+     * Called by submitAction when a player attacks without providing attackRoll.
+     * Sets phase to AWAIT_ATTACK_ROLL and stores the pending attack context.
+     *
+     * NOTE: pushHistory() has already been called by submitAction before this.
+     */
+    private enterAwaitAttackRoll(payload: AttackPayload): ActionResult {
+        const attacker = this.getEntity(payload.attackerId);
+        const target = this.getEntity(payload.targetId);
+
+        if (!attacker || !target) {
+            return {
+                success: false,
+                logs: [],
+                newState: this.getState() as BattleState,
+                error: `Attacker or target not found`,
+            };
+        }
+
+        this.state.phase = 'AWAIT_ATTACK_ROLL';
+        this.state.pendingAttackRoll = {
+            attackerId: attacker.id,
+            targetId: target.id,
+            attackModifier: attacker.attackModifier,
+            advantage: payload.advantage || false,
+            disadvantage: payload.disadvantage || false,
+            weaponName: payload.weaponName,
+            createdAt: Date.now(),
+        };
+        this.state.updatedAt = Date.now();
+
+        const diceFormula = (payload.advantage && !payload.disadvantage) ? "2d20kh1"
+            : (payload.disadvantage && !payload.advantage) ? "2d20kl1"
+            : "1d20";
+
+        activity.system(
+            this.state.sessionId,
+            `${attacker.name} attacks ${target.name}! Awaiting attack roll (${diceFormula}+${attacker.attackModifier})`
+        );
+
+        return {
+            success: true,
+            logs: [this.createLogEntry("CUSTOM", {
+                actorId: attacker.id,
+                targetId: target.id,
+                description: `${attacker.name} attacks ${target.name}! Roll to hit...`,
+            })],
+            newState: this.getState() as BattleState,
+            awaitingAttackRoll: true,
+        };
+    }
+
+    /**
+     * Resolve a pending attack roll submitted by the visual dice roller.
+     * Called when phase is AWAIT_ATTACK_ROLL.
+     *
+     * @param rawD20Roll - The raw d20 result (1-20). The engine adds the attacker's
+     *                     attack modifier to compute the total attack roll.
+     */
+    resolveAttackRoll(rawD20Roll: number): ActionResult {
+        if (this.state.phase !== 'AWAIT_ATTACK_ROLL' || !this.state.pendingAttackRoll) {
+            return {
+                success: false,
+                logs: [],
+                newState: this.getState() as BattleState,
+                error: 'No pending attack roll',
+            };
+        }
+
+        // Validate the d20 roll
+        const validation = validateDiceRoll(rawD20Roll, "1d20");
+        if (!validation.valid) {
+            return {
+                success: false,
+                logs: [],
+                newState: this.getState() as BattleState,
+                error: `Invalid attack roll: ${rawD20Roll}. Must be 1-20.`,
+            };
+        }
+
+        this.pushHistory();
+
+        const pending = this.state.pendingAttackRoll;
+        const totalAttack = rawD20Roll + pending.attackModifier;
+
+        // Clear pending state and resume combat
+        this.state.pendingAttackRoll = undefined;
+        this.state.phase = 'ACTIVE';
+
+        // Build an AttackPayload with the total pre-computed
+        // (processAttack treats attackRoll as the TOTAL including modifier)
+        const attackPayload: AttackPayload = {
+            type: 'ATTACK',
+            attackerId: pending.attackerId,
+            targetId: pending.targetId,
+            attackRoll: totalAttack,
+            rawD20: rawD20Roll,  // Pass the raw d20 for accurate crit/fumble detection
+            advantage: pending.advantage,
+            disadvantage: pending.disadvantage,
+            weaponName: pending.weaponName,
+            isRanged: false,
+        };
+
+        return this.processAttack(attackPayload);
+    }
+
+    /**
      * Process an attack action
-     * 
+     *
      * Flow:
      * 1. Roll d20 + attack modifier
      * 2. Compare to target's AC
@@ -681,16 +836,44 @@ export class CombatEngineV2 {
         let rollDescription: string;
 
         if (payload.attackRoll !== undefined) {
+            // Validate player's roll against formula
+            const validation = validateDiceRoll(payload.attackRoll, `${diceFormula}+${attacker.attackModifier}`);
+
+            // Note: validateDiceRoll checks the raw roll against formula min/max.
+            // But payload.attackRoll is the TOTAL. We need to be careful.
+            // Actually, the parser extracts "18" from "I got 18". This is the total.
+            // But the formula is 1d20+Mod.
+            // So we need to validate if 18 is possible given 1d20+Mod.
+
+            // Re-check semantics: validateDiceRoll takes (result, formula)
+            // If formula is "1d20+5", max is 25, min is 6.
+            // If user says "I got 30", validation fails.
+
+            if (!validation.valid) {
+                return {
+                    success: false,
+                    logs: [],
+                    newState: this.getState() as BattleState,
+                    error: `Invalid attack roll: ${payload.attackRoll} is not possible with ${diceFormula}+${attacker.attackModifier} (Range: ${validation.min}-${validation.max})`
+                };
+            }
+
             // Player provided their roll (e.g., "I roll 20")
             totalAttack = payload.attackRoll; // Already includes their modifier
-            // Detect nat 20/1 from the total (assume modifier is small)
-            isCritical = payload.attackRoll >= 20 + attacker.attackModifier;
-            isFumble = payload.attackRoll <= 1 + attacker.attackModifier;
+            if (payload.rawD20 !== undefined) {
+                // Prefer the raw d20 for accurate crit/fumble detection
+                isCritical = payload.rawD20 === 20;
+                isFumble = payload.rawD20 === 1;
+            } else {
+                // Legacy path: reverse-engineer from total (kept for chat fallback)
+                isCritical = payload.attackRoll >= 20 + attacker.attackModifier;
+                isFumble = payload.attackRoll <= 1 + attacker.attackModifier;
+            }
             rollDescription = `(player rolled ${totalAttack})`;
             console.log(`[CombatEngine] Using player-provided roll: ${totalAttack}`);
         } else {
             // Auto-roll
-            const attackRoll = rollDice(diceFormula);
+            const attackRoll = this.rollFn(diceFormula);
             totalAttack = attackRoll.total + attacker.attackModifier;
             isCritical = attackRoll.isCritical;
             isFumble = attackRoll.isFumble;
@@ -765,7 +948,7 @@ export class CombatEngineV2 {
         }
 
         // For ENEMY attacks: auto-roll damage immediately
-        const damageRoll = rollDice(damageFormula);
+        const damageRoll = this.rollFn(damageFormula);
         const damage = Math.max(1, damageRoll.total);  // Minimum 1 damage
 
         // Apply damage
@@ -837,9 +1020,23 @@ export class CombatEngineV2 {
             };
         }
 
+        const pending = this.state.pendingAttack;
+
+        // Validate damage roll
+        // logic: user provides total damage. Formula is e.g. "1d8+3".
+        const validation = validateDiceRoll(damageRoll, pending.damageFormula);
+        if (!validation.valid) {
+            return {
+                success: false,
+                logs: [],
+                newState: this.getState() as BattleState,
+                error: `Invalid damage roll: ${damageRoll} is not possible with ${pending.damageFormula} (Range: ${validation.min}-${validation.max})`
+            };
+        }
+
         this.pushHistory();
         const logs: CombatLogEntry[] = [];
-        const pending = this.state.pendingAttack;
+        // const pending = this.state.pendingAttack; // Already defined above
 
         const attacker = this.getEntity(pending.attackerId);
         const target = this.getEntity(pending.targetId);
@@ -957,7 +1154,7 @@ export class CombatEngineV2 {
         type: LogEntryType,
         data: Partial<CombatLogEntry>
     ): CombatLogEntry {
-        return {
+        const entry = {
             id: generateId("log"),
             timestamp: Date.now(),
             round: this.state.round,
@@ -965,6 +1162,14 @@ export class CombatEngineV2 {
             type,
             ...data,
         } as CombatLogEntry;
+
+        this.state.log.push(entry);
+        // Cap log to avoid unbounded growth
+        if (this.state.log.length > 200) {
+            this.state.log = this.state.log.slice(-200);
+        }
+
+        return entry;
     }
 }
 
@@ -974,10 +1179,12 @@ export class CombatEngineV2 {
 
 /**
  * Create a new combat engine instance
+ * @param rollFn - Optional injectable dice roller for deterministic tests
  */
 export function createCombatEngine(
     sessionId: number,
-    settings?: Partial<GameSettings>
+    settings?: Partial<GameSettings>,
+    rollFn?: RollFn
 ): CombatEngineV2 {
-    return new CombatEngineV2(sessionId, settings);
+    return new CombatEngineV2(sessionId, settings, rollFn);
 }

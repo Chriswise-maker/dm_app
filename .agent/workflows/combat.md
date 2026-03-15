@@ -12,22 +12,18 @@ description: Work on the combat engine system
 
 ---
 
-## Current State (as of 2026-02-20)
+## Current State (as of 2026-03-15)
 
-**Phase 4 UI Integration** is ✅ Complete.
+**Phase 5.1 Visual Dice** ✅ Complete.
 
-**Phase 5 Advanced Features Roadmap** is in progress. Here's what's next:
+**Combat Engine Rework Stage 1 (Bug Fixes and Hardening)** ✅ Complete:
+- Dice mocking, getState deep copy, log persistence, rawD20 crit/fumble, endTurn round skip fix, submitRoll validation, manager lock + AI re-entrancy guard, error handling, dead code cleanup. See `docs/combat/phase-5-roadmap.md` and `docs/combat/COMBAT_ENGINE.md`.
 
-### 🔜 Next Up (Phase 5)
-1. **Visual Dice** (5.1)
-   - 3D dice library (`dice-box` or `react-dice-roll`)
-   - Engine pauses at `AWAIT_ROLL` state
-   - Frontend shows dice animation
-   - Result submitted via `combat.submitRoll`
-2. **Saving Throws** (5.2)
-   - DEX/CON/WIS saves with DC calculation
-   - Advantage/disadvantage from conditions
-   - Damage modifiers: Resistance (½), Immunity (0), Vulnerability (2×)
+### 🔜 Next Up
+1. **Stage 2: Smarter Enemies** (from rework plan)
+   - Target scoring (pre-LLM), enriched entity data, narrator “you” fix, UNKNOWN parser fix, narrative consistency
+2. **Phase 5.2 Saving Throws** (later)
+   - DEX/CON/WIS saves, advantage/disadvantage, damage modifiers (resistance/immunity/vulnerability)
 
 ---
 
@@ -72,7 +68,8 @@ description: Work on the combat engine system
 
 ## Testing
 
-// turbo
 ```bash
+npm test -- server/combat/ --exclude='**/dice-roller.test.ts'
 npm test -- server/combat/__tests__/combat-engine-v2.test.ts
+npm test -- server/combat/__tests__/combat-ui-behaviour.test.ts
 ```

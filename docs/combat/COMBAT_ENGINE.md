@@ -1,7 +1,7 @@
 # Combat Engine V2
 
-> **Status**: Phase 4 Complete, moving to Phase 5
-> **Last Updated**: 2026-02-20
+> **Status**: Phase 5.1 Complete (Visual Dice). **Stage 1 Bug Fixes** complete. Stage 2 (Smarter Enemies) next.
+> **Last Updated**: 2026-03-15
 
 ## Overview
 
@@ -23,7 +23,7 @@ Frontend (React)  →  combatV2 tRPC Router  →  CombatEngineManager  →  Comb
 | **2. tRPC Integration** | ✅ Done | Endpoints, DB persistence, manager |
 | **3. Enemy AI** | ✅ Done | LLM-driven enemy turns |
 | **4. UI Integration** | ✅ Done | Chat-driven parsing, logging |
-| **5. Advanced Features** | 📋 Future | [→ Phase 5 Roadmap](./phase-5-roadmap.md) |
+| **5. Advanced Features** | 🔄 In Progress | [→ Phase 5 Roadmap](./phase-5-roadmap.md) — 5.1 Visual Dice ✅, Stage 1 Bug Fixes ✅ |
 
 ---
 
@@ -45,6 +45,7 @@ Frontend (React)  →  combatV2 tRPC Router  →  CombatEngineManager  →  Comb
 trpc.combatV2.getState({ sessionId })      // Get BattleState
 trpc.combatV2.initiate({ sessionId, entities })  // Start combat
 trpc.combatV2.submitAction({ sessionId, action, dryRun? })  // Attack/EndTurn
+trpc.combatV2.submitRoll({ sessionId, rollType, rawDieValue, entityId? })  // Visual dice roller
 trpc.combatV2.undo({ sessionId })          // Undo last action
 trpc.combatV2.endCombat({ sessionId })     // End combat
 ```
@@ -109,5 +110,9 @@ GameSettings: {
 ## Testing
 
 ```bash
-npm test -- server/combat/__tests__/combat-engine-v2.test.ts  # 14 tests
+npm test -- server/combat/ --exclude='**/dice-roller.test.ts'   # All combat tests (~33)
+npm test -- server/combat/__tests__/combat-engine-v2.test.ts   # Engine + Stage 1 unit tests
+npm test -- server/combat/__tests__/combat-ui-behaviour.test.ts  # UI-visible behaviour (log, crit, round)
 ```
+
+Stage 1 added: deterministic roll injection (`rollFn`), log persistence, `rawD20` crit/fumble, endTurn round fix, submitRoll validation, manager lock + AI re-entrancy guard, error handling, dead code removal.

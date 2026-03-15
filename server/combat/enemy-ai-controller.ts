@@ -295,35 +295,46 @@ export function shouldExecuteAI(sessionId: number): boolean {
  * This will keep executing until it's a player's turn or combat ends
  */
 export async function runAILoop(sessionId: number, userId: number): Promise<void> {
+    // Prevent re-entrant AI loops on the same session
+    if (CombatEngineManager.isAILoopRunning(sessionId)) {
+        console.log(`[EnemyAI] AI loop already running for session ${sessionId}, skipping`);
+        return;
+    }
+
     console.log(`[EnemyAI] Starting AI loop for session ${sessionId}`);
+    CombatEngineManager.setAILoopRunning(sessionId, true);
 
     let iterationCount = 0;
     const maxIterations = 20; // Safety limit to prevent infinite loops
 
-    while (iterationCount < maxIterations) {
-        // ISSUE 2 FIX: Check combat phase before continuing
-        const engine = CombatEngineManager.get(sessionId);
-        if (!engine || engine.getState().phase !== 'ACTIVE') {
-            console.log(`[EnemyAI] Combat no longer active, exiting loop`);
-            break;
+    try {
+        while (iterationCount < maxIterations) {
+            // Check combat phase before continuing
+            const engine = CombatEngineManager.get(sessionId);
+            if (!engine || engine.getState().phase !== 'ACTIVE') {
+                console.log(`[EnemyAI] Combat no longer active, exiting loop`);
+                break;
+            }
+
+            if (!shouldExecuteAI(sessionId)) {
+                console.log(`[EnemyAI] Not an enemy's turn, exiting loop`);
+                break;
+            }
+
+            iterationCount++;
+            console.log(`[EnemyAI] Loop iteration ${iterationCount}`);
+
+            await executeEnemyTurn(sessionId, userId);
+
+            // Small delay to prevent hammering the LLM
+            await new Promise(resolve => setTimeout(resolve, 500));
         }
 
-        if (!shouldExecuteAI(sessionId)) {
-            console.log(`[EnemyAI] Not an enemy's turn, exiting loop`);
-            break;
+        if (iterationCount >= maxIterations) {
+            console.warn(`[EnemyAI] Hit max iterations (${maxIterations}) for session ${sessionId}`);
         }
-
-        iterationCount++;
-        console.log(`[EnemyAI] Loop iteration ${iterationCount}`);
-
-        await executeEnemyTurn(sessionId, userId);
-
-        // Small delay to prevent hammering the LLM
-        await new Promise(resolve => setTimeout(resolve, 500));
-    }
-
-    if (iterationCount >= maxIterations) {
-        console.warn(`[EnemyAI] Hit max iterations (${maxIterations}) for session ${sessionId}`);
+    } finally {
+        CombatEngineManager.setAILoopRunning(sessionId, false);
     }
 
     console.log(`[EnemyAI] AI loop complete for session ${sessionId}`);

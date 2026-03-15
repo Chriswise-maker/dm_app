@@ -46,6 +46,7 @@ export const CombatPhaseSchema = z.enum([
     "AWAIT_INITIATIVE",
     "ACTIVE",
     "AWAIT_ROLL",
+    "AWAIT_ATTACK_ROLL",
     "AWAIT_DAMAGE_ROLL",
     "RESOLVED",
 ]);
@@ -226,8 +227,10 @@ export const AttackPayloadSchema = z.object({
     isRanged: z.boolean().default(false),
     advantage: z.boolean().default(false),
     disadvantage: z.boolean().default(false),
-    /** Optional: Player-provided attack roll (if they rolled themselves) */
+    /** Optional: Player-provided attack roll total (raw d20 + modifier) */
     attackRoll: z.number().int().optional(),
+    /** Optional: The raw d20 value (1-20) for accurate crit/fumble detection */
+    rawD20: z.number().int().min(1).max(20).optional(),
 });
 export type AttackPayload = z.infer<typeof AttackPayloadSchema>;
 
@@ -287,7 +290,7 @@ export type PendingAttack = z.infer<typeof PendingAttackSchema>;
 
 /**
  * Pending Initiative — Stored when waiting for player initiative rolls
- * 
+ *
  * After combat is triggered, the engine enters AWAIT_INITIATIVE phase
  * and tracks which players still need to roll.
  */
@@ -297,6 +300,24 @@ export const PendingInitiativeSchema = z.object({
     createdAt: z.number(),
 });
 export type PendingInitiative = z.infer<typeof PendingInitiativeSchema>;
+
+/**
+ * Pending Attack Roll — Stored when waiting for player's attack roll from visual dice.
+ *
+ * After a player initiates an attack without providing a roll,
+ * the engine enters AWAIT_ATTACK_ROLL and stores this context
+ * so it can resume processing when the dice result arrives.
+ */
+export const PendingAttackRollSchema = z.object({
+    attackerId: z.string(),
+    targetId: z.string(),
+    attackModifier: z.number(),
+    advantage: z.boolean().default(false),
+    disadvantage: z.boolean().default(false),
+    weaponName: z.string().optional(),
+    createdAt: z.number(),
+});
+export type PendingAttackRoll = z.infer<typeof PendingAttackRollSchema>;
 
 /**
  * Game Settings — Configuration for the combat engine
@@ -309,10 +330,6 @@ export const GameSettingsSchema = z.object({
         minionTier: z.string().default("gpt-4o-mini"),
         bossTier: z.string().default("gpt-4o"),
     }).default({ minionTier: "gpt-4o-mini", bossTier: "gpt-4o" }),
-
-    // Gameplay options
-    autoCritDamage: z.boolean().default(true),  // Auto-max crit damage?
-    allowNegativeHP: z.boolean().default(false),
 
     // Debug options
     debugMode: z.boolean().default(false),
@@ -329,8 +346,9 @@ export type BattleState = {
     phase: CombatPhase;
     log: CombatLogEntry[];
     pendingRoll?: RollRequest;
-    pendingAttack?: PendingAttack;  // When waiting for damage roll
-    pendingInitiative?: PendingInitiative;  // When waiting for player initiative rolls
+    pendingAttack?: PendingAttack;        // When waiting for damage roll
+    pendingInitiative?: PendingInitiative; // When waiting for player initiative rolls
+    pendingAttackRoll?: PendingAttackRoll; // When waiting for player attack roll from visual dice
     history: BattleState[];
     settings: GameSettings;
     createdAt: number;
@@ -363,14 +381,15 @@ export const BattleStateSchema: z.ZodType<BattleState> = z.lazy(() => z.object({
     // Pending initiative (waiting for player initiative rolls)
     pendingInitiative: PendingInitiativeSchema.optional(),
 
+    // Pending attack roll (waiting for player's d20 from visual dice roller)
+    pendingAttackRoll: PendingAttackRollSchema.optional(),
+
     // History stack
     history: z.array(BattleStateSchema).default([]),
 
     // Settings
     settings: GameSettingsSchema.default({
         aiModels: { minionTier: "gpt-4o-mini", bossTier: "gpt-4o" },
-        autoCritDamage: true,
-        allowNegativeHP: false,
         debugMode: false,
     }),
 
@@ -392,19 +411,7 @@ export interface ActionResult {
     newState: BattleState;
     error?: string;
     awaitingDamageRoll?: boolean;  // True if waiting for player to roll damage
-}
-
-/**
- * Entity with computed stats (after applying modifiers)
- * 
- * These are the "hook methods" mentioned in the constraints.
- * The base CombatEntity has raw stats; this interface adds
- * functions to compute context-aware stats.
- */
-export interface CombatEntityWithHooks extends CombatEntity {
-    getAC: (context?: AttackContext) => number;
-    getAttackModifier: (context?: AttackContext) => number;
-    getSavingThrow: (ability: string) => number;
+    awaitingAttackRoll?: boolean;  // True if waiting for player to roll attack (visual dice)
 }
 
 // =============================================================================

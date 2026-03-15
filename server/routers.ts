@@ -464,9 +464,13 @@ export const appRouter = router({
           // Apply damage through engine
           const result = engine.applyDamage(damageRoll);
 
-          if (result.success) {
-            await CombatEngineManager.persist(input.sessionId);
+          if (!result.success) {
+            await db.saveMessage({ sessionId: input.sessionId, characterName: character.name, content: input.message, isDm: 0 });
+            await db.saveMessage({ sessionId: input.sessionId, characterName: 'DM', content: result.error ?? 'Something went wrong with that roll.', isDm: 1 });
+            return { response: result.error ?? 'Invalid roll.', combatTriggered: false, enemiesAdded: 0 };
           }
+
+          await CombatEngineManager.persist(input.sessionId);
 
           // Generate narrative
           const currentState = engine.getState();
@@ -514,6 +518,80 @@ export const appRouter = router({
             combatTriggered: false,
             enemiesAdded: 0,
           };
+        }
+
+        // Handle AWAIT_ATTACK_ROLL phase - player provides their d20 via chat (fallback for visual dice)
+        if (engine && enginePhase === 'AWAIT_ATTACK_ROLL') {
+          console.log('[CombatV2] In attack roll phase, extracting roll value from chat');
+
+          const rollMatch = input.message.match(/\b(\d{1,2})\b/);
+          if (!rollMatch) {
+            // No number found - remind the player to use the dice roller or type a number
+            await db.saveMessage({
+              sessionId: input.sessionId,
+              characterName: character.name,
+              content: input.message,
+              isDm: 0
+            });
+            await db.saveMessage({
+              sessionId: input.sessionId,
+              characterName: 'DM',
+              content: `Use the **dice roller** in the sidebar to roll your attack, or type your d20 result (e.g. "I rolled 15").`,
+              isDm: 1
+            });
+            return { response: `Use the dice roller in the sidebar, or type your d20 roll result.`, combatTriggered: false, enemiesAdded: 0 };
+          }
+
+          const rawRoll = parseInt(rollMatch[1], 10);
+          if (rawRoll < 1 || rawRoll > 20) {
+            await db.saveMessage({ sessionId: input.sessionId, characterName: character.name, content: input.message, isDm: 0 });
+            await db.saveMessage({ sessionId: input.sessionId, characterName: 'DM', content: `That doesn't look like a valid d20 roll. Roll a d20 (1-20) and tell me the result!`, isDm: 1 });
+            return { response: `Roll a d20 (1-20) for your attack roll.`, combatTriggered: false, enemiesAdded: 0 };
+          }
+
+          console.log(`[CombatV2] Extracted attack roll: ${rawRoll}`);
+          const result = engine.resolveAttackRoll(rawRoll);
+
+          if (!result.success) {
+            await db.saveMessage({ sessionId: input.sessionId, characterName: character.name, content: input.message, isDm: 0 });
+            await db.saveMessage({ sessionId: input.sessionId, characterName: 'DM', content: result.error ?? 'Something went wrong with that roll.', isDm: 1 });
+            return { response: result.error ?? 'Invalid roll.', combatTriggered: false, enemiesAdded: 0 };
+          }
+
+          await CombatEngineManager.persist(input.sessionId);
+
+          const currentState = engine.getState();
+          const { generateCombatNarrative } = await import('./combat/combat-narrator');
+          const narrative = await generateCombatNarrative(
+            input.sessionId,
+            ctx.user.id,
+            result.logs,
+            input.message,
+            character.name,
+            currentState.entities
+          );
+
+          await db.saveMessage({ sessionId: input.sessionId, characterName: character.name, content: input.message, isDm: 0 });
+
+          // If the attack hit, prompt for damage roll
+          let dmContent = narrative;
+          if (currentState.phase === 'AWAIT_DAMAGE_ROLL' && currentState.pendingAttack) {
+            dmContent += `\n\n**Roll your damage!** (${currentState.pendingAttack.damageFormula}${currentState.pendingAttack.isCritical ? ' — DOUBLE DICE for crit!' : ''})`;
+          }
+
+          await db.saveMessage({ sessionId: input.sessionId, characterName: 'DM', content: dmContent, isDm: 1 });
+
+          if (currentState.phase === 'RESOLVED') {
+            await CombatEngineManager.destroy(input.sessionId);
+          } else {
+            const nextEntity = engine.getCurrentTurnEntity();
+            if (nextEntity && nextEntity.type === 'enemy') {
+              const { runAILoop } = await import('./combat/enemy-ai-controller');
+              runAILoop(input.sessionId, ctx.user.id).catch(err => console.error('[CombatV2] AI loop error:', err));
+            }
+          }
+
+          return { response: dmContent, combatTriggered: false, enemiesAdded: 0 };
         }
 
         // Handle AWAIT_INITIATIVE phase - player needs to provide initiative roll
@@ -641,7 +719,20 @@ export const appRouter = router({
             await CombatEngineManager.persist(input.sessionId);
           }
 
-          // 4. Check if waiting for damage roll
+          // 4a. Check if waiting for attack roll (visual dice roller)
+          if (result.awaitingAttackRoll) {
+            const pending = engine!.getState().pendingAttackRoll;
+            const targetName = engine!.getState().entities.find(e => e.id === pending?.targetId)?.name || 'the enemy';
+
+            const attackPrompt = `**Roll to hit ${targetName}!** Use the dice roller in the sidebar, or type your d20 result.`;
+
+            await db.saveMessage({ sessionId: input.sessionId, characterName: character.name, content: input.message, isDm: 0 });
+            await db.saveMessage({ sessionId: input.sessionId, characterName: 'DM', content: attackPrompt, isDm: 1 });
+
+            return { response: attackPrompt, combatTriggered: false, enemiesAdded: 0 };
+          }
+
+          // 4b. Check if waiting for damage roll
           if (result.awaitingDamageRoll) {
             const pendingAttack = engine!.getState().pendingAttack;
             const targetName = engine!.getState().entities.find(e => e.id === pendingAttack?.targetId)?.name || 'the enemy';
@@ -1688,6 +1779,49 @@ export const appRouter = router({
         const state = engine.getState();
 
         // Return a serializable version (BattleState is already serializable except history)
+        // Compute pendingRoll context for the visual dice roller
+        const pendingRoll = (() => {
+          if (state.phase === 'AWAIT_INITIATIVE' && state.pendingInitiative) {
+            const nextEntityId = state.pendingInitiative.pendingEntityIds[0];
+            const entity = engine.getEntity(nextEntityId);
+            return {
+              type: 'initiative' as const,
+              formula: '1d20',
+              modifier: entity?.initiativeModifier ?? 0,
+              entityId: nextEntityId,
+              entityName: entity?.name || 'Unknown',
+              prompt: `Roll initiative for ${entity?.name || 'player'} (d20+${entity?.initiativeModifier ?? 0})`,
+            };
+          }
+          if (state.phase === 'AWAIT_ATTACK_ROLL' && state.pendingAttackRoll) {
+            const attacker = engine.getEntity(state.pendingAttackRoll.attackerId);
+            const target = engine.getEntity(state.pendingAttackRoll.targetId);
+            return {
+              type: 'attack' as const,
+              formula: '1d20',
+              modifier: state.pendingAttackRoll.attackModifier,
+              entityId: state.pendingAttackRoll.attackerId,
+              entityName: attacker?.name || 'Unknown',
+              targetName: target?.name || 'Unknown',
+              prompt: `${attacker?.name} rolls to hit ${target?.name} (d20+${state.pendingAttackRoll.attackModifier})`,
+            };
+          }
+          if (state.phase === 'AWAIT_DAMAGE_ROLL' && state.pendingAttack) {
+            const attacker = engine.getEntity(state.pendingAttack.attackerId);
+            const target = engine.getEntity(state.pendingAttack.targetId);
+            return {
+              type: 'damage' as const,
+              formula: state.pendingAttack.damageFormula,
+              entityId: state.pendingAttack.attackerId,
+              entityName: attacker?.name || 'Unknown',
+              targetName: target?.name || 'Unknown',
+              isCritical: state.pendingAttack.isCritical,
+              prompt: `${attacker?.name} rolls damage against ${target?.name} (${state.pendingAttack.damageFormula}${state.pendingAttack.isCritical ? ' — CRITICAL!' : ''})`,
+            };
+          }
+          return null;
+        })();
+
         return {
           id: state.id,
           sessionId: state.sessionId,
@@ -1710,6 +1844,7 @@ export const appRouter = router({
           })),
           currentTurnEntity: engine.getCurrentTurnEntity()?.name ?? null,
           log: state.log.slice(-20), // Last 20 log entries
+          pendingRoll,
         };
       }),
 
@@ -1836,21 +1971,28 @@ export const appRouter = router({
           };
         }
 
+        return CombatEngineManager.withLock(input.sessionId, async () => {
         // Apply action for real
-        const result = engine.submitAction(normalizedAction);
+        const result = engine!.submitAction(normalizedAction);
 
         // Persist if successful
         if (result.success) {
           await CombatEngineManager.persist(input.sessionId);
 
-          // If it's now an enemy's turn, trigger AI loop
-          const nextEntity = engine.getCurrentTurnEntity();
-          if (nextEntity && nextEntity.type === 'enemy') {
-            const { runAILoop } = await import('./combat/enemy-ai-controller');
-            console.log(`[CombatV2] Next turn is ${nextEntity.name} (enemy), triggering AI loop...`);
-            runAILoop(input.sessionId, ctx.user.id).catch(err => {
-              console.error('[CombatV2] AI loop error:', err);
-            });
+          // If combat resolved, destroy engine
+          if (result.newState.phase === 'RESOLVED') {
+            console.log(`[CombatV2] submitAction: combat resolved, destroying engine`);
+            await CombatEngineManager.destroy(input.sessionId);
+          } else {
+            // If it's now an enemy's turn, trigger AI loop
+            const nextEntity = engine!.getCurrentTurnEntity();
+            if (nextEntity && nextEntity.type === 'enemy') {
+              const { runAILoop } = await import('./combat/enemy-ai-controller');
+              console.log(`[CombatV2] Next turn is ${nextEntity.name} (enemy), triggering AI loop...`);
+              runAILoop(input.sessionId, ctx.user.id).catch(err => {
+                console.error('[CombatV2] AI loop error:', err);
+              });
+            }
           }
         }
 
@@ -1860,6 +2002,7 @@ export const appRouter = router({
           logs: result.logs,
           newState: result.newState,
         };
+        }); // end withLock
       }),
 
     /**
@@ -1904,6 +2047,161 @@ export const appRouter = router({
         await CombatEngineManager.destroy(input.sessionId);
 
         return { success: true };
+      }),
+
+    /**
+     * Submit a dice roll result from the visual dice roller.
+     *
+     * Routes the roll to the correct engine method based on current phase:
+     * - AWAIT_INITIATIVE  → engine.applyInitiative()
+     * - AWAIT_ATTACK_ROLL → engine.resolveAttackRoll()
+     * - AWAIT_DAMAGE_ROLL → engine.applyDamage()
+     *
+     * After applying, saves a narrative message to chat and triggers
+     * enemy AI if the turn passed to an enemy.
+     */
+    submitRoll: protectedProcedure
+      .input(z.object({
+        sessionId: z.number(),
+        rollType: z.enum(['initiative', 'attack', 'damage']),
+        rawDieValue: z.number().int().min(1),
+        entityId: z.string().optional(), // for initiative: which player entity is rolling
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const { CombatEngineManager } = await import('./combat/combat-engine-manager');
+        const db = await import('./db');
+
+        return CombatEngineManager.withLock(input.sessionId, async () => {
+        let engine = CombatEngineManager.get(input.sessionId);
+        if (!engine) {
+          engine = await CombatEngineManager.loadFromDb(input.sessionId);
+        }
+
+        const state = engine.getState();
+        const { sessionId, rollType, rawDieValue, entityId } = input;
+
+        // Validate phase matches roll type
+        const expectedPhase = {
+          initiative: 'AWAIT_INITIATIVE',
+          attack: 'AWAIT_ATTACK_ROLL',
+          damage: 'AWAIT_DAMAGE_ROLL',
+        }[rollType];
+
+        if (state.phase !== expectedPhase) {
+          return { success: false as const, error: `Not in ${expectedPhase} phase (currently ${state.phase})` };
+        }
+
+        // Validate d20 roll range for initiative and attack rolls
+        if (rollType === 'initiative' || rollType === 'attack') {
+          if (rawDieValue > 20) {
+            return { success: false as const, error: `Invalid d20 roll: ${rawDieValue} (must be 1-20)` };
+          }
+        }
+
+        // Validate damage rolls against formula maximum
+        if (rollType === 'damage' && state.pendingAttack) {
+          const { validateDiceRoll: validateRoll } = await import('./combat/combat-validators');
+          const validation = validateRoll(rawDieValue, state.pendingAttack.damageFormula);
+          if (!validation.valid) {
+            return { success: false as const, error: `Invalid damage roll: ${rawDieValue} is out of range for ${state.pendingAttack.damageFormula} (${validation.min}-${validation.max})` };
+          }
+        }
+
+        // Determine the entity name for saving the player "message"
+        const rollingEntityName = (() => {
+          if (rollType === 'initiative' && state.pendingInitiative) {
+            const eid = entityId || state.pendingInitiative.pendingEntityIds[0];
+            return engine!.getEntity(eid)?.name ?? 'Player';
+          }
+          if (rollType === 'attack' && state.pendingAttackRoll) {
+            return engine!.getEntity(state.pendingAttackRoll.attackerId)?.name ?? 'Player';
+          }
+          if (rollType === 'damage' && state.pendingAttack) {
+            return engine!.getEntity(state.pendingAttack.attackerId)?.name ?? 'Player';
+          }
+          return 'Player';
+        })();
+
+        let result;
+
+        if (rollType === 'initiative') {
+          const targetEntityId = entityId || state.pendingInitiative!.pendingEntityIds[0];
+          const initResult = engine.applyInitiative(targetEntityId, rawDieValue);
+          result = {
+            success: initResult.logs.length > 0 || initResult.combatStarted,
+            logs: initResult.logs,
+            combatStarted: initResult.combatStarted,
+            newState: engine.getState(),
+          };
+        } else if (rollType === 'attack') {
+          result = engine.resolveAttackRoll(rawDieValue);
+        } else {
+          result = engine.applyDamage(rawDieValue);
+        }
+
+        if (!result.success && result.error) {
+          return { success: false as const, error: result.error };
+        }
+
+        // Persist engine state
+        await CombatEngineManager.persist(sessionId);
+
+        // Build narrative from combat log descriptions (no LLM needed for dice rolls)
+        const narrative = result.logs
+          .map(l => l.description)
+          .filter(Boolean)
+          .join('\n');
+
+        // Save a synthetic player roll "message"
+        const rollLabel = rollType === 'initiative' ? `d20 initiative`
+          : rollType === 'attack' ? `d20 attack`
+          : `damage`;
+        await db.saveMessage({
+          sessionId,
+          characterName: rollingEntityName,
+          content: `🎲 Rolled ${rawDieValue} (${rollLabel})`,
+          isDm: 0,
+        });
+
+        // Save narrative as DM response if we have any
+        if (narrative) {
+          const newState = engine.getState();
+          // For damage rolls that hit: append the phase prompt if needed
+          let dmContent = narrative;
+          if (rollType === 'attack' && newState.phase === 'AWAIT_DAMAGE_ROLL' && newState.pendingAttack) {
+            dmContent += `\n\n**Roll your damage!** (${newState.pendingAttack.damageFormula}${newState.pendingAttack.isCritical ? ' — DOUBLE DICE for critical hit!' : ''})`;
+          }
+          await db.saveMessage({
+            sessionId,
+            characterName: 'DM',
+            content: dmContent,
+            isDm: 1,
+          });
+        }
+
+        // Check if combat ended after this roll
+        const newState = engine.getState();
+        if (newState.phase === 'RESOLVED') {
+          console.log('[CombatV2] Combat ended after roll, destroying engine');
+          await CombatEngineManager.destroy(sessionId);
+        } else {
+          // Trigger enemy AI if the turn passed to an enemy
+          const nextEntity = engine.getCurrentTurnEntity();
+          if (nextEntity && nextEntity.type === 'enemy') {
+            const { runAILoop } = await import('./combat/enemy-ai-controller');
+            console.log(`[CombatV2] submitRoll: next turn is ${nextEntity.name} (enemy), triggering AI loop...`);
+            runAILoop(sessionId, ctx.user.id).catch(err => {
+              console.error('[CombatV2] AI loop error after submitRoll:', err);
+            });
+          }
+        }
+
+        return {
+          success: true as const,
+          logs: result.logs,
+          newState: engine.getState(),
+        };
+        }); // end withLock
       }),
   }),
 });
