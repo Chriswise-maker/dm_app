@@ -20,6 +20,40 @@ import { getEnemyAIPrompt } from '../prompts';
 import type { CombatEntity, BattleState, ActionPayload, CombatLogEntry } from './combat-types';
 
 // =============================================================================
+// TARGET SCORING (pre-LLM tactical guidance)
+// =============================================================================
+
+/**
+ * Score and rank potential targets by tactical priority.
+ * - Lowest HP percentage first (finish off wounded targets)
+ * - Avoid UNCONSCIOUS targets unless no ALIVE targets remain
+ * - Break ties randomly
+ */
+export function scoreTargets(enemy: CombatEntity, state: BattleState): CombatEntity[] {
+    const players = state.entities.filter(
+        (e: CombatEntity) => e.type === 'player' && (e.status === 'ALIVE' || e.status === 'UNCONSCIOUS')
+    );
+
+    // Prefer ALIVE over UNCONSCIOUS
+    const alive = players.filter((e) => e.status === 'ALIVE');
+    const unconscious = players.filter((e) => e.status === 'UNCONSCIOUS');
+
+    const candidates = alive.length > 0 ? alive : unconscious;
+    if (candidates.length === 0) return [];
+
+    // Sort by HP percentage ascending (lowest first = most vulnerable)
+    const sorted = [...candidates].sort((a, b) => {
+        const pctA = a.maxHp > 0 ? a.hp / a.maxHp : 1;
+        const pctB = b.maxHp > 0 ? b.hp / b.maxHp : 1;
+        if (pctA !== pctB) return pctA - pctB;
+        // Tie-break: random
+        return Math.random() - 0.5;
+    });
+
+    return sorted;
+}
+
+// =============================================================================
 // PROMPT BUILDING
 // =============================================================================
 
@@ -27,8 +61,7 @@ import type { CombatEntity, BattleState, ActionPayload, CombatLogEntry } from '.
  * Build a prompt for the LLM to decide an enemy's action
  * Uses the V2 CombatEntity format
  */
-function buildEnemyDecisionPromptV2(enemy: CombatEntity, state: BattleState): string {
-    const players = state.entities.filter((e: CombatEntity) => e.type === 'player' && e.status === 'ALIVE');
+function buildEnemyDecisionPromptV2(enemy: CombatEntity, state: BattleState, rankedTargets: CombatEntity[]): string {
     const allies = state.entities.filter((e: CombatEntity) => e.type === 'enemy' && e.id !== enemy.id && e.status === 'ALIVE');
 
     let prompt = `You are controlling: ${enemy.name}\n\n`;
@@ -37,20 +70,39 @@ function buildEnemyDecisionPromptV2(enemy: CombatEntity, state: BattleState): st
     prompt += `- AC: ${enemy.baseAC}\n`;
     prompt += `- Attack: +${enemy.attackModifier} to hit\n`;
     prompt += `- Damage: ${enemy.damageFormula} ${enemy.damageType}\n`;
+    if (enemy.tacticalRole) {
+        prompt += `- Role: ${enemy.tacticalRole}\n`;
+    }
+    if (enemy.isRanged) {
+        prompt += `- Ranged attacker\n`;
+    }
 
     if (allies.length > 0) {
         prompt += `\nAllies:\n`;
         allies.forEach((a: CombatEntity) => {
-            prompt += `- ${a.name}: HP ${a.hp}/${a.maxHp}\n`;
+            const pct = a.maxHp > 0 ? Math.round((a.hp / a.maxHp) * 100) : 0;
+            prompt += `- ${a.name}: HP ${a.hp}/${a.maxHp} (${pct}%)\n`;
         });
     } else {
         prompt += `\nAllies: None (you fight alone)\n`;
     }
 
-    prompt += `\nEnemies (player characters):\n`;
-    players.forEach((p: CombatEntity) => {
-        prompt += `- ${p.name} [id: ${p.id}]: HP ${p.hp}/${p.maxHp}, AC ${p.baseAC}\n`;
+    prompt += `\nRecommended targets (most to least tactical):\n`;
+    rankedTargets.forEach((p: CombatEntity, i: number) => {
+        const pct = p.maxHp > 0 ? Math.round((p.hp / p.maxHp) * 100) : 0;
+        const status = p.status === 'UNCONSCIOUS' ? ', unconscious' : pct < 30 ? ', vulnerable' : '';
+        prompt += `${i + 1}. ${p.name} [id: ${p.id}] — ${p.hp}/${p.maxHp} HP (${pct}%)${status}\n`;
     });
+
+    // Biggest threat: healthiest ALIVE player (most dangerous)
+    const alivePlayers = rankedTargets.filter((p) => p.status === 'ALIVE');
+    if (alivePlayers.length > 1) {
+        const biggestThreat = alivePlayers.reduce((a, b) =>
+            (a.maxHp > 0 ? a.hp / a.maxHp : 0) > (b.maxHp > 0 ? b.hp / b.maxHp : 0) ? a : b
+        );
+        const pct = biggestThreat.maxHp > 0 ? Math.round((biggestThreat.hp / biggestThreat.maxHp) * 100) : 0;
+        prompt += `\nBiggest threat: ${biggestThreat.name} (${pct}% HP, most dangerous)\n`;
+    }
 
     prompt += `\n---\n\n`;
     prompt += `Choose your attack target. Pick the most tactical option.\n\n`;
@@ -104,9 +156,13 @@ function parseEnemyAction(response: string, enemy: CombatEntity, state: BattleSt
     const validTargets = state.entities.filter((e: CombatEntity) => e.type === 'player' && e.status === 'ALIVE');
 
     if (!targetId || !validTargets.find((t: CombatEntity) => t.id === targetId)) {
-        // Fallback: attack a random valid target
-        console.warn(`[EnemyAI] Invalid target "${targetId}", picking random player.`);
-        if (validTargets.length > 0) {
+        // Fallback: use first from scoreTargets (tactically best) if available
+        const ranked = scoreTargets(enemy, state);
+        const fallback = ranked.find((t) => validTargets.some((v) => v.id === t.id));
+        if (fallback) {
+            console.warn(`[EnemyAI] Invalid target "${targetId}", using tactical fallback: ${fallback.name}`);
+            targetId = fallback.id;
+        } else if (validTargets.length > 0) {
             targetId = validTargets[Math.floor(Math.random() * validTargets.length)].id;
         }
     }
@@ -172,8 +228,11 @@ export async function executeEnemyTurn(sessionId: number, userId: number): Promi
     console.log(`[EnemyAI] Executing turn for ${entity.name}...`);
     activity.ai(sessionId, `Enemy turn: ${entity.name} is deciding...`);
 
-    // Build prompt
-    const prompt = buildEnemyDecisionPromptV2(entity, state);
+    // Score targets before LLM (pre-LLM tactical guidance)
+    const rankedTargets = scoreTargets(entity, state);
+
+    // Build prompt (includes ranked targets for LLM guidance)
+    const prompt = buildEnemyDecisionPromptV2(entity, state, rankedTargets);
 
     // Fetch user settings for customizable prompts
     const db = await import('../db');
@@ -197,9 +256,10 @@ export async function executeEnemyTurn(sessionId: number, userId: number): Promi
     } catch (error) {
         console.error(`[EnemyAI] LLM call failed for ${entity.name}:`, error);
         // Fallback: attack first valid target
-        const players = state.entities.filter((e: CombatEntity) => e.type === 'player' && e.status === 'ALIVE');
-        if (players.length > 0) {
-            llmResponse = `ACTION: attack\nTARGET_ID: ${players[0].id}\nFLAVOR: Attacks wildly!`;
+        const ranked = scoreTargets(entity, state);
+        const fallbackTarget = ranked.find((t) => t.status === 'ALIVE') ?? ranked[0];
+        if (fallbackTarget) {
+            llmResponse = `ACTION: attack\nTARGET_ID: ${fallbackTarget.id}\nFLAVOR: Attacks wildly!`;
         } else {
             llmResponse = `ACTION: end_turn`;
         }
@@ -255,7 +315,8 @@ export async function executeEnemyTurn(sessionId: number, userId: number): Promi
                 flavorText,
                 entity.name,
                 currentState.entities,
-                true // isEnemyTurn - describe enemy in third person
+                true, // isEnemyTurn - describe enemy in third person
+                actionPayload.type === 'ATTACK' ? actionPayload.targetId : undefined // "you" = attack target
             );
 
             // Save enemy action narrative to chat

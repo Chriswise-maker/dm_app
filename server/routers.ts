@@ -461,6 +461,8 @@ export const appRouter = router({
           const damageRoll = parseInt(damageMatch[1], 10);
           console.log(`[CombatV2] Extracted damage roll: ${damageRoll}`);
 
+          const attackerId = engine.getState().pendingAttack?.attackerId;
+
           // Apply damage through engine
           const result = engine.applyDamage(damageRoll);
 
@@ -480,7 +482,9 @@ export const appRouter = router({
             result.logs,
             input.message,
             character.name,
-            currentState.entities
+            currentState.entities,
+            false,
+            attackerId
           );
 
           // Save messages
@@ -568,7 +572,9 @@ export const appRouter = router({
             result.logs,
             input.message,
             character.name,
-            currentState.entities
+            currentState.entities,
+            false,
+            currentState.pendingAttackRoll?.attackerId
           );
 
           await db.saveMessage({ sessionId: input.sessionId, characterName: character.name, content: input.message, isDm: 0 });
@@ -704,9 +710,15 @@ export const appRouter = router({
           // 1. Parse player action from chat
           const parsed = await parsePlayerAction(input.sessionId, ctx.user.id, input.message);
 
+          // UNRECOGNIZED_ACTION: ask for clarification, do NOT end turn
+          if (parsed.error === 'UNRECOGNIZED_ACTION') {
+            await db.saveMessage({ sessionId: input.sessionId, characterName: character.name, content: input.message, isDm: 0 });
+            const clarificationMsg = "I'm not sure what you want to do. Try describing an action like 'I attack the goblin' or 'I end my turn.'";
+            await db.saveMessage({ sessionId: input.sessionId, characterName: 'DM', content: clarificationMsg, isDm: 1 });
+            return { response: clarificationMsg, combatTriggered: false, enemiesAdded: 0 };
+          }
+
           if (parsed.error) {
-            // If parsing failed fundamentally, we might want to let normal chat handle it?
-            // But for now, let's just warn in the log and proceed with whatever action we got (likely END_TURN)
             console.warn('[CombatV2] Action parsing warning:', parsed.error);
           }
 
@@ -744,7 +756,9 @@ export const appRouter = router({
               result.logs,
               parsed.flavorText,
               character.name,
-              engine!.getState().entities
+              engine!.getState().entities,
+              false,
+              pendingAttack?.attackerId
             );
 
             const damagePrompt = `${hitNarrative}\n\n**Roll your damage!** (${pendingAttack?.damageFormula}${pendingAttack?.isCritical ? ' - DOUBLE DICE for crit!' : ''})`;
@@ -771,13 +785,16 @@ export const appRouter = router({
 
           // 5. Generate narrative from logs + flavor (for miss or non-attack actions)
           const currentState = engine!.getState(); // Get fresh state for entities
+          const activePlayerId = parsed.action.type === 'ATTACK' ? parsed.action.attackerId : parsed.action.entityId;
           const narrative = await generateCombatNarrative(
             input.sessionId,
             ctx.user.id,
             result.logs,
             parsed.flavorText,
             character.name,
-            currentState.entities
+            currentState.entities,
+            false,
+            activePlayerId
           );
 
           // 5. Save messages
@@ -2146,16 +2163,32 @@ export const appRouter = router({
         // Persist engine state
         await CombatEngineManager.persist(sessionId);
 
-        // Build narrative from combat log descriptions (no LLM needed for dice rolls)
-        const narrative = result.logs
-          .map(l => l.description)
-          .filter(Boolean)
-          .join('\n');
+        // Unify narrative: use LLM narrator (same as chat path) for consistent quality
+        const rollLabel = rollType === 'initiative' ? `d20 initiative` : rollType === 'attack' ? `d20 attack` : `damage`;
+        const flavorText = `${rollingEntityName} rolls ${rawDieValue} (${rollLabel})`;
+
+        const activePlayerId =
+          rollType === 'initiative'
+            ? (entityId || state.pendingInitiative?.pendingEntityIds[0])
+            : rollType === 'attack'
+              ? state.pendingAttackRoll?.attackerId
+              : state.pendingAttack?.attackerId;
+
+        const { generateCombatNarrative } = await import('./combat/combat-narrator');
+        const narrative = result.logs.length > 0
+          ? await generateCombatNarrative(
+              sessionId,
+              ctx.user.id,
+              result.logs,
+              flavorText,
+              rollingEntityName,
+              engine.getState().entities,
+              false,
+              activePlayerId
+            )
+          : flavorText;
 
         // Save a synthetic player roll "message"
-        const rollLabel = rollType === 'initiative' ? `d20 initiative`
-          : rollType === 'attack' ? `d20 attack`
-          : `damage`;
         await db.saveMessage({
           sessionId,
           characterName: rollingEntityName,
@@ -2163,24 +2196,20 @@ export const appRouter = router({
           isDm: 0,
         });
 
-        // Save narrative as DM response if we have any
-        if (narrative) {
-          const newState = engine.getState();
-          // For damage rolls that hit: append the phase prompt if needed
-          let dmContent = narrative;
-          if (rollType === 'attack' && newState.phase === 'AWAIT_DAMAGE_ROLL' && newState.pendingAttack) {
-            dmContent += `\n\n**Roll your damage!** (${newState.pendingAttack.damageFormula}${newState.pendingAttack.isCritical ? ' — DOUBLE DICE for critical hit!' : ''})`;
-          }
-          await db.saveMessage({
-            sessionId,
-            characterName: 'DM',
-            content: dmContent,
-            isDm: 1,
-          });
+        // Save narrative as DM response
+        const newState = engine.getState();
+        let dmContent = narrative;
+        if (rollType === 'attack' && newState.phase === 'AWAIT_DAMAGE_ROLL' && newState.pendingAttack) {
+          dmContent += `\n\n**Roll your damage!** (${newState.pendingAttack.damageFormula}${newState.pendingAttack.isCritical ? ' — DOUBLE DICE for critical hit!' : ''})`;
         }
+        await db.saveMessage({
+          sessionId,
+          characterName: 'DM',
+          content: dmContent,
+          isDm: 1,
+        });
 
         // Check if combat ended after this roll
-        const newState = engine.getState();
         if (newState.phase === 'RESOLVED') {
           console.log('[CombatV2] Combat ended after roll, destroying engine');
           await CombatEngineManager.destroy(sessionId);

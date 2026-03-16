@@ -12,17 +12,20 @@ import type { CombatLogEntry, CombatEntity } from './combat-types';
  */
 
 // Helper to resolve entity IDs to names
-// For player characters, uses "you" for second-person narration
-function createNameResolver(entities: CombatEntity[]): (id: string | undefined) => string {
+// When activePlayerId is set: only that player gets "you"; other players use their name (multi-player fix)
+// When activePlayerId is unset: all players get "you" (legacy single-player behavior)
+function createNameResolver(entities: CombatEntity[], activePlayerId?: string): (id: string | undefined) => string {
     const entityMap = new Map(entities.map(e => [e.id, e.name]));
-    // Find all player entity IDs
-    const playerIds = new Set(entities.filter(e => e.type === 'player').map(e => e.id));
 
     return (id: string | undefined) => {
         if (!id) return 'Unknown';
-        // Use "you" for player characters only
-        if (playerIds.has(id)) return 'you';
-        return entityMap.get(id) ?? id; // Fallback to ID if not found
+        if (activePlayerId && id === activePlayerId) return 'you';
+        if (!activePlayerId) {
+            // Legacy: all players = "you"
+            const isPlayer = entities.some(e => e.type === 'player' && e.id === id);
+            if (isPlayer) return 'you';
+        }
+        return entityMap.get(id) ?? id;
     };
 }
 
@@ -33,22 +36,23 @@ export async function generateCombatNarrative(
     playerFlavorText: string,
     actorName: string,
     entities: CombatEntity[] = [], // Entity list for name resolution
-    isEnemyTurn: boolean = false // Whether this is an enemy's turn
+    isEnemyTurn: boolean = false, // Whether this is an enemy's turn
+    activePlayerId?: string // Entity ID to use "you" for (turn owner or attack target); omit for legacy
 ): Promise<string> {
     // If no logs, just return generic response (shouldn't happen in valid flow)
     if (logs.length === 0) {
         return "The action has no visible effect.";
     }
 
-    // Create name resolver from entities (uses type='player' to identify player)
-    const resolveName = createNameResolver(entities);
+    // Create name resolver: only activePlayerId gets "you" in multi-player
+    const resolveName = createNameResolver(entities, activePlayerId);
 
     // Build prompt from logs
     const logSummary = logs.map(log => formatLogEntry(log, resolveName)).join('\n');
 
-    // Find the player character name for reference
-    const playerEntity = entities.find(e => e.type === 'player');
-    const playerName = playerEntity?.name || 'the adventurer';
+    // Find the active player's name for reference (who we're addressing as "you")
+    const activeEntity = activePlayerId ? entities.find(e => e.id === activePlayerId) : entities.find(e => e.type === 'player');
+    const playerName = activeEntity?.name || entities.find(e => e.type === 'player')?.name || 'the adventurer';
 
     let prompt: string;
 

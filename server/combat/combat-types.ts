@@ -123,6 +123,11 @@ export const CombatEntitySchema = z.object({
     // Conditions (future: poisoned, frightened, etc.)
     conditions: z.array(z.string()).default([]),
 
+    // Tactical metadata (for enemy AI prompts)
+    tacticalRole: z.enum(['brute', 'skirmisher', 'controller', 'sniper', 'beast', 'minion']).optional(),
+    isRanged: z.boolean().optional().default(false),
+    preferredRange: z.nativeEnum(RangeBand).optional(),
+
     // Position relative to others
     rangeTo: z.record(z.string(), z.nativeEnum(RangeBand)).default({}),
 

@@ -319,13 +319,13 @@ export async function parsePlayerAction(
         };
     }
 
-    // Unknown action
+    // Unknown action — do NOT end turn; ask for clarification
     activity.parser(sessionId, `Parsed: UNKNOWN - could not parse action`, { message: playerMessage });
     return {
         action: { type: 'END_TURN', entityId: currentEntity.id },
-        flavorText: playerMessage,
-        confidence: llmResult.confidence,
-        error: 'Could not parse action from message',
+        flavorText: '',
+        confidence: 0,
+        error: 'UNRECOGNIZED_ACTION',
     };
 }
 
