@@ -1,19 +1,16 @@
 
-import { invokeLLMWithSettings } from '../llm-with-settings';
+import { invokeLLMWithSettings, invokeLLMWithSettingsStream } from '../llm-with-settings';
 import { activity } from '../activity-log';
 import { getCombatNarrativePrompt } from '../prompts';
 import type { CombatLogEntry, CombatEntity } from './combat-types';
 
 /**
  * Combat Narrator
- * 
+ *
  * Generates immersive narrative text from combat log entries
  * and player flavor text.
  */
 
-// Helper to resolve entity IDs to names
-// When activePlayerId is set: only that player gets "you"; other players use their name (multi-player fix)
-// When activePlayerId is unset: all players get "you" (legacy single-player behavior)
 function createNameResolver(entities: CombatEntity[], activePlayerId?: string): (id: string | undefined) => string {
     const entityMap = new Map(entities.map(e => [e.id, e.name]));
 
@@ -21,7 +18,6 @@ function createNameResolver(entities: CombatEntity[], activePlayerId?: string): 
         if (!id) return 'Unknown';
         if (activePlayerId && id === activePlayerId) return 'you';
         if (!activePlayerId) {
-            // Legacy: all players = "you"
             const isPlayer = entities.some(e => e.type === 'player' && e.id === id);
             if (isPlayer) return 'you';
         }
@@ -29,35 +25,28 @@ function createNameResolver(entities: CombatEntity[], activePlayerId?: string): 
     };
 }
 
-export async function generateCombatNarrative(
-    sessionId: number,
+async function computeCombatNarrativePrompts(
     userId: number,
     logs: CombatLogEntry[],
     playerFlavorText: string,
     actorName: string,
-    entities: CombatEntity[] = [], // Entity list for name resolution
-    isEnemyTurn: boolean = false, // Whether this is an enemy's turn
-    activePlayerId?: string // Entity ID to use "you" for (turn owner or attack target); omit for legacy
-): Promise<string> {
-    // If no logs, just return generic response (shouldn't happen in valid flow)
+    entities: CombatEntity[],
+    isEnemyTurn: boolean,
+    activePlayerId?: string
+): Promise<{ systemPrompt: string; userPrompt: string; logSummary: string } | null> {
     if (logs.length === 0) {
-        return "The action has no visible effect.";
+        return null;
     }
 
-    // Create name resolver: only activePlayerId gets "you" in multi-player
     const resolveName = createNameResolver(entities, activePlayerId);
-
-    // Build prompt from logs
     const logSummary = logs.map(log => formatLogEntry(log, resolveName)).join('\n');
 
-    // Find the active player's name for reference (who we're addressing as "you")
     const activeEntity = activePlayerId ? entities.find(e => e.id === activePlayerId) : entities.find(e => e.type === 'player');
     const playerName = activeEntity?.name || entities.find(e => e.type === 'player')?.name || 'the adventurer';
 
     let prompt: string;
 
     if (isEnemyTurn) {
-        // ENEMY TURN: Describe enemy actions in third person, player as "you"
         prompt = `You are the Dungeon Master narrating combat directly to the player.
 
 PLAYER CHARACTER: ${playerName} (address as "you")
@@ -75,7 +64,6 @@ CRITICAL: Write a 2-3 sentence narrative from the PLAYER'S perspective:
 - NEVER say "you attack" or "you launch" when describing what the enemy does
 - End with whose turn it is next`;
     } else {
-        // PLAYER TURN: Address player in second person
         prompt = `You are the Dungeon Master narrating combat directly to the player.
 
 PLAYER CHARACTER: ${actorName}
@@ -91,33 +79,123 @@ Write a vivid, immersive 2-3 sentence narrative of what just happened.
 - End with whose turn it is next, or if combat ended`;
     }
 
-
-    activity.narrator(sessionId, `Generating narrative for ${logs.length} log entries`);
-
-    // Fetch user settings for customizable narrator prompt
     const db = await import('../db');
     const userSettings = await db.getUserSettings(userId);
     const systemPrompt = getCombatNarrativePrompt(userSettings);
 
+    return { systemPrompt, userPrompt: prompt, logSummary };
+}
+
+/**
+ * Stream narrative tokens from the LLM (for SSE / real-time UI).
+ */
+export async function generateCombatNarrativeStream(
+    sessionId: number,
+    userId: number,
+    logs: CombatLogEntry[],
+    playerFlavorText: string,
+    actorName: string,
+    entities: CombatEntity[] = [],
+    isEnemyTurn: boolean = false,
+    activePlayerId?: string
+): Promise<AsyncIterable<string>> {
+    const pre = await computeCombatNarrativePrompts(
+        userId,
+        logs,
+        playerFlavorText,
+        actorName,
+        entities,
+        isEnemyTurn,
+        activePlayerId
+    );
+
+    if (!pre) {
+        return (async function* () {
+            yield 'The action has no visible effect.';
+        })();
+    }
+
+    activity.narrator(sessionId, `Generating narrative for ${logs.length} log entries`);
+
     try {
-        const response = await invokeLLMWithSettings(userId, {
+        return await invokeLLMWithSettingsStream(userId, {
             messages: [
-                { role: 'system', content: systemPrompt },
-                { role: 'user', content: prompt },
+                { role: 'system', content: pre.systemPrompt },
+                { role: 'user', content: pre.userPrompt },
             ],
             maxTokens: 300,
         });
+    } catch (error) {
+        console.error('[CombatNarrator] Stream failed, using non-streaming fallback:', error);
+        try {
+            const response = await invokeLLMWithSettings(userId, {
+                messages: [
+                    { role: 'system', content: pre.systemPrompt },
+                    { role: 'user', content: pre.userPrompt },
+                ],
+                maxTokens: 300,
+            });
+            const content = response.choices[0]?.message?.content;
+            const narrative = typeof content === 'string' ? content : 'The battle continues...';
+            return (async function* () {
+                yield narrative;
+            })();
+        } catch (fallbackErr) {
+            console.error('[CombatNarrator] Fallback failed:', fallbackErr);
+            activity.error(sessionId, 'Failed to generate narrative', { error: String(fallbackErr) });
+            return (async function* () {
+                yield `You attack! ${pre.logSummary}`;
+            })();
+        }
+    }
+}
 
-        const content = response.choices[0]?.message?.content;
-        const narrative = typeof content === 'string' ? content : 'The battle continues...';
+export async function generateCombatNarrative(
+    sessionId: number,
+    userId: number,
+    logs: CombatLogEntry[],
+    playerFlavorText: string,
+    actorName: string,
+    entities: CombatEntity[] = [],
+    isEnemyTurn: boolean = false,
+    activePlayerId?: string
+): Promise<string> {
+    const stream = await generateCombatNarrativeStream(
+        sessionId,
+        userId,
+        logs,
+        playerFlavorText,
+        actorName,
+        entities,
+        isEnemyTurn,
+        activePlayerId
+    );
 
-        activity.narrator(sessionId, 'Narrative generated successfully');
-        return narrative;
+    let narrative = '';
+    try {
+        for await (const chunk of stream) {
+            narrative += chunk;
+        }
     } catch (error) {
         console.error('[CombatNarrator] Failed to generate narrative:', error);
         activity.error(sessionId, 'Failed to generate narrative', { error: String(error) });
-        return `You attack! ${logSummary}`;
+        const pre = await computeCombatNarrativePrompts(
+            userId,
+            logs,
+            playerFlavorText,
+            actorName,
+            entities,
+            isEnemyTurn,
+            activePlayerId
+        );
+        return pre ? `You attack! ${pre.logSummary}` : 'The action has no visible effect.';
     }
+
+    if (logs.length > 0) {
+        activity.narrator(sessionId, 'Narrative generated successfully');
+    }
+
+    return narrative.trim() || 'The battle continues...';
 }
 
 function formatLogEntry(log: CombatLogEntry, resolveName: (id: string | undefined) => string): string {
@@ -145,4 +223,3 @@ function formatLogEntry(log: CombatLogEntry, resolveName: (id: string | undefine
             return log.description ? `[${log.type}] ${log.description}` : `[${log.type}]`;
     }
 }
-

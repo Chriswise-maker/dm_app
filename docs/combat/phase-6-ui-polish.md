@@ -1,6 +1,6 @@
 # Phase 6: UI Polish, Streaming & Tiered Models
 
-> **Status**: 📋 Future
+> **Status**: 🟡 In progress — **§6.2 (real streaming + chat UX) implemented**; §6.1, §6.3, §6.4 still open.
 >
 > **When to do this:** Phase 6 is independent of the combat engine rework (Stages 1–7). You can finish the rework first and do Phase 6 later, or tackle it in parallel. No rework stage depends on anything below.
 
@@ -15,42 +15,50 @@
 
 ---
 
-## 6.2 Real Streaming (do first)
+## 6.2 Real Streaming (implemented)
 
 > **Goal:** Tokens flow to the player as the LLM generates them. Perceived latency drops immediately. Same model, same prompts — only transport changes.
 
-### Problem today
+### What shipped
 
-| Path | What happens | User sees |
-|------|-------------|-----------|
-| Main chat (`messages.send`) | Server awaits **full** LLM response, returns it as one string | Dead air → wall of text |
-| Combat narrative (attack/damage/roll) | Server awaits `generateCombatNarrative()`, returns it as one string | Same |
-| Client (`ChatInterface.tsx`) | Receives complete string, **fakes** streaming with `setInterval` (2-5 chars every 30ms) | Looks like typing but only starts after full wait |
+**Server**
 
-### What to change
+- `POST /api/chat/stream` — SSE (`text/event-stream`): events `{"type":"token","text":"..."}` then `{"type":"done",...}` or `{"type":"error",...}`. Registered from `server/_core/index.ts` via `registerChatStreamRoute`.
+- `server/message-send.ts` — `executeMessageSend(ctx, input, streamHooks?)` holds the former `messages.send` logic; optional `onNarrativeDelta` for token-sized narration during generation.
+- `server/_core/llm-stream.ts` — OpenAI-compatible SSE parsing.
+- `server/_core/llm.ts` — `invokeLLMStream()` (Forge/Manus, `stream: true`).
+- `server/llm-with-settings.ts` — `invokeLLMWithSettingsStream()` (provider-specific streaming; Google may fall back to non-stream).
+- `server/narrative-json-stream.ts` — partial JSON streaming for structured `json_object` narratives where applicable.
+- `server/combat/combat-narrator.ts` — `generateCombatNarrativeStream()`; `generateCombatNarrative()` collects stream with non-stream fallback.
+- `server/routers.ts` — `messages.send` delegates to `executeMessageSend` without streaming hooks (parity with prior behavior).
 
-**Server — streaming LLM support:**
-- [ ] Add `stream: true` option to `invokeLLM` / `invokeLLMWithSettings` (`server/_core/llm.ts`, `server/llm-with-settings.ts`)
-- [ ] Handle provider-specific streaming formats:
-  - OpenAI: SSE with `data: {"choices":[{"delta":{"content":"..."}}]}` chunks
-  - Anthropic: SSE with `content_block_delta` events
-  - Google/Gemini: SSE with `candidates[0].content.parts[0].text` chunks
-- [ ] Return an `AsyncIterable<string>` or `ReadableStream` from the invoke function when streaming is requested
+**Client (`client/src/components/ChatInterface.tsx`)**
 
-**Server — streaming endpoints:**
-- [ ] Add a streaming variant of `messages.send` (e.g. tRPC subscription, or a raw SSE endpoint at `/api/chat/stream`)
-- [ ] `generateCombatNarrative` in `server/combat/combat-narrator.ts`: add a streaming variant that yields chunks instead of returning a full string
-- [ ] Combat paths in `server/routers.ts` (`AWAIT_ATTACK_ROLL`, `AWAIT_DAMAGE_ROLL`, ACTIVE handler): use streaming narrative instead of awaiting full text
+- Sends chat via `fetch('/api/chat/stream', …)` and parses `data:` SSE lines (not `EventSource`, because POST body).
+- **Reveal pacing:** tokens are buffered; the UI drains to the screen at a **steady ~48 characters per second** (`STREAM_REVEAL_CHARS_PER_SECOND`) using a fractional carry so frame timing stays even (no burst “catch-up” when the model sends large chunks).
+- **While streaming:** DM bubble renders **plain text** (`whitespace-pre-wrap`) to avoid re-parsing markdown every tick; after `done`, `refetch()` restores persisted messages rendered with **Streamdown** as before.
+- **Auto-scroll:** scrolls to bottom on new history / stream / pending user line **only while** the user is “following” the tail. If they scroll **more than ~72px** above the bottom (`SCROLL_STICK_BOTTOM_PX`), auto-scroll stops until they scroll back near the bottom. Switching **campaign (`sessionId`)** resets follow mode to on.
 
-**Client — consume real stream:**
-- [ ] Replace fake `setInterval` reveal in `ChatInterface.tsx` with real stream consumption (e.g. `EventSource`, `fetch` with `ReadableStream`, or tRPC subscription)
-- [ ] Render tokens as they arrive; scroll-to-bottom on each chunk
-- [ ] On stream end: persist final message, refetch, invalidate queries as before
+**Still non-streaming (by design unless extended)**
 
-**Keep working:**
-- [ ] Activity log / combat sidebar still update from engine state (instant, no streaming needed)
-- [ ] Error handling: if stream fails mid-way, show what was received + error toast
-- [ ] Fallback: if streaming isn't available (e.g. provider doesn't support it), fall back to current await-then-return behavior
+- Combat sidebar / activity log — engine state updates remain instant polling, not SSE.
+- Some combat paths that don’t go through the chat stream helper may still use full-string narration from the server.
+
+**Errors**
+
+- Stream failures: toast + optional partial text; queries refetched in `finally` as before.
+
+### Historical checklist (for reference)
+
+<details>
+<summary>Original §6.2 task list</summary>
+
+- Server streaming LLM + SSE route — **done** (see files above).
+- Client real stream consumption — **done** (`ChatInterface` + `/api/chat/stream`).
+- Optional: stream combat roll follow-ups everywhere — partial / path-dependent.
+- Fallback when streaming unavailable — **done** on server paths that use stream with non-stream fallback where implemented.
+
+</details>
 
 ---
 
@@ -120,10 +128,15 @@
 
 | File | Relevant to |
 |------|-------------|
-| `server/_core/llm.ts` | Streaming support, model routing |
-| `server/llm-with-settings.ts` | Per-user model config, tier parameter |
-| `server/routers.ts` | `messages.send`, `combatV2.submitRoll`, combat phase handlers |
-| `server/combat/combat-narrator.ts` | `generateCombatNarrative` — streaming variant, model tier |
-| `server/combat/enemy-ai-controller.ts` | `executeEnemyTurn` — decision model tier |
-| `server/combat/player-action-parser.ts` | `parsePlayerAction` — decision model tier |
-| `client/src/components/ChatInterface.tsx` | Replace fake streaming with real stream consumption |
+| `server/_core/llm.ts` | `invokeLLMStream` |
+| `server/_core/llm-stream.ts` | OpenAI-style SSE parsing |
+| `server/llm-with-settings.ts` | `invokeLLMWithSettingsStream`, providers |
+| `server/narrative-json-stream.ts` | Streaming partial JSON for narrative fields |
+| `server/chat-stream-route.ts` | `POST /api/chat/stream` |
+| `server/message-send.ts` | `executeMessageSend`, optional `onNarrativeDelta` |
+| `server/_core/index.ts` | Registers chat stream route |
+| `server/routers.ts` | `messages.send` → `executeMessageSend` |
+| `server/combat/combat-narrator.ts` | Stream + non-stream combat narrative |
+| `client/src/components/ChatInterface.tsx` | SSE client, reveal pacing, stick-to-bottom scroll |
+| `server/combat/enemy-ai-controller.ts` | `executeEnemyTurn` — decision model tier (future) |
+| `server/combat/player-action-parser.ts` | `parsePlayerAction` — decision model tier (future) |

@@ -9,6 +9,7 @@ console.log('[IMPORT] http/net loaded');
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 console.log('[IMPORT] trpc loaded');
 import { registerOAuthRoutes } from "./oauth";
+import { registerChatStreamRoute } from "../chat-stream-route";
 console.log('[IMPORT] oauth loaded');
 import { appRouter } from "../routers";
 console.log('[IMPORT] appRouter loaded');
@@ -62,6 +63,9 @@ async function startServer() {
   console.log('[5] Registering OAuth routes...');
   registerOAuthRoutes(app);
   console.log('[6] OAuth routes registered');
+
+  registerChatStreamRoute(app);
+  console.log('[6b] Chat stream route registered');
 
   // tRPC API
   console.log('[7] Setting up tRPC...');

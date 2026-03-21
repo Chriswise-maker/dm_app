@@ -1,70 +1,44 @@
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { DiceRoller } from '../dice-roller';
 
-/**
- * Simple test suite for dice roller
- * Run with: node --loader tsx server/combat/__tests__/dice-roller.test.ts
- */
+describe('DiceRoller', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
 
-function testDiceRoller() {
-    console.log('🎲 Testing Dice Roller...\n');
+  it('rollD20 returns 1 when Math.random is 0', () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    expect(DiceRoller.rollD20()).toBe(1);
+  });
 
-    // Test 1: Roll d20
-    console.log('Test 1: Roll d20');
-    for (let i = 0; i < 5; i++) {
-        const roll = DiceRoller.rollD20();
-        console.log(`  Roll ${i + 1}: ${roll} (valid: ${roll >= 1 && roll <= 20})`);
-    }
+  it('rollD20 returns 20 when Math.random is just below 1', () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0.999999);
+    expect(DiceRoller.rollD20()).toBe(20);
+  });
 
-    // Test 2: Parse and roll "2d6+3"
-    console.log('\nTest 2: Roll "2d6+3"');
-    for (let i = 0; i < 5; i++) {
-        const roll = DiceRoller.roll('2d6+3');
-        console.log(`  Roll ${i + 1}: ${roll} (valid: ${roll >= 5 && roll <= 15})`);
-    }
+  it('roll parses implicit 1d20', () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    expect(DiceRoller.roll('d20')).toBe(1);
+  });
 
-    // Test 3: Parse and roll "1d8+3"
-    console.log('\nTest 3: Roll "1d8+3"');
-    for (let i = 0; i < 5; i++) {
-        const roll = DiceRoller.roll('1d8+3');
-        console.log(`  Roll ${i + 1}: ${roll} (valid: ${roll >= 4 && roll <= 11})`);
-    }
+  it('roll applies modifier', () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    // 1d6 + 3 => 1 + 3
+    expect(DiceRoller.roll('1d6+3')).toBe(4);
+  });
 
-    // Test 4: Parse "d20" (implicit 1d20)
-    console.log('\nTest 4: Roll "d20"');
-    const roll = DiceRoller.roll('d20');
-    console.log(`  Roll: ${roll} (valid: ${roll >= 1 && roll <= 20})`);
+  it('roll rejects invalid formula', () => {
+    expect(() => DiceRoller.roll('invalid')).toThrow(/Invalid dice formula/);
+  });
 
-    // Test 5: Negative modifier "1d6-1"
-    console.log('\nTest 5: Roll "1d6-1"');
-    for (let i = 0; i < 5; i++) {
-        const roll = DiceRoller.roll('1d6-1');
-        console.log(`  Roll ${i + 1}: ${roll} (valid: ${roll >= 0 && roll <= 5})`);
-    }
-
-    // Test 6: Advantage
-    console.log('\nTest 6: Roll with advantage "d20"');
-    for (let i = 0; i < 3; i++) {
-        const roll = DiceRoller.rollWithAdvantage('d20');
-        console.log(`  Roll ${i + 1}: ${roll}`);
-    }
-
-    // Test 7: Disadvantage
-    console.log('\nTest 7: Roll with disadvantage "d20"');
-    for (let i = 0; i < 3; i++) {
-        const roll = DiceRoller.rollWithDisadvantage('d20');
-        console.log(`  Roll ${i + 1}: ${roll}`);
-    }
-
-    // Test 8: Invalid formula
-    console.log('\nTest 8: Invalid formula (should throw error)');
-    try {
-        DiceRoller.roll('invalid');
-        console.log('  ❌ Should have thrown error!');
-    } catch (e: any) {
-        console.log(`  ✅ Correctly threw error: ${e.message}`);
-    }
-
-    console.log('\n✅ All dice roller tests completed!');
-}
-
-testDiceRoller();
+  it('rollWithAdvantage takes max of two rolls', () => {
+    let n = 0;
+    vi.spyOn(Math, 'random').mockImplementation(() => {
+      n += 1;
+      return n === 1 ? 0 : 0.5;
+    });
+    const r = DiceRoller.rollWithAdvantage('d20');
+    expect(r).toBeGreaterThanOrEqual(1);
+    expect(r).toBeLessThanOrEqual(20);
+  });
+});

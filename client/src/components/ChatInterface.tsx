@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { trpc } from '@/lib/trpc';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -10,6 +10,12 @@ import { useCombatState } from '@/hooks/combat/useCombatState';
 import InitiativeDisplay from '@/components/combat/InitiativeDisplay';
 import ContextViewer from '@/components/ContextViewer';
 import { Input } from '@/components/ui/input';
+
+/** Steady stream reveal: faster than typical reading (~20–30 chars/s), no burst catch-up. */
+const STREAM_REVEAL_CHARS_PER_SECOND = 48;
+
+/** If the user is within this many px of the bottom, treat them as "following" new messages. */
+const SCROLL_STICK_BOTTOM_PX = 72;
 
 interface ChatInterfaceProps {
   sessionId: number | null;
@@ -38,7 +44,7 @@ export default function ChatInterface({
   refetchCombatState
 }: ChatInterfaceProps) {
   const [message, setMessage] = useState('');
-  const [isStreaming, setIsStreaming] = useState(false);
+  const [isSendingChat, setIsSendingChat] = useState(false);
   const [streamingText, setStreamingText] = useState('');
   const [pendingUserMessage, setPendingUserMessage] = useState<string | null>(null);
   const [playingMessageId, setPlayingMessageId] = useState<number | null>(null);
@@ -56,8 +62,86 @@ export default function ChatInterface({
 
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  /** When true, new content keeps the thread pinned to the bottom. Cleared when user scrolls up. */
+  const stickToBottomRef = useRef(true);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  /** Holds the full streamed text received so far. */
+  const streamTargetTextRef = useRef('');
+  /** Tracks how much of the streamed text we have revealed to the user. */
+  const streamDisplayedLengthRef = useRef(0);
+  /** Drives a steady visual drain from buffered stream text to the UI. */
+  const streamDrainRafRef = useRef<number | null>(null);
+  const streamLastFrameRef = useRef<number | null>(null);
+  const streamDrainResolveRef = useRef<(() => void) | null>(null);
+  const streamDrainCarryRef = useRef(0);
   const utils = trpc.useUtils();
+
+  const stopStreamDrain = useCallback((opts?: { reset?: boolean }) => {
+    if (streamDrainRafRef.current != null) {
+      cancelAnimationFrame(streamDrainRafRef.current);
+      streamDrainRafRef.current = null;
+    }
+    streamLastFrameRef.current = null;
+    streamDrainResolveRef.current?.();
+    streamDrainResolveRef.current = null;
+    if (opts?.reset) {
+      streamTargetTextRef.current = '';
+      streamDisplayedLengthRef.current = 0;
+      streamDrainCarryRef.current = 0;
+    }
+  }, []);
+
+  const ensureStreamDrain = useCallback(() => {
+    if (streamDrainRafRef.current != null) return;
+
+    const tick = (timestamp: number) => {
+      const target = streamTargetTextRef.current;
+      const displayedLength = streamDisplayedLengthRef.current;
+      const remaining = target.length - displayedLength;
+
+      if (remaining <= 0) {
+        streamDrainCarryRef.current = 0;
+        streamDrainRafRef.current = null;
+        streamLastFrameRef.current = null;
+        streamDrainResolveRef.current?.();
+        streamDrainResolveRef.current = null;
+        return;
+      }
+
+      const prevTimestamp = streamLastFrameRef.current ?? timestamp;
+      const deltaMs = Math.max(16, timestamp - prevTimestamp);
+      streamLastFrameRef.current = timestamp;
+
+      const budget =
+        (STREAM_REVEAL_CHARS_PER_SECOND * deltaMs) / 1000 + streamDrainCarryRef.current;
+      let add = Math.floor(budget);
+      streamDrainCarryRef.current = budget - add;
+      add = Math.min(add, remaining);
+      if (add < 1) {
+        streamDrainRafRef.current = requestAnimationFrame(tick);
+        return;
+      }
+
+      const nextLength = displayedLength + add;
+
+      streamDisplayedLengthRef.current = nextLength;
+      setStreamingText(target.slice(0, nextLength));
+      streamDrainRafRef.current = requestAnimationFrame(tick);
+    };
+
+    streamDrainRafRef.current = requestAnimationFrame(tick);
+  }, []);
+
+  const waitForStreamDrain = useCallback(async () => {
+    if (streamDisplayedLengthRef.current >= streamTargetTextRef.current.length) {
+      return;
+    }
+
+    await new Promise<void>((resolve) => {
+      streamDrainResolveRef.current = resolve;
+      ensureStreamDrain();
+    });
+  }, [ensureStreamDrain]);
 
   // const { combatState, refetchCombatState } = useCombatState(sessionId); // Removed internal hook
 
@@ -74,6 +158,122 @@ export default function ChatInterface({
   const { data: settings } = trpc.settings.get.useQuery();
 
   const generateEnemiesMutation = trpc.combat.generateEnemies.useMutation();
+
+  const postChatStream = useCallback(
+    async (
+      userMessage: string,
+      opts?: { showPendingUser?: boolean }
+    ) => {
+      if (!sessionId || !characterId) return;
+      const showPending = opts?.showPendingUser !== false;
+      if (showPending) {
+        setPendingUserMessage(userMessage);
+      }
+      setIsSendingChat(true);
+      setStreamingText('');
+      stopStreamDrain({ reset: true });
+      let acc = '';
+      try {
+        const res = await fetch('/api/chat/stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({
+            sessionId,
+            characterId,
+            message: userMessage,
+          }),
+        });
+        if (!res.ok) {
+          const errBody = await res.text();
+          throw new Error(errBody || res.statusText || 'Stream request failed');
+        }
+        if (!res.body) throw new Error('No response body');
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let sep: number;
+          while ((sep = buffer.indexOf('\n\n')) !== -1) {
+            const raw = buffer.slice(0, sep);
+            buffer = buffer.slice(sep + 2);
+            if (!raw.trim()) continue;
+            for (const line of raw.split('\n')) {
+              if (!line.startsWith('data:')) continue;
+              const payload = line.slice(5).trimStart();
+              try {
+                const ev = JSON.parse(payload) as {
+                  type: string;
+                  text?: string;
+                  response?: string;
+                  message?: string;
+                  combatTriggered?: boolean;
+                  enemiesAdded?: number;
+                };
+                if (ev.type === 'token' && ev.text) {
+                  acc += ev.text;
+                  streamTargetTextRef.current = acc;
+                  ensureStreamDrain();
+                }
+                if (ev.type === 'done') {
+                  if (ev.response) {
+                    acc = ev.response;
+                  }
+                  streamTargetTextRef.current = acc;
+                  ensureStreamDrain();
+                  if (ev.combatTriggered) {
+                    toast.success(
+                      `⚔️ Combat initiated! ${ev.enemiesAdded ?? 0} ${(ev.enemiesAdded ?? 0) === 1 ? 'enemy' : 'enemies'} appeared!`
+                    );
+                    refetchCombatState?.();
+                  }
+                }
+                if (ev.type === 'error') {
+                  throw new Error(ev.message || 'Stream error');
+                }
+              } catch (e) {
+                if (e instanceof SyntaxError) continue;
+                throw e;
+              }
+            }
+          }
+        }
+        await waitForStreamDrain();
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        toast.error('Failed to send message: ' + msg);
+        if (acc) {
+          toast.error('Showing partial response before the error.');
+          streamTargetTextRef.current = acc;
+          ensureStreamDrain();
+          await waitForStreamDrain();
+        }
+      } finally {
+        setPendingUserMessage(null);
+        setIsSendingChat(false);
+        await refetch();
+        if (sessionId) {
+          await utils.characters.list.invalidate({ sessionId });
+        }
+        refetchCombatState?.();
+        stopStreamDrain({ reset: true });
+        setStreamingText('');
+      }
+    },
+    [
+      sessionId,
+      characterId,
+      ensureStreamDrain,
+      refetch,
+      refetchCombatState,
+      stopStreamDrain,
+      utils.characters.list,
+      waitForStreamDrain,
+    ]
+  );
 
   const initiateCombat = trpc.combat.initiate.useMutation({
     onSuccess: () => {
@@ -101,21 +301,11 @@ export default function ChatInterface({
         if (result.isDead) {
           toast.success(`💀 ${result.targetName} defeated!`);
           setPendingAttack(null);
-          // Send to DM for narration
-          sendMutation.mutate({
-            sessionId: sessionId!,
-            characterId: characterId!,
-            message: result.mechanicalOutcome,
-          });
+          void postChatStream(result.mechanicalOutcome, { showPendingUser: true });
         } else if (result.damage !== undefined) {
           toast.success(`🎯 Hit! ${result.damage} damage dealt.`);
           setPendingAttack(null);
-          // Send to DM for narration
-          sendMutation.mutate({
-            sessionId: sessionId!,
-            characterId: characterId!,
-            message: result.mechanicalOutcome,
-          });
+          void postChatStream(result.mechanicalOutcome, { showPendingUser: true });
         } else {
           // Hit but awaiting damage
           toast.info(`🎯 Hit! Roll damage.`);
@@ -124,12 +314,7 @@ export default function ChatInterface({
       } else {
         toast.info(`❌ Miss! (${result.attackRoll} vs AC ${result.targetAC})`);
         setPendingAttack(null);
-        // Send to DM for narration
-        sendMutation.mutate({
-          sessionId: sessionId!,
-          characterId: characterId!,
-          message: result.mechanicalOutcome,
-        });
+        void postChatStream(result.mechanicalOutcome, { showPendingUser: true });
       }
 
       setAttackRollInput('');
@@ -180,55 +365,29 @@ export default function ChatInterface({
     },
   });
 
-  const sendMutation = trpc.messages.send.useMutation({
-    onSuccess: (data) => {
-      // Clear pending user message since it's now in the database
-      setPendingUserMessage(null);
+  const handleMessagesScroll = useCallback(() => {
+    const el = messagesContainerRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    stickToBottomRef.current = distanceFromBottom <= SCROLL_STICK_BOTTOM_PX;
+  }, []);
 
-      // Handle automatic combat trigger from server
-      if (data.combatTriggered) {
-        toast.success(`⚔️ Combat initiated! ${data.enemiesAdded} ${data.enemiesAdded === 1 ? 'enemy' : 'enemies'} appeared!`);
-        refetchCombatState?.();
-      }
-
-      // Start streaming effect
-      const fullText = data.response;
-      setIsStreaming(true);
-      setStreamingText('');
-
-      let currentIndex = 0;
-      const streamInterval = setInterval(() => {
-        if (currentIndex < fullText.length) {
-          // Add 2-5 characters at a time for more natural streaming
-          const charsToAdd = Math.min(Math.floor(Math.random() * 4) + 2, fullText.length - currentIndex);
-          setStreamingText(fullText.substring(0, currentIndex + charsToAdd));
-          currentIndex += charsToAdd;
-        } else {
-          clearInterval(streamInterval);
-          setIsStreaming(false);
-          setStreamingText('');
-          refetch();
-          // Invalidate character query to refresh HP and inventory
-          if (sessionId) {
-            utils.characters.list.invalidate({ sessionId });
-          }
-          // Also refetch combat state in case it changed
-          refetchCombatState?.();
-        }
-      }, 30); // Adjust speed here (lower = faster)
-    },
-    onError: (error) => {
-      toast.error('Failed to send message: ' + error.message);
-      setPendingUserMessage(null); // Clear pending message on error
-    },
-  });
-
-  // Scroll to bottom on new messages
+  // Scroll to bottom on new messages only while the user is following the tail
   useEffect(() => {
-    if (messagesContainerRef.current) {
-      messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
-    }
+    if (!stickToBottomRef.current || !messagesContainerRef.current) return;
+    const el = messagesContainerRef.current;
+    el.scrollTop = el.scrollHeight;
   }, [messages, streamingText, pendingUserMessage]);
+
+  useEffect(() => {
+    stickToBottomRef.current = true;
+  }, [sessionId]);
+
+  useEffect(() => {
+    return () => {
+      stopStreamDrain({ reset: true });
+    };
+  }, [stopStreamDrain]);
 
   // Poll for combat state updates if we don't have the hook doing it
   // Actually, the hook in Home.tsx handles polling, so we just receive updates via props
@@ -269,14 +428,7 @@ export default function ChatInterface({
     const userMessage = message.trim();
     setMessage('');
 
-    // Immediately show the user's message
-    setPendingUserMessage(userMessage);
-
-    sendMutation.mutate({
-      sessionId,
-      characterId,
-      message: userMessage,
-    });
+    void postChatStream(userMessage, { showPendingUser: true });
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
@@ -441,7 +593,7 @@ export default function ChatInterface({
   }
 
   // Show thinking indicator while waiting for response
-  if (sendMutation.isPending && !isStreaming) {
+  if (isSendingChat && !streamingText) {
     allMessages.push({
       id: 'thinking',
       characterName: 'DM',
@@ -453,7 +605,7 @@ export default function ChatInterface({
   }
 
   // Show streaming DM response
-  if (isStreaming && streamingText) {
+  if (streamingText) {
     allMessages.push({
       id: 'streaming',
       characterName: 'DM',
@@ -469,6 +621,7 @@ export default function ChatInterface({
       {/* Messages Area */}
       <div
         ref={messagesContainerRef}
+        onScroll={handleMessagesScroll}
         className="flex-1 overflow-y-auto p-4 space-y-4"
       >
         {/* Combat Initiative Display - REMOVED (Moved to Sidebar) */}
@@ -532,7 +685,13 @@ export default function ChatInterface({
                       </div>
                     ) : (
                       <div className="prose prose-sm dark:prose-invert max-w-none">
-                        <Streamdown>{msg.content}</Streamdown>
+                        {'isStreaming' in msg && msg.isStreaming ? (
+                          <div className="whitespace-pre-wrap break-words leading-relaxed [text-rendering:optimizeLegibility]">
+                            {msg.content}
+                          </div>
+                        ) : (
+                          <Streamdown>{msg.content}</Streamdown>
+                        )}
                       </div>
                     )}
                   </div>
@@ -559,16 +718,16 @@ export default function ChatInterface({
                 onKeyDown={handleKeyPress}
                 placeholder={`What does ${characterName} do?`}
                 className="flex-1 min-h-[60px] max-h-[200px]"
-                disabled={sendMutation.isPending}
+                disabled={isSendingChat}
               />
               <div className="flex flex-col gap-2">
                 <Button
                   onClick={handleSend}
-                  disabled={sendMutation.isPending || !message.trim()}
+                  disabled={isSendingChat || !message.trim()}
                   size="icon"
                   className="h-[60px] w-[60px]"
                 >
-                  {sendMutation.isPending ? (
+                  {isSendingChat ? (
                     <Loader2 className="h-5 w-5 animate-spin" />
                   ) : (
                     <Send className="h-5 w-5" />

@@ -1,4 +1,5 @@
 import { ENV } from "./env";
+import { parseOpenAICompatibleSSEStream } from "./llm-stream";
 
 export type Role = "system" | "user" | "assistant" | "tool" | "function";
 
@@ -329,4 +330,78 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   }
 
   return (await response.json()) as InvokeResult;
+}
+
+/**
+ * Stream tokens from the default Forge / OpenAI-compatible endpoint.
+ * Falls back to non-streaming behavior is not used here — callers use invokeLLM for that.
+ */
+export async function invokeLLMStream(
+  params: InvokeParams
+): Promise<AsyncIterable<string>> {
+  assertApiKey();
+
+  const {
+    messages,
+    tools,
+    toolChoice,
+    tool_choice,
+    outputSchema,
+    output_schema,
+    responseFormat,
+    response_format,
+  } = params;
+
+  const payload: Record<string, unknown> = {
+    model: "gemini-2.5-flash",
+    messages: messages.map(normalizeMessage),
+    stream: true,
+  };
+
+  if (tools && tools.length > 0) {
+    payload.tools = tools;
+  }
+
+  const normalizedToolChoice = normalizeToolChoice(
+    toolChoice || tool_choice,
+    tools
+  );
+  if (normalizedToolChoice) {
+    payload.tool_choice = normalizedToolChoice;
+  }
+
+  payload.max_tokens = 32768;
+
+  const normalizedResponseFormat = normalizeResponseFormat({
+    responseFormat,
+    response_format,
+    outputSchema,
+    output_schema,
+  });
+
+  if (normalizedResponseFormat) {
+    payload.response_format = normalizedResponseFormat;
+  }
+
+  const response = await fetch(resolveApiUrl(), {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${ENV.forgeApiKey}`,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(
+      `LLM stream failed: ${response.status} ${response.statusText} – ${errorText}`
+    );
+  }
+
+  if (!response.body) {
+    throw new Error("LLM stream: empty response body");
+  }
+
+  return parseOpenAICompatibleSSEStream(response.body);
 }

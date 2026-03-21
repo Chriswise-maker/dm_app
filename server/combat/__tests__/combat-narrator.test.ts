@@ -9,6 +9,11 @@ vi.mock('../../llm-with-settings', () => ({
   invokeLLMWithSettings: vi.fn().mockResolvedValue({
     choices: [{ message: { content: 'Thorin strikes the goblin!' } }],
   }),
+  invokeLLMWithSettingsStream: vi.fn().mockImplementation(async () =>
+    (async function* () {
+      yield 'Thorin strikes the goblin!';
+    })()
+  ),
 }));
 vi.mock('../../db', () => ({
   getUserSettings: vi.fn().mockResolvedValue({}),

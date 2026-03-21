@@ -281,3 +281,13 @@ Narrator: Uses flavor + combat logs → rich narrative
 | `server/routers.ts` | AWAIT_DAMAGE_ROLL handler, combat end cleanup |
 | `client/src/components/combat/CombatSidebar.tsx` | Phase checks for visibility |
 
+---
+
+## Phase 5.1: Visual Dice Roller (Completed)
+
+- [x] DiceRoller component with framer-motion animation
+- [x] AWAIT_ATTACK_ROLL phase and pendingAttackRoll in engine
+- [x] combatV2.submitRoll tRPC endpoint
+- [x] Initiative, attack, and damage roll flows
+- [x] Nat 20 / Nat 1 styling
+

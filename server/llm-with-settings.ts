@@ -1,4 +1,5 @@
-import { invokeLLM, InvokeParams, InvokeResult } from './_core/llm';
+import { invokeLLM, invokeLLMStream, InvokeParams, InvokeResult } from './_core/llm';
+import { parseOpenAICompatibleSSEStream } from './_core/llm-stream';
 import { getUserSettings } from './db';
 
 /**
@@ -51,6 +52,225 @@ export async function invokeLLMWithSettings(
     console.error('[LLM Error]', error);
     throw error;
   }
+}
+
+/**
+ * Stream completion text chunks. OpenAI-compatible and Anthropic streams are native;
+ * Google uses a single-chunk fallback from a non-streaming call.
+ */
+export async function invokeLLMWithSettingsStream(
+  userId: number,
+  params: InvokeParams
+): Promise<AsyncIterable<string>> {
+  try {
+    const settings = await getUserSettings(userId);
+
+    if (!settings || settings.llmProvider === 'manus') {
+      return invokeLLMStream(params);
+    }
+
+    const apiUrls: Record<string, string> = {
+      openai: 'https://api.openai.com/v1/chat/completions',
+      anthropic: 'https://api.anthropic.com/v1/messages',
+      google: 'https://generativelanguage.googleapis.com/v1beta/models',
+    };
+
+    const apiUrl = apiUrls[settings.llmProvider];
+    if (!apiUrl) {
+      throw new Error(`Unsupported LLM provider: ${settings.llmProvider}`);
+    }
+
+    if (!settings.llmApiKey) {
+      throw new Error(`API key not configured for provider: ${settings.llmProvider}`);
+    }
+
+    const model = settings.llmModel || getDefaultModel(settings.llmProvider);
+
+    console.log(`[LLM Stream] Using provider: ${settings.llmProvider}, model: ${model}`);
+
+    if (settings.llmProvider === 'anthropic') {
+      return invokeAnthropicStream(apiUrl, settings.llmApiKey, model, params);
+    }
+    if (settings.llmProvider === 'google') {
+      return invokeGoogleStreamFallback(userId, apiUrl, settings.llmApiKey, model, params);
+    }
+    return invokeOpenAIStream(apiUrl, settings.llmApiKey, model, params);
+  } catch (error) {
+    console.error('[LLM Stream Error]', error);
+    throw error;
+  }
+}
+
+async function invokeOpenAIStream(
+  apiUrl: string,
+  apiKey: string,
+  model: string,
+  params: InvokeParams
+): Promise<AsyncIterable<string>> {
+  const payload: Record<string, unknown> = {
+    model,
+    messages: params.messages,
+    stream: true,
+  };
+
+  if (params.tools) payload.tools = params.tools;
+  if (params.tool_choice || params.toolChoice) {
+    payload.tool_choice = params.tool_choice || params.toolChoice;
+  }
+  if (params.max_tokens || params.maxTokens) {
+    payload.max_tokens = params.max_tokens || params.maxTokens;
+  }
+  if (params.response_format || params.responseFormat) {
+    payload.response_format = params.response_format || params.responseFormat;
+  }
+
+  const response = await fetch(apiUrl, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(
+      `OpenAI stream failed: ${response.status} ${response.statusText} – ${errorText}`
+    );
+  }
+
+  if (!response.body) {
+    throw new Error('OpenAI stream: empty response body');
+  }
+
+  return parseOpenAICompatibleSSEStream(response.body);
+}
+
+async function invokeAnthropicStream(
+  apiUrl: string,
+  apiKey: string,
+  model: string,
+  params: InvokeParams
+): Promise<AsyncIterable<string>> {
+  const systemMessage = params.messages.find(m => m.role === 'system');
+  const userMessages = params.messages.filter(m => m.role !== 'system');
+
+  const wantsJson =
+    params.response_format?.type === 'json_object' ||
+    params.responseFormat?.type === 'json_object';
+
+  let messagesArray = userMessages.map(m => ({
+    role: m.role === 'assistant' ? 'assistant' : 'user',
+    content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
+  }));
+
+  if (wantsJson) {
+    messagesArray.push({
+      role: 'assistant',
+      content: '{',
+    });
+  }
+
+  const payload: Record<string, unknown> = {
+    model,
+    messages: messagesArray,
+    max_tokens: params.max_tokens || params.maxTokens || 4096,
+    stream: true,
+  };
+
+  if (systemMessage) {
+    payload.system =
+      typeof systemMessage.content === 'string'
+        ? systemMessage.content
+        : JSON.stringify(systemMessage.content);
+  }
+
+  const response = await fetch(apiUrl, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(
+      `Anthropic stream failed: ${response.status} ${response.statusText} – ${errorText}`
+    );
+  }
+
+  if (!response.body) {
+    throw new Error('Anthropic stream: empty response body');
+  }
+
+  return parseAnthropicSSEStream(response.body);
+}
+
+async function* parseAnthropicSSEStream(
+  body: ReadableStream<Uint8Array>
+): AsyncGenerator<string, void, void> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      const parts = buffer.split(/\n\n/);
+      buffer = parts.pop() ?? '';
+
+      for (const part of parts) {
+        for (const rawLine of part.split('\n')) {
+          const line = rawLine.replace(/\r$/, '').trimEnd();
+          if (!line.startsWith('data:')) continue;
+          const data = line.slice(5).trimStart();
+          if (data === '[DONE]') return;
+          try {
+            const obj = JSON.parse(data) as {
+              type?: string;
+              delta?: { type?: string; text?: string };
+            };
+            if (
+              obj.type === 'content_block_delta' &&
+              obj.delta?.type === 'text_delta' &&
+              typeof obj.delta.text === 'string' &&
+              obj.delta.text.length > 0
+            ) {
+              yield obj.delta.text;
+            }
+          } catch {
+            // skip bad line
+          }
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+async function invokeGoogleStreamFallback(
+  userId: number,
+  baseUrl: string,
+  apiKey: string,
+  model: string,
+  params: InvokeParams
+): Promise<AsyncIterable<string>> {
+  const result = await invokeGoogle(baseUrl, apiKey, model, params);
+  const content = result.choices[0]?.message?.content;
+  const text =
+    typeof content === 'string' ? content : JSON.stringify(content ?? '');
+  async function* one(): AsyncGenerator<string> {
+    if (text) yield text;
+  }
+  return one();
 }
 
 function getDefaultModel(provider: string): string {

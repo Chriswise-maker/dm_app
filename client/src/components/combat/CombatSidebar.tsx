@@ -1,8 +1,21 @@
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
-import { Sword, X, ChevronRight, RefreshCw, Undo, Skull } from 'lucide-react';
+import { Progress } from '@/components/ui/progress';
+import {
+    AlertDialog,
+    AlertDialogAction,
+    AlertDialogCancel,
+    AlertDialogContent,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogHeader,
+    AlertDialogTitle,
+    AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import { Sword, ChevronRight, Undo, Skull } from 'lucide-react';
 import { trpc } from '@/lib/trpc';
 import { toast } from 'sonner';
+import { DiceRoller } from './DiceRoller';
 
 interface CombatSidebarProps {
     sessionId: number;
@@ -11,11 +24,12 @@ interface CombatSidebarProps {
 export default function CombatSidebar({ sessionId }: CombatSidebarProps) {
     const utils = trpc.useUtils();
 
-    // Poll combat state from V2 engine
-    const { data: combatState, isLoading } = trpc.combatV2.getState.useQuery(
+    // Poll combat state from V2 engine — faster polling when awaiting a player roll
+    const { data: combatState, isLoading, refetch } = trpc.combatV2.getState.useQuery(
         { sessionId },
         {
-            refetchInterval: 2000,
+            refetchInterval: (query) =>
+                (query.state.data as any)?.phase?.startsWith('AWAIT_') ? 1000 : 2000,
             refetchOnWindowFocus: true,
         }
     );
@@ -40,25 +54,15 @@ export default function CombatSidebar({ sessionId }: CombatSidebarProps) {
 
     if (isLoading) return null;
     // Hide sidebar when no combat or combat has ended
-    // Show during ACTIVE and AWAIT_DAMAGE_ROLL phases
     if (!combatState || combatState.phase === 'IDLE' || combatState.phase === 'RESOLVED') return null;
 
     const handleEndCombat = () => {
-        if (confirm('Are you sure you want to end combat?')) {
-            endCombatMutation.mutate({ sessionId });
-        }
+        endCombatMutation.mutate({ sessionId });
     };
 
     const handleUndo = () => {
         undoMutation.mutate({ sessionId });
     };
-
-    // V2 engine already sorts by turn order in 'entities', but 'turnOrder' array has the IDs in order
-    // Accessing entities via map or find is inefficient if list is small, so let's just use the array 
-    // provided `entities` are not sorted? 
-    // The router returns `entities` mapped from state.entities (which are usually sorted by init).
-    // Let's rely on the router's `entities` list but sort by initiative just in case, or use turnOrder if strict.
-    // Actually, V2 logs show turnOrder.
 
     // Sort by initiative descending for display
     const sortedEntities = [...combatState.entities].sort((a, b) => b.initiative - a.initiative);
@@ -80,58 +84,102 @@ export default function CombatSidebar({ sessionId }: CombatSidebarProps) {
                     >
                         <Undo className="h-4 w-4" />
                     </Button>
-                    <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={handleEndCombat}
-                        className="text-xs h-8"
-                    >
-                        End
-                    </Button>
+
+                    <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                className="text-xs h-8"
+                            >
+                                End
+                            </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                            <AlertDialogHeader>
+                                <AlertDialogTitle>End Combat?</AlertDialogTitle>
+                                <AlertDialogDescription>
+                                    This will end the current combat session.
+                                    Are you sure?
+                                </AlertDialogDescription>
+                            </AlertDialogHeader>
+                            <AlertDialogFooter>
+                                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                <AlertDialogAction onClick={handleEndCombat} className="bg-destructive hover:bg-destructive/90">
+                                    End Combat
+                                </AlertDialogAction>
+                            </AlertDialogFooter>
+                        </AlertDialogContent>
+                    </AlertDialog>
                 </div>
             </div>
+
+            {/* Visual dice roller — shown whenever the engine needs a player roll */}
+            {combatState.pendingRoll && (
+                <DiceRoller
+                    pendingRoll={combatState.pendingRoll}
+                    sessionId={sessionId}
+                    onRollComplete={() => { refetch(); }}
+                />
+            )}
 
             <ScrollArea className="flex-1 p-4">
                 <div className="space-y-3">
                     {sortedEntities.map((entity, idx) => {
-                        const isTurn = combatState.currentTurnEntity === entity.name;
+                        const isTurn = combatState.currentTurnEntity === entity.name; // Note: currentTurnEntity in state might be name or ID? checking CombatState type would be good. 
+                        // Actually engine uses ID for turn order, but state export might have resolved it? 
+                        // In V2, `currentState.currentTurnEntity` isn't explicitly in BattleStateSchema. 
+                        // Logic in `getState()` just returns state. 
+                        // Wait, looking at `combat-types.ts` (not recently read), BattleState doesn't have `currentTurnEntity`.
+                        // But `CombatSidebar.tsx` was using `combatState.currentTurnEntity === entity.name`.
+                        // Using `combatState.turnOrder[combatState.turnIndex] === entity.id` is safer.
+                        const isTurnById = combatState.turnOrder[combatState.turnIndex] === entity.id;
+
                         const isDefeated = entity.status === 'DEAD' || entity.status === 'UNCONSCIOUS';
                         const isPlayer = entity.type === 'player';
+                        const hpPercent = (entity.hp / entity.maxHp) * 100;
+                        const isRolling = combatState.pendingRoll?.entityName === entity.name;
 
                         return (
                             <div
                                 key={entity.id}
                                 className={`
-                                    p-3 rounded-lg border-2 transition-colors
-                                    ${isTurn ? 'border-primary bg-primary/5' : 'border-border'}
+                                    p-3 rounded-lg border-2 transition-colors relative overflow-hidden
+                                    ${isTurnById ? 'border-primary bg-primary/5' : 'border-border'}
                                     ${isDefeated ? 'opacity-50' : ''}
+                                    ${isRolling ? 'ring-2 ring-amber-500 ring-offset-1 ring-offset-background animate-pulse' : ''}
                                 `}
                             >
-                                <div className="flex items-start justify-between gap-2">
-                                    <div className="flex-1 min-w-0">
-                                        <div className="flex items-center gap-2">
-                                            {isTurn && <ChevronRight className="h-4 w-4 text-primary flex-shrink-0" />}
-                                            <p className={`font-medium text-sm truncate ${isDefeated ? 'line-through' : ''}`}>
-                                                {entity.name}
+                                <div className="relative z-10">
+                                    <div className="flex items-start justify-between gap-2">
+                                        <div className="flex-1 min-w-0">
+                                            <div className="flex items-center gap-2">
+                                                {isTurnById && <ChevronRight className="h-4 w-4 text-primary flex-shrink-0" />}
+                                                <p className={`font-medium text-sm truncate ${isDefeated ? 'line-through' : ''}`}>
+                                                    {entity.name}
+                                                </p>
+                                            </div>
+                                            <p className="text-xs text-muted-foreground mt-1">
+                                                Init: {entity.initiative} | AC: {entity.baseAC}
                                             </p>
                                         </div>
-                                        <p className="text-xs text-muted-foreground mt-1">
-                                            Init: {entity.initiative} | AC: {entity.baseAC}
-                                        </p>
+                                        <div className="flex flex-col items-end">
+                                            <span className={`text-sm font-mono font-bold ${entity.hp <= (entity.maxHp * 0.5) ? 'text-destructive' : ''}`}>
+                                                {entity.hp}/{entity.maxHp}
+                                            </span>
+                                            <span className="text-[10px] text-muted-foreground">HP</span>
+                                        </div>
                                     </div>
-                                    <div className="flex flex-col items-end">
-                                        <span className={`text-sm font-mono font-bold ${entity.hp <= 0 ? 'text-destructive' : ''}`}>
-                                            {entity.hp}/{entity.maxHp}
-                                        </span>
-                                        <span className="text-[10px] text-muted-foreground">HP</span>
-                                    </div>
+
+                                    <Progress value={hpPercent} className="h-1.5 mt-2" indicatorClassName={entity.hp <= (entity.maxHp * 0.5) ? 'bg-destructive' : 'bg-primary'} />
+
+                                    {isDefeated && (
+                                        <div className="mt-2 flex items-center gap-1 text-xs text-destructive font-semibold">
+                                            <Skull className="h-3 w-3" />
+                                            {entity.status}
+                                        </div>
+                                    )}
                                 </div>
-                                {isDefeated && (
-                                    <div className="mt-2 flex items-center gap-1 text-xs text-destructive font-semibold">
-                                        <Skull className="h-3 w-3" />
-                                        {entity.status}
-                                    </div>
-                                )}
                             </div>
                         );
                     })}
