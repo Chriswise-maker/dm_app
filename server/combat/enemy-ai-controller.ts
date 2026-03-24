@@ -16,6 +16,7 @@ import { CombatEngineManager } from './combat-engine-manager';
 import { invokeLLMWithSettings } from '../llm-with-settings';
 import { activity } from '../activity-log';
 import { getEnemyAIPrompt } from '../prompts';
+import { generateCombatNarrative } from './combat-narrator';
 import type { CombatEntity, BattleState, ActionPayload, CombatLogEntry } from './combat-types';
 
 // =============================================================================
@@ -186,7 +187,7 @@ function parseEnemyAction(response: string, enemy: CombatEntity, state: BattleSt
  * Execute a single enemy turn
  * Returns the combat log entries from this turn
  */
-export async function executeEnemyTurn(sessionId: number, userId: number): Promise<{ logs: any[], flavor: string }> {
+export async function executeEnemyTurn(sessionId: number, userId: number): Promise<{ logs: CombatLogEntry[], flavor: string }> {
     const engine = CombatEngineManager.get(sessionId);
     if (!engine) {
         console.warn(`[EnemyAI] No engine found for session ${sessionId}`);
@@ -316,6 +317,31 @@ export async function executeEnemyTurn(sessionId: number, userId: number): Promi
                     isDm: 1,
                 });
             }
+
+            // Generate LLM narrative for this enemy's turn and save as a follow-up DM message.
+            // Awaited so the next enemy turn only starts after the narrative is saved,
+            // giving a sequential "mechanical → narrative → next enemy" flow like a real DM.
+            try {
+                const narrative = await generateCombatNarrative(
+                    sessionId,
+                    userId,
+                    result.logs,
+                    parsed.flavor || `${entity.name} attacks!`,
+                    entity.name,
+                    updatedState.entities,
+                    true, // isEnemyTurn
+                );
+                if (narrative && narrative.trim()) {
+                    await db.saveMessage({
+                        sessionId,
+                        characterName: 'DM',
+                        content: narrative,
+                        isDm: 1,
+                    });
+                }
+            } catch (narrativeErr) {
+                console.error('[EnemyAI] Narrative generation failed (non-fatal):', narrativeErr);
+            }
         } catch (err) {
             console.error('[EnemyAI] Failed to save per-turn message:', err);
         }
@@ -424,8 +450,8 @@ export async function runAILoop(sessionId: number, userId: number): Promise<void
                 combinedFlavor += (combinedFlavor ? " " : "") + flavor;
             }
 
-            // Small delay to prevent hammering the LLM
-            await new Promise(resolve => setTimeout(resolve, 200));
+            // Narrative generation is awaited inside executeEnemyTurn,
+            // so no extra delay is needed — natural pacing from the LLM call.
         }
 
         // Per-turn messages are now saved immediately in executeEnemyTurn,
@@ -436,6 +462,25 @@ export async function runAILoop(sessionId: number, userId: number): Promise<void
                 await syncCombatStateToDb(sessionId);
             } catch (err) {
                 console.error('[EnemyAI] HP sync error:', err);
+            }
+        }
+
+        // If the loop exited because it's now a player's turn, prompt them
+        const engAfter = CombatEngineManager.get(sessionId);
+        if (engAfter && engAfter.getState().phase === 'ACTIVE') {
+            const nextEntity = engAfter.getCurrentTurnEntity();
+            if (nextEntity && nextEntity.type === 'player') {
+                try {
+                    const db = await import('../db');
+                    await db.saveMessage({
+                        sessionId,
+                        characterName: 'DM',
+                        content: `*${nextEntity.name}'s turn!*\n\nWhat does ${nextEntity.name} do?`,
+                        isDm: 1,
+                    });
+                } catch (err) {
+                    console.error('[EnemyAI] Failed to save player prompt:', err);
+                }
             }
         }
 

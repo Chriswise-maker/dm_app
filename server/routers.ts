@@ -1605,16 +1605,17 @@ export const appRouter = router({
         if (lockResult.success && lockResult._async) {
           const a = lockResult._async;
 
-          // Generate rich LLM narrative for attack/damage (fire-and-forget)
+          // Generate rich LLM narrative for attack/damage — AWAIT so it saves
+          // before the AI loop starts writing enemy messages
           if (a.rollType !== 'initiative' && a.hasLogs) {
             const { generateAndSaveNarrativeAsync } = await import('./combat/combat-narrator');
-            generateAndSaveNarrativeAsync(
+            await generateAndSaveNarrativeAsync(
               a.sessionId, a.userId, lockResult.logs, a.flavorText,
               a.rollingEntityName, a.entities, false, a.activePlayerId
             ).catch(err => console.error('[CombatV2] Async narrative error:', err));
           }
 
-          // Trigger enemy AI if turn passed to enemy
+          // Trigger enemy AI if turn passed to enemy (AFTER player narrative is saved)
           if (a.phase !== 'RESOLVED') {
             const { CombatEngineManager: EM } = await import('./combat/combat-engine-manager');
             const eng = EM.get(a.sessionId);

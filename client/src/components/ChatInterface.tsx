@@ -10,9 +10,10 @@ import { useCombatState } from '@/hooks/combat/useCombatState';
 import InitiativeDisplay from '@/components/combat/InitiativeDisplay';
 import ContextViewer from '@/components/ContextViewer';
 import { Input } from '@/components/ui/input';
+import RevealText from '@/components/RevealText';
 
-/** Steady stream reveal: faster than typical reading (~20–30 chars/s), no burst catch-up. */
-const STREAM_REVEAL_CHARS_PER_SECOND = 48;
+/** Steady stream reveal — ChatGPT / Claude speed. */
+const STREAM_REVEAL_CHARS_PER_SECOND = 350;
 
 /** If the user is within this many px of the bottom, treat them as "following" new messages. */
 const SCROLL_STICK_BOTTOM_PX = 72;
@@ -74,6 +75,12 @@ export default function ChatInterface({
   const streamLastFrameRef = useRef<number | null>(null);
   const streamDrainResolveRef = useRef<(() => void) | null>(null);
   const streamDrainCarryRef = useRef(0);
+  /** Track which message IDs we've already fully revealed (instant render on re-render). */
+  const seenMessageIdsRef = useRef<Set<number>>(new Set());
+  /** Ordered queue of message IDs waiting to be revealed one-by-one. */
+  const [revealQueue, setRevealQueue] = useState<number[]>([]);
+  /** The message ID currently being revealed (head of queue). */
+  const currentRevealId = revealQueue[0] ?? null;
   const utils = trpc.useUtils();
 
   const stopStreamDrain = useCallback((opts?: { reset?: boolean }) => {
@@ -161,8 +168,46 @@ export default function ChatInterface({
 
   const { data: messages, isLoading, refetch } = trpc.messages.list.useQuery(
     { sessionId: sessionId!, limit: 100 },
-    { enabled: !!sessionId, refetchInterval: isInCombat ? 3000 : false }
+    { enabled: !!sessionId, refetchInterval: isInCombat ? 2000 : false }
   );
+
+  // Seed seenMessageIds with existing messages on first load / session change
+  const seenSeededRef = useRef(false);
+  useEffect(() => {
+    // Reset when session changes
+    seenMessageIdsRef.current = new Set();
+    seenSeededRef.current = false;
+    setRevealQueue([]);
+  }, [sessionId]);
+  useEffect(() => {
+    if (!seenSeededRef.current && messages && messages.length > 0) {
+      for (const m of messages) {
+        seenMessageIdsRef.current.add(m.id);
+      }
+      seenSeededRef.current = true;
+      return;
+    }
+    // After seeding, detect new DM messages and enqueue them
+    if (seenSeededRef.current && messages) {
+      const newIds: number[] = [];
+      for (const m of messages) {
+        if (m.isDm && !seenMessageIdsRef.current.has(m.id)) {
+          newIds.push(m.id);
+        }
+        // Non-DM messages (player) → mark seen immediately (no reveal animation)
+        if (!m.isDm && !seenMessageIdsRef.current.has(m.id)) {
+          seenMessageIdsRef.current.add(m.id);
+        }
+      }
+      if (newIds.length > 0) {
+        setRevealQueue(prev => {
+          const existing = new Set(prev);
+          const toAdd = newIds.filter(id => !existing.has(id));
+          return toAdd.length > 0 ? [...prev, ...toAdd] : prev;
+        });
+      }
+    }
+  }, [messages]);
 
   const { data: settings } = trpc.settings.get.useQuery();
 
@@ -698,9 +743,27 @@ export default function ChatInterface({
                           <div className="whitespace-pre-wrap break-words leading-relaxed [text-rendering:optimizeLegibility]">
                             {msg.content}
                           </div>
-                        ) : (
-                          <Streamdown>{msg.content}</Streamdown>
-                        )}
+                        ) : (() => {
+                          const numId = typeof msg.id === 'number' ? msg.id : null;
+                          // Currently revealing this message
+                          if (numId != null && numId === currentRevealId) {
+                            return (
+                              <RevealText
+                                content={msg.content}
+                                onRevealComplete={() => {
+                                  seenMessageIdsRef.current.add(numId);
+                                  setRevealQueue(prev => prev.slice(1));
+                                }}
+                              />
+                            );
+                          }
+                          // Queued but not yet revealing — show empty placeholder
+                          if (numId != null && revealQueue.includes(numId)) {
+                            return null;
+                          }
+                          // Already seen or not a DM message — render instantly
+                          return <Streamdown>{msg.content}</Streamdown>;
+                        })()}
                       </div>
                     )}
                   </div>
