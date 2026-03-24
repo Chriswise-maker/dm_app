@@ -11,6 +11,7 @@ import ChatInterface from '@/components/ChatInterface';
 import { trpc } from '@/lib/trpc';
 import { Loader2, Scroll, Settings } from 'lucide-react';
 import SettingsDialog from '@/components/SettingsDialog';
+import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
 
 import { useCombatState } from '@/hooks/combat/useCombatState';
 import CombatSidebar from '@/components/combat/CombatSidebar';
@@ -74,50 +75,70 @@ export default function Home() {
         </div>
       </header>
 
-      {/* Main Content */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* Left Sidebar - hidden on mobile */}
-        <aside className="hidden md:block w-64 lg:w-80 border-r bg-card p-4 overflow-y-auto space-y-4 flex-shrink-0">
-          <SessionManager
-            selectedSessionId={selectedSessionId}
-            onSessionSelect={handleSessionSelect}
-          />
-          <CharacterPanel
-            sessionId={selectedSessionId}
-            selectedCharacterId={selectedCharacterId}
-            onCharacterSelect={setSelectedCharacterId}
-            onCreateCharacter={() => setIsCharacterDialogOpen(true)}
-            onEditCharacter={handleEditCharacter}
-          />
-
-          <Button
-            onClick={() => setIsGeneratorOpen(true)}
-            variant="outline"
-            className="w-full"
-            disabled={!selectedSessionId}
+      {/* Main Content - Resizable Panels */}
+      <div className="flex-1 overflow-hidden">
+        <ResizablePanelGroup
+          direction="horizontal"
+          className="h-full"
+          key={selectedSessionId ? 'with-combat' : 'no-combat'}
+          autoSaveId={selectedSessionId ? 'dm-layout-combat' : 'dm-layout'}
+        >
+          {/* Left Sidebar - Campaigns & Characters */}
+          <ResizablePanel
+            defaultSize={20}
+            minSize={12}
+            maxSize={35}
           >
-            ✨ AI Generate Character
-          </Button>
-        </aside>
+            <aside className="h-full bg-card p-4 overflow-y-auto space-y-4">
+              <SessionManager
+                selectedSessionId={selectedSessionId}
+                onSessionSelect={handleSessionSelect}
+              />
+              <CharacterPanel
+                sessionId={selectedSessionId}
+                selectedCharacterId={selectedCharacterId}
+                onCharacterSelect={setSelectedCharacterId}
+                onCreateCharacter={() => setIsCharacterDialogOpen(true)}
+                onEditCharacter={handleEditCharacter}
+              />
 
-        {/* Main Chat Area */}
-        <main className="flex-1 bg-background flex overflow-hidden min-w-0">
-          <div className="flex-1 min-w-0 overflow-hidden">
-            <ChatInterface
-              sessionId={selectedSessionId}
-              characterId={selectedCharacterId}
-              characterName={selectedCharacter?.name || null}
-              onCreateCharacter={() => setIsCharacterDialogOpen(true)}
-              combatState={combatState}
-              refetchCombatState={refetchCombatState}
-            />
-          </div>
+              <Button
+                onClick={() => setIsGeneratorOpen(true)}
+                variant="outline"
+                className="w-full"
+                disabled={!selectedSessionId}
+              >
+                ✨ AI Generate Character
+              </Button>
+            </aside>
+          </ResizablePanel>
+
+          <ResizableHandle withHandle />
+
+          {/* Main Chat Area */}
+          <ResizablePanel defaultSize={selectedSessionId ? 58 : 80} minSize={30}>
+            <div className="h-full overflow-hidden">
+              <ChatInterface
+                sessionId={selectedSessionId}
+                characterId={selectedCharacterId}
+                characterName={selectedCharacter?.name || null}
+                onCreateCharacter={() => setIsCharacterDialogOpen(true)}
+                combatState={combatState}
+                refetchCombatState={refetchCombatState}
+              />
+            </div>
+          </ResizablePanel>
 
           {/* Right Sidebar - Combat (V2) */}
           {selectedSessionId && (
-            <CombatSidebar sessionId={selectedSessionId} />
+            <>
+              <ResizableHandle withHandle />
+              <ResizablePanel defaultSize={22} minSize={14} maxSize={40}>
+                <CombatSidebar sessionId={selectedSessionId} />
+              </ResizablePanel>
+            </>
           )}
-        </main>
+        </ResizablePanelGroup>
       </div>
 
       {/* Character Creation Dialog */}

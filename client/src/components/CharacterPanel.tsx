@@ -35,7 +35,7 @@ export default function CharacterPanel({
 
   const { data: characters, isLoading, refetch } = trpc.characters.list.useQuery(
     { sessionId: sessionId! },
-    { enabled: !!sessionId }
+    { enabled: !!sessionId, refetchInterval: 3000 }
   );
 
   const updateHPMutation = trpc.characters.updateHP.useMutation({

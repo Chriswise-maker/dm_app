@@ -15,7 +15,6 @@
 import { CombatEngineManager } from './combat-engine-manager';
 import { invokeLLMWithSettings } from '../llm-with-settings';
 import { activity } from '../activity-log';
-import { generateCombatNarrative } from './combat-narrator';
 import { getEnemyAIPrompt } from '../prompts';
 import type { CombatEntity, BattleState, ActionPayload, CombatLogEntry } from './combat-types';
 
@@ -187,17 +186,17 @@ function parseEnemyAction(response: string, enemy: CombatEntity, state: BattleSt
  * Execute a single enemy turn
  * Returns the combat log entries from this turn
  */
-export async function executeEnemyTurn(sessionId: number, userId: number): Promise<CombatLogEntry[]> {
+export async function executeEnemyTurn(sessionId: number, userId: number): Promise<{ logs: any[], flavor: string }> {
     const engine = CombatEngineManager.get(sessionId);
     if (!engine) {
         console.warn(`[EnemyAI] No engine found for session ${sessionId}`);
-        return [];
+        return { logs: [], flavor: '' };
     }
 
     const state = engine.getState();
     if (state.phase !== 'ACTIVE') {
         console.log(`[EnemyAI] Combat not active for session ${sessionId}`);
-        return [];
+        return { logs: [], flavor: '' };
     }
 
     // Check if there are any valid targets (alive players)
@@ -210,19 +209,19 @@ export async function executeEnemyTurn(sessionId: number, userId: number): Promi
         // Destroy engine to fully deactivate combat
         await CombatEngineManager.destroy(sessionId);
         console.log(`[EnemyAI] Combat engine destroyed for session ${sessionId}`);
-        return [];
+        return { logs: [], flavor: '' };
     }
 
     const entity = engine.getCurrentTurnEntity();
     if (!entity) {
         console.warn(`[EnemyAI] No current turn entity for session ${sessionId}`);
-        return [];
+        return { logs: [], flavor: '' };
     }
 
     if (entity.type !== 'enemy') {
         // Not an enemy's turn, exit
         console.log(`[EnemyAI] Current turn is ${entity.name} (${entity.type}), skipping AI`);
-        return [];
+        return { logs: [], flavor: '' };
     }
 
     console.log(`[EnemyAI] Executing turn for ${entity.name}...`);
@@ -302,37 +301,69 @@ export async function executeEnemyTurn(sessionId: number, userId: number): Promi
     // Persist state
     await CombatEngineManager.persist(sessionId);
 
-    // ISSUE 1 FIX: Generate narrative for enemy action and save to chat
+    // Save a deterministic per-turn message immediately so the player sees
+    // each enemy action in chat without waiting for LLM narrative generation
     if (result.logs.length > 0) {
         try {
             const db = await import('../db');
-            const flavorText = parsed.flavor || `${entity.name} attacks!`;
-            const currentState = engine!.getState(); // Get fresh state for entities
-            const narrative = await generateCombatNarrative(
-                sessionId,
-                userId,
-                result.logs,
-                flavorText,
-                entity.name,
-                currentState.entities,
-                true, // isEnemyTurn - describe enemy in third person
-                actionPayload.type === 'ATTACK' ? actionPayload.targetId : undefined // "you" = attack target
-            );
-
-            // Save enemy action narrative to chat
-            await db.saveMessage({
-                sessionId: sessionId,
-                characterName: 'DM',
-                content: narrative,
-                isDm: 1
-            });
-            console.log(`[EnemyAI] Saved narrative for ${entity.name}'s turn`);
-        } catch (narrationError) {
-            console.error(`[EnemyAI] Failed to generate/save narrative:`, narrationError);
+            const updatedState = engine.getState();
+            const msg = formatEnemyTurnMessage(entity, result.logs, updatedState.entities);
+            if (msg) {
+                await db.saveMessage({
+                    sessionId,
+                    characterName: 'DM',
+                    content: msg,
+                    isDm: 1,
+                });
+            }
+        } catch (err) {
+            console.error('[EnemyAI] Failed to save per-turn message:', err);
         }
     }
 
-    return result.logs;
+    return {
+        logs: result.logs,
+        flavor: parsed.flavor || `${entity.name} attacks!`
+    };
+}
+
+/**
+ * Format a deterministic message from combat log entries for immediate display
+ */
+function formatEnemyTurnMessage(actor: CombatEntity, logs: CombatLogEntry[], entities: CombatEntity[]): string | null {
+    const nameMap = new Map(entities.map(e => [e.id, e.name]));
+    const resolveName = (id?: string) => (id ? nameMap.get(id) ?? id : 'unknown');
+
+    const parts: string[] = [];
+
+    for (const log of logs) {
+        switch (log.type) {
+            case 'ATTACK_ROLL': {
+                const target = resolveName(log.targetId);
+                const roll = log.roll?.result ?? '?';
+                const hitMiss = log.success ? '**HIT**' : '**MISS**';
+                const crit = log.roll?.isCritical ? ' (CRITICAL!)' : '';
+                const formula = log.roll?.formula ? ` (${log.roll.formula} = ${roll})` : '';
+                parts.push(`**${actor.name}** attacks ${target}! Rolls ${roll}${formula} — ${hitMiss}${crit}`);
+                break;
+            }
+            case 'DAMAGE': {
+                const target = resolveName(log.targetId);
+                const targetEntity = entities.find(e => e.id === log.targetId);
+                const hpStr = targetEntity ? ` (${targetEntity.hp}/${targetEntity.maxHp} HP)` : '';
+                parts.push(`Deals **${log.amount} ${log.damageType || ''}** damage to ${target}${hpStr}`);
+                break;
+            }
+            case 'DEATH':
+                parts.push(`${resolveName(log.targetId)} has been **slain**!`);
+                break;
+            case 'UNCONSCIOUS':
+                parts.push(`${resolveName(log.targetId)} falls **unconscious**!`);
+                break;
+        }
+    }
+
+    return parts.length > 0 ? parts.join('\n') : null;
 }
 
 /**
@@ -367,6 +398,8 @@ export async function runAILoop(sessionId: number, userId: number): Promise<void
 
     let iterationCount = 0;
     const maxIterations = 20; // Safety limit to prevent infinite loops
+    const allLogs: any[] = [];
+    let combinedFlavor = "";
 
     try {
         while (iterationCount < maxIterations) {
@@ -385,10 +418,25 @@ export async function runAILoop(sessionId: number, userId: number): Promise<void
             iterationCount++;
             console.log(`[EnemyAI] Loop iteration ${iterationCount}`);
 
-            await executeEnemyTurn(sessionId, userId);
+            const { logs, flavor } = await (executeEnemyTurn(sessionId, userId) as any);
+            allLogs.push(...logs);
+            if (flavor) {
+                combinedFlavor += (combinedFlavor ? " " : "") + flavor;
+            }
 
             // Small delay to prevent hammering the LLM
-            await new Promise(resolve => setTimeout(resolve, 500));
+            await new Promise(resolve => setTimeout(resolve, 200));
+        }
+
+        // Per-turn messages are now saved immediately in executeEnemyTurn,
+        // so we only need to sync HP here
+        if (allLogs.length > 0) {
+            try {
+                const { syncCombatStateToDb } = await import('./combat-helpers');
+                await syncCombatStateToDb(sessionId);
+            } catch (err) {
+                console.error('[EnemyAI] HP sync error:', err);
+            }
         }
 
         if (iterationCount >= maxIterations) {

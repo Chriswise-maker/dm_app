@@ -1243,6 +1243,7 @@ export const appRouter = router({
           damageFormula: z.string().optional(),
           damageType: z.string().optional(),
           isEssential: z.boolean().optional(),
+          dbCharacterId: z.number().optional(),
         })),
       }))
       .mutation(async ({ input }) => {
@@ -1354,6 +1355,8 @@ export const appRouter = router({
         // Persist if successful
         if (result.success) {
           await CombatEngineManager.persist(input.sessionId);
+          const { syncCombatStateToDb } = await import('./combat/combat-helpers');
+          await syncCombatStateToDb(input.sessionId);
 
           // If combat resolved, destroy engine
           if (result.newState.phase === 'RESOLVED') {
@@ -1398,6 +1401,8 @@ export const appRouter = router({
 
         if (undoSuccess) {
           await CombatEngineManager.persist(input.sessionId);
+          const { syncCombatStateToDb } = await import('./combat/combat-helpers');
+          await syncCombatStateToDb(input.sessionId);
         }
 
         return {
@@ -1447,7 +1452,8 @@ export const appRouter = router({
         const { CombatEngineManager } = await import('./combat/combat-engine-manager');
         const db = await import('./db');
 
-        return CombatEngineManager.withLock(input.sessionId, async () => {
+        // ---- FAST PATH (inside lock): engine ops + deterministic messages ----
+        const lockResult = await CombatEngineManager.withLock(input.sessionId, async () => {
         let engine = CombatEngineManager.get(input.sessionId);
         if (!engine) {
           engine = await CombatEngineManager.loadFromDb(input.sessionId);
@@ -1521,8 +1527,9 @@ export const appRouter = router({
 
         // Persist engine state
         await CombatEngineManager.persist(sessionId);
+        const { syncCombatStateToDb } = await import('./combat/combat-helpers');
+        await syncCombatStateToDb(sessionId);
 
-        // Unify narrative: use LLM narrator (same as chat path) for consistent quality
         const rollLabel = rollType === 'initiative' ? `d20 initiative` : rollType === 'attack' ? `d20 attack` : `damage`;
         const flavorText = `${rollingEntityName} rolls ${rawDieValue} (${rollLabel})`;
 
@@ -1533,21 +1540,7 @@ export const appRouter = router({
               ? state.pendingAttackRoll?.attackerId
               : state.pendingAttack?.attackerId;
 
-        const { generateCombatNarrative } = await import('./combat/combat-narrator');
-        const narrative = result.logs.length > 0
-          ? await generateCombatNarrative(
-              sessionId,
-              ctx.user.id,
-              result.logs,
-              flavorText,
-              rollingEntityName,
-              engine.getState().entities,
-              false,
-              activePlayerId
-            )
-          : flavorText;
-
-        // Save a synthetic player roll "message"
+        // Save player roll message (fast, no LLM)
         await db.saveMessage({
           sessionId,
           characterName: rollingEntityName,
@@ -1555,12 +1548,27 @@ export const appRouter = router({
           isDm: 0,
         });
 
-        // Save narrative as DM response
+        // Save deterministic DM response immediately (no LLM)
         const newState = engine.getState();
-        let dmContent = narrative;
-        if (rollType === 'attack' && newState.phase === 'AWAIT_DAMAGE_ROLL' && newState.pendingAttack) {
-          dmContent += `\n\n**Roll your damage!** (${newState.pendingAttack.damageFormula}${newState.pendingAttack.isCritical ? ' — DOUBLE DICE for critical hit!' : ''})`;
+        const { generateInitiativeNarrative, generateMechanicalSummary } = await import('./combat/combat-narrator');
+
+        let dmContent: string;
+        if (rollType === 'initiative' && (result as any).combatStarted) {
+          // Initiative: deterministic turn order message
+          dmContent = generateInitiativeNarrative(newState.entities, newState.turnOrder);
+        } else if (rollType === 'initiative') {
+          // Still waiting for other players
+          dmContent = flavorText;
+        } else {
+          // Attack/damage: mechanical summary (hit/miss/damage)
+          dmContent = result.logs.length > 0
+            ? generateMechanicalSummary(result.logs, newState.entities, activePlayerId)
+            : flavorText;
+          if (rollType === 'attack' && newState.phase === 'AWAIT_DAMAGE_ROLL' && newState.pendingAttack) {
+            dmContent += `\n\n**Roll your damage!** (${newState.pendingAttack.damageFormula}${newState.pendingAttack.isCritical ? ' — DOUBLE DICE for critical hit!' : ''})`;
+          }
         }
+
         await db.saveMessage({
           sessionId,
           characterName: 'DM',
@@ -1572,24 +1580,58 @@ export const appRouter = router({
         if (newState.phase === 'RESOLVED') {
           console.log('[CombatV2] Combat ended after roll, destroying engine');
           await CombatEngineManager.destroy(sessionId);
-        } else {
-          // Trigger enemy AI if the turn passed to an enemy
-          const nextEntity = engine.getCurrentTurnEntity();
-          if (nextEntity && nextEntity.type === 'enemy') {
-            const { runAILoop } = await import('./combat/enemy-ai-controller');
-            console.log(`[CombatV2] submitRoll: next turn is ${nextEntity.name} (enemy), triggering AI loop...`);
-            runAILoop(sessionId, ctx.user.id).catch(err => {
-              console.error('[CombatV2] AI loop error after submitRoll:', err);
-            });
-          }
         }
 
         return {
           success: true as const,
           logs: result.logs,
-          newState: engine.getState(),
+          newState,
+          // Pass data needed for async work
+          _async: {
+            sessionId,
+            userId: ctx.user.id,
+            rollType,
+            flavorText,
+            rollingEntityName,
+            entities: newState.entities,
+            activePlayerId,
+            hasLogs: result.logs.length > 0,
+            phase: newState.phase,
+          },
         };
         }); // end withLock
+
+        // ---- ASYNC PATH (after lock released): LLM narrative + AI loop ----
+        if (lockResult.success && lockResult._async) {
+          const a = lockResult._async;
+
+          // Generate rich LLM narrative for attack/damage (fire-and-forget)
+          if (a.rollType !== 'initiative' && a.hasLogs) {
+            const { generateAndSaveNarrativeAsync } = await import('./combat/combat-narrator');
+            generateAndSaveNarrativeAsync(
+              a.sessionId, a.userId, lockResult.logs, a.flavorText,
+              a.rollingEntityName, a.entities, false, a.activePlayerId
+            ).catch(err => console.error('[CombatV2] Async narrative error:', err));
+          }
+
+          // Trigger enemy AI if turn passed to enemy
+          if (a.phase !== 'RESOLVED') {
+            const { CombatEngineManager: EM } = await import('./combat/combat-engine-manager');
+            const eng = EM.get(a.sessionId);
+            const nextEntity = eng?.getCurrentTurnEntity();
+            if (nextEntity && nextEntity.type === 'enemy') {
+              const { runAILoop } = await import('./combat/enemy-ai-controller');
+              console.log(`[CombatV2] submitRoll: next turn is ${nextEntity.name} (enemy), triggering AI loop...`);
+              runAILoop(a.sessionId, a.userId).catch(err => {
+                console.error('[CombatV2] AI loop error after submitRoll:', err);
+              });
+            }
+          }
+        }
+
+        // Return clean result (strip internal _async data)
+        const { _async, ...clientResult } = lockResult;
+        return clientResult;
       }),
   }),
 });

@@ -122,3 +122,26 @@ export async function handleAutoCombatEnd(sessionId: number): Promise<void> {
         console.error('[AutoCombat] Failed to end combat:', error);
     }
 }
+
+/**
+ * Sync the current combat state (HP) back to the character database
+ * This ensures the UI stays consistent with the engine's deterministic state
+ */
+export async function syncCombatStateToDb(sessionId: number): Promise<void> {
+    try {
+        const engine = CombatEngineManager.get(sessionId);
+        if (!engine) return;
+
+        const db = await import('../db');
+        const state = engine.getState();
+
+        for (const entity of state.entities) {
+            if (entity.type === 'player' && entity.dbCharacterId) {
+                console.log(`[Sync] Syncing HP for ${entity.name}: ${entity.hp}/${entity.maxHp}`);
+                await db.updateCharacterHP(entity.dbCharacterId, entity.hp);
+            }
+        }
+    } catch (error) {
+        console.error('[Sync] Failed to sync combat state to DB:', error);
+    }
+}

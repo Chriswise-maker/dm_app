@@ -122,6 +122,8 @@ export async function executeMessageSend(
     }
 
     await CombatEngineManager.persist(input.sessionId);
+    const { syncCombatStateToDb } = await import('./combat/combat-helpers');
+    await syncCombatStateToDb(input.sessionId);
 
     // Generate narrative
     const currentState = engine.getState();
@@ -215,6 +217,8 @@ export async function executeMessageSend(
     }
 
     await CombatEngineManager.persist(input.sessionId);
+    const { syncCombatStateToDb } = await import('./combat/combat-helpers');
+    await syncCombatStateToDb(input.sessionId);
 
     const currentState = engine.getState();
     const narrative = await streamToString(
@@ -292,6 +296,8 @@ export async function executeMessageSend(
 
     if (result.logs.length > 0) {
       await CombatEngineManager.persist(input.sessionId);
+      const { syncCombatStateToDb } = await import('./combat/combat-helpers');
+      await syncCombatStateToDb(input.sessionId);
     }
 
     // Save player message
@@ -385,6 +391,8 @@ export async function executeMessageSend(
     // 3. Persist state
     if (result.success) {
       await CombatEngineManager.persist(input.sessionId);
+      const { syncCombatStateToDb } = await import('./combat/combat-helpers');
+      await syncCombatStateToDb(input.sessionId);
     }
 
     // 4a. Check if waiting for attack roll (visual dice roller)

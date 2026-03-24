@@ -198,6 +198,79 @@ export async function generateCombatNarrative(
     return narrative.trim() || 'The battle continues...';
 }
 
+/**
+ * Generate a deterministic initiative narrative (no LLM call).
+ * Returns instantly with a formatted turn order message.
+ */
+export function generateInitiativeNarrative(
+    entities: CombatEntity[],
+    turnOrder: string[]
+): string {
+    const ordered = turnOrder
+        .map(id => entities.find(e => e.id === id))
+        .filter(Boolean)
+        .map(e => `**${e!.name}** (${e!.initiative})`)
+        .join(' → ');
+
+    const firstEntity = turnOrder.length > 0
+        ? entities.find(e => e.id === turnOrder[0])
+        : null;
+
+    let msg = `**Initiative rolled! The battle begins!**\n\n**Turn Order:** ${ordered}`;
+    if (firstEntity) {
+        msg += `\n\n*${firstEntity.name}'s turn!*`;
+    }
+    return msg;
+}
+
+/**
+ * Generate a brief mechanical summary from combat logs (no LLM call).
+ * Used as immediate feedback while full LLM narrative generates async.
+ */
+export function generateMechanicalSummary(
+    logs: CombatLogEntry[],
+    entities: CombatEntity[],
+    activePlayerId?: string
+): string {
+    const resolveName = createNameResolver(entities, activePlayerId);
+    return logs.map(log => formatLogEntry(log, resolveName)).join('\n');
+}
+
+/**
+ * Fire-and-forget: generate LLM narrative and save as a DM message.
+ * Falls back to mechanical summary on error.
+ */
+export async function generateAndSaveNarrativeAsync(
+    sessionId: number,
+    userId: number,
+    logs: CombatLogEntry[],
+    flavorText: string,
+    actorName: string,
+    entities: CombatEntity[],
+    isEnemyTurn: boolean,
+    activePlayerId?: string,
+    appendText?: string
+): Promise<void> {
+    try {
+        const narrative = await generateCombatNarrative(
+            sessionId, userId, logs, flavorText, actorName, entities, isEnemyTurn, activePlayerId
+        );
+        const db = await import('../db');
+        let content = narrative;
+        if (appendText) content += appendText;
+        await db.saveMessage({ sessionId, characterName: 'DM', content, isDm: 1 });
+    } catch (err) {
+        console.error('[CombatNarrator] Async narrative failed:', err);
+        try {
+            const db = await import('../db');
+            const fallback = flavorText || 'The battle continues...';
+            await db.saveMessage({ sessionId, characterName: 'DM', content: fallback, isDm: 1 });
+        } catch (saveErr) {
+            console.error('[CombatNarrator] Fallback save failed:', saveErr);
+        }
+    }
+}
+
 function formatLogEntry(log: CombatLogEntry, resolveName: (id: string | undefined) => string): string {
     switch (log.type) {
         case 'ATTACK_ROLL':

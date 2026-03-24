@@ -150,9 +150,18 @@ export default function ChatInterface({
   // The following line is commented out as combatState and refetchCombatState are now passed via props
   // const { combatState, initiateCombat, addPlayer, sortInitiative, refetchCombatState } = useCombatState(sessionId);
 
+  // Check V2 combat engine state for message polling (V1 combatState.inCombat is
+  // false during V2 engine combat, so we need to check both)
+  const { data: combatV2State } = trpc.combatV2.getState.useQuery(
+    { sessionId: sessionId! },
+    { enabled: !!sessionId, refetchInterval: 3000 }
+  );
+  const isInCombat = combatState?.inCombat ||
+    (combatV2State?.phase != null && combatV2State.phase !== 'IDLE' && combatV2State.phase !== 'RESOLVED');
+
   const { data: messages, isLoading, refetch } = trpc.messages.list.useQuery(
     { sessionId: sessionId!, limit: 100 },
-    { enabled: !!sessionId }
+    { enabled: !!sessionId, refetchInterval: isInCombat ? 3000 : false }
   );
 
   const { data: settings } = trpc.settings.get.useQuery();

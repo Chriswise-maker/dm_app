@@ -68,7 +68,7 @@ export default function CombatSidebar({ sessionId }: CombatSidebarProps) {
     const sortedEntities = [...combatState.entities].sort((a, b) => b.initiative - a.initiative);
 
     return (
-        <aside className="w-48 lg:w-64 border-l bg-card flex flex-col h-full flex-shrink-0 overflow-hidden">
+        <aside className="bg-card flex flex-col h-full overflow-hidden">
             <div className="p-4 border-b flex items-center gap-2 justify-between bg-destructive/10">
                 <div className="flex items-center gap-2">
                     <Sword className="h-5 w-5 text-destructive" />
@@ -119,7 +119,7 @@ export default function CombatSidebar({ sessionId }: CombatSidebarProps) {
                 <DiceRoller
                     pendingRoll={combatState.pendingRoll}
                     sessionId={sessionId}
-                    onRollComplete={() => { refetch(); }}
+                    onRollComplete={() => { refetch(); utils.messages.list.invalidate({ sessionId }); }}
                 />
             )}
 

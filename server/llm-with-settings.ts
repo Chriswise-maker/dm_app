@@ -131,6 +131,7 @@ async function invokeOpenAIStream(
       authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(30_000),
   });
 
   if (!response.ok) {
@@ -194,6 +195,7 @@ async function invokeAnthropicStream(
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(30_000),
   });
 
   if (!response.ok) {
@@ -311,6 +313,7 @@ async function invokeOpenAI(
       'authorization': `Bearer ${apiKey}`,
     },
     body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(30_000),
   });
 
   if (!response.ok) {
@@ -389,6 +392,7 @@ async function invokeAnthropic(
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(30_000),
   });
 
   if (!response.ok) {
@@ -487,6 +491,7 @@ async function invokeGoogle(
       'content-type': 'application/json',
     },
     body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(30_000),
   });
 
   if (!response.ok) {
