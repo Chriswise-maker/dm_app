@@ -117,14 +117,14 @@ export default function CharacterPanel({
                   : 'hover:bg-accent border-border'
               }`}
             >
-              <div className="flex items-start justify-between mb-2">
-                <div>
-                  <h3 className="font-semibold">{char.name}</h3>
-                  <p className="text-sm text-muted-foreground">
+              <div className="flex items-start justify-between gap-1 mb-2">
+                <div className="min-w-0 flex-1">
+                  <h3 className="font-semibold truncate">{char.name}</h3>
+                  <p className="text-sm text-muted-foreground truncate">
                     {char.className} • Level {char.level}
                   </p>
                 </div>
-                <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
+                <div className="flex gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
                   <Button
                     size="sm"
                     variant="ghost"

@@ -330,6 +330,12 @@ export async function executeEnemyTurn(sessionId: number, userId: number): Promi
                     entity.name,
                     updatedState.entities,
                     true, // isEnemyTurn
+                    undefined, // activePlayerId
+                    {
+                        weaponName: entity.damageFormula,
+                        damageType: entity.damageType,
+                        tacticalRole: entity.tacticalRole,
+                    }
                 );
                 if (narrative && narrative.trim()) {
                     await db.saveMessage({

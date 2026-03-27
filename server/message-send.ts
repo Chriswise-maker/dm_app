@@ -221,6 +221,8 @@ export async function executeMessageSend(
     await syncCombatStateToDb(input.sessionId);
 
     const currentState = engine.getState();
+    const isAwaitingDamage = currentState.phase === 'AWAIT_DAMAGE_ROLL' && !!currentState.pendingAttack;
+
     const narrative = await streamToString(
       await generateCombatNarrativeStream(
         input.sessionId,
@@ -230,7 +232,13 @@ export async function executeMessageSend(
         character.name,
         currentState.entities,
         false,
-        currentState.pendingAttackRoll?.attackerId
+        currentState.pendingAttackRoll?.attackerId,
+        {
+          awaitingDamageRoll: isAwaitingDamage,
+          pendingDamageFormula: currentState.pendingAttack?.damageFormula,
+          isCriticalHit: currentState.pendingAttack?.isCritical,
+          weaponName: currentState.pendingAttack?.weaponName,
+        }
       ),
       streamHooks?.onNarrativeDelta
     );
@@ -239,7 +247,7 @@ export async function executeMessageSend(
 
     // If the attack hit, prompt for damage roll
     let dmContent = narrative;
-    if (currentState.phase === 'AWAIT_DAMAGE_ROLL' && currentState.pendingAttack) {
+    if (isAwaitingDamage && currentState.pendingAttack) {
       const dmgSuf = `\n\n**Roll your damage!** (${currentState.pendingAttack.damageFormula}${currentState.pendingAttack.isCritical ? ' — DOUBLE DICE for crit!' : ''})`;
       dmContent += dmgSuf;
       streamHooks?.onNarrativeDelta?.(dmgSuf);
@@ -423,7 +431,13 @@ export async function executeMessageSend(
           character.name,
           engine!.getState().entities,
           false,
-          pendingAttack?.attackerId
+          pendingAttack?.attackerId,
+          {
+            awaitingDamageRoll: true,
+            pendingDamageFormula: pendingAttack?.damageFormula,
+            isCriticalHit: pendingAttack?.isCritical,
+            weaponName: pendingAttack?.weaponName,
+          }
         ),
         streamHooks?.onNarrativeDelta
       );

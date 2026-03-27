@@ -68,13 +68,13 @@ export default function CombatSidebar({ sessionId }: CombatSidebarProps) {
     const sortedEntities = [...combatState.entities].sort((a, b) => b.initiative - a.initiative);
 
     return (
-        <aside className="bg-card flex flex-col h-full overflow-hidden">
-            <div className="p-4 border-b flex items-center gap-2 justify-between bg-destructive/10">
-                <div className="flex items-center gap-2">
-                    <Sword className="h-5 w-5 text-destructive" />
-                    <h3 className="font-semibold text-destructive">Combat V2 - R{combatState.round}</h3>
+        <aside className="bg-card flex flex-col h-full w-full overflow-hidden">
+            <div className="p-3 border-b flex items-center gap-2 justify-between bg-destructive/10">
+                <div className="flex items-center gap-2 min-w-0">
+                    <Sword className="h-5 w-5 text-destructive shrink-0" />
+                    <h3 className="font-semibold text-destructive text-sm truncate">Combat V2 - R{combatState.round}</h3>
                 </div>
-                <div className="flex gap-1">
+                <div className="flex gap-1 shrink-0">
                     <Button
                         variant="ghost"
                         size="icon"
@@ -123,8 +123,8 @@ export default function CombatSidebar({ sessionId }: CombatSidebarProps) {
                 />
             )}
 
-            <ScrollArea className="flex-1 p-4">
-                <div className="space-y-3">
+            <ScrollArea className="flex-1 min-h-0 overflow-hidden">
+                <div className="space-y-3 p-4">
                     {sortedEntities.map((entity, idx) => {
                         const isTurn = combatState.currentTurnEntity === entity.name; // Note: currentTurnEntity in state might be name or ID? checking CombatState type would be good. 
                         // Actually engine uses ID for turn order, but state export might have resolved it? 
@@ -144,7 +144,7 @@ export default function CombatSidebar({ sessionId }: CombatSidebarProps) {
                             <div
                                 key={entity.id}
                                 className={`
-                                    p-3 rounded-lg border-2 transition-colors relative overflow-hidden
+                                    p-3 rounded-lg border-2 transition-colors relative
                                     ${isTurnById ? 'border-primary bg-primary/5' : 'border-border'}
                                     ${isDefeated ? 'opacity-50' : ''}
                                     ${isRolling ? 'ring-2 ring-amber-500 ring-offset-1 ring-offset-background animate-pulse' : ''}
@@ -163,8 +163,8 @@ export default function CombatSidebar({ sessionId }: CombatSidebarProps) {
                                                 Init: {entity.initiative} | AC: {entity.baseAC}
                                             </p>
                                         </div>
-                                        <div className="flex flex-col items-end">
-                                            <span className={`text-sm font-mono font-bold ${entity.hp <= (entity.maxHp * 0.5) ? 'text-destructive' : ''}`}>
+                                        <div className="flex flex-col items-end shrink-0">
+                                            <span className={`text-sm font-mono font-bold whitespace-nowrap ${entity.hp <= (entity.maxHp * 0.5) ? 'text-destructive' : ''}`}>
                                                 {entity.hp}/{entity.maxHp}
                                             </span>
                                             <span className="text-[10px] text-muted-foreground">HP</span>
@@ -185,7 +185,7 @@ export default function CombatSidebar({ sessionId }: CombatSidebarProps) {
                     })}
                 </div>
 
-                <div className="mt-6 text-xs text-muted-foreground text-center space-y-1 pb-4 border-t pt-4">
+                <div className="mt-6 text-xs text-muted-foreground text-center space-y-1 pb-4 border-t pt-4 px-4">
                     <p className="font-semibold text-primary">Chat-Driven Combat</p>
                     <p>Type actions in the chat:</p>
                     <p className="italic">"I attack the goblin with my sword"</p>
@@ -193,11 +193,11 @@ export default function CombatSidebar({ sessionId }: CombatSidebarProps) {
                 </div>
 
                 {combatState.log.length > 0 && (
-                    <div className="mt-4 border rounded bg-muted/20 p-2">
+                    <div className="mt-4 mx-4 mb-4 border rounded bg-muted/20 p-2">
                         <p className="text-xs font-semibold mb-2">Battle Feed</p>
                         <ul className="text-[10px] space-y-1 font-mono text-muted-foreground">
                             {combatState.log.slice(-5).reverse().map(l => (
-                                <li key={l.id} className="truncate">
+                                <li key={l.id} className="break-words">
                                     {l.description}
                                 </li>
                             ))}

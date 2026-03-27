@@ -162,11 +162,12 @@ export default function SessionManager({ selectedSessionId, onSessionSelect }: S
   return (
     <Card>
       <CardHeader className="pb-3">
-        <div className="flex items-center justify-between">
-          <CardTitle className="text-lg">Campaigns</CardTitle>
+        <div className="flex items-center justify-between gap-2">
+          <CardTitle className="text-lg shrink-0">Campaigns</CardTitle>
+          <div className="flex items-center gap-1">
           <Dialog open={isCreateOpen} onOpenChange={setIsCreateOpen}>
             <DialogTrigger asChild>
-              <Button size="sm" variant="outline">
+              <Button size="sm" variant="outline" className="h-8 w-8 p-0">
                 <Plus className="h-4 w-4" />
               </Button>
             </DialogTrigger>
@@ -216,9 +217,8 @@ export default function SessionManager({ selectedSessionId, onSessionSelect }: S
 
           <Dialog>
             <DialogTrigger asChild>
-              <Button size="sm" variant="outline" className="ml-2 gap-2">
+              <Button size="sm" variant="outline" className="h-8 w-8 p-0" title="Generate Campaign with AI">
                 <Sparkles className="h-4 w-4" />
-                Generate
               </Button>
             </DialogTrigger>
             <DialogContent className="max-w-2xl">
@@ -252,6 +252,7 @@ export default function SessionManager({ selectedSessionId, onSessionSelect }: S
               </div>
             </DialogContent>
           </Dialog>
+          </div>
         </div>
       </CardHeader>
       <CardContent className="space-y-2">
@@ -263,18 +264,18 @@ export default function SessionManager({ selectedSessionId, onSessionSelect }: S
           sessions.map((session) => (
             <div
               key={session.id}
-              className={`flex items-center justify-between px-3 py-2 rounded-md text-sm transition-colors ${selectedSessionId === session.id
+              className={`flex items-center justify-between gap-1 px-3 py-2 rounded-md text-sm transition-colors ${selectedSessionId === session.id
                 ? 'bg-primary text-primary-foreground'
                 : 'hover:bg-accent'
                 }`}
             >
               <button
                 onClick={() => onSessionSelect(session.id)}
-                className="flex-1 text-left"
+                className="flex-1 text-left min-w-0 truncate"
               >
                 {session.campaignName}
               </button>
-              <div className="flex items-center">
+              <div className="flex items-center shrink-0">
                 <Button
                   size="sm"
                   variant="ghost"

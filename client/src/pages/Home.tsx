@@ -88,8 +88,9 @@ export default function Home() {
             defaultSize={20}
             minSize={12}
             maxSize={35}
+            className="overflow-hidden"
           >
-            <aside className="h-full bg-card p-4 overflow-y-auto space-y-4">
+            <aside className="h-full w-full bg-card p-4 overflow-y-auto overflow-x-hidden space-y-4">
               <SessionManager
                 selectedSessionId={selectedSessionId}
                 onSessionSelect={handleSessionSelect}
@@ -133,7 +134,7 @@ export default function Home() {
           {selectedSessionId && (
             <>
               <ResizableHandle withHandle />
-              <ResizablePanel defaultSize={22} minSize={14} maxSize={40}>
+              <ResizablePanel defaultSize={22} minSize={14} maxSize={40} className="overflow-hidden">
                 <CombatSidebar sessionId={selectedSessionId} />
               </ResizablePanel>
             </>

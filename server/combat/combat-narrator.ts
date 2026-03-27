@@ -5,6 +5,27 @@ import { getCombatNarrativePrompt } from '../prompts';
 import type { CombatLogEntry, CombatEntity } from './combat-types';
 
 /**
+ * Additional context for combat narration.
+ *
+ * Currently optional — fields will be populated as DND data integration
+ * is built out (weapon names, damage types, spell info, etc.).
+ */
+export interface CombatNarrativeContext {
+    /** The weapon or spell used for the action (e.g. "greatsword", "Eldritch Blast") */
+    weaponName?: string;
+    /** Damage type of the attack (e.g. "slashing", "fire") */
+    damageType?: string;
+    /** Tactical role of the acting entity (for enemy narration flavor) */
+    tacticalRole?: string;
+    /** True when the engine is in AWAIT_DAMAGE_ROLL — player still needs to roll damage */
+    awaitingDamageRoll?: boolean;
+    /** The pending damage formula (e.g. "2d6+3") — shown to player */
+    pendingDamageFormula?: string;
+    /** Whether the pending hit is a critical */
+    isCriticalHit?: boolean;
+}
+
+/**
  * Combat Narrator
  *
  * Generates immersive narrative text from combat log entries
@@ -32,7 +53,8 @@ async function computeCombatNarrativePrompts(
     actorName: string,
     entities: CombatEntity[],
     isEnemyTurn: boolean,
-    activePlayerId?: string
+    activePlayerId?: string,
+    narrativeContext?: CombatNarrativeContext
 ): Promise<{ systemPrompt: string; userPrompt: string; logSummary: string } | null> {
     if (logs.length === 0) {
         return null;
@@ -44,6 +66,28 @@ async function computeCombatNarrativePrompts(
     const activeEntity = activePlayerId ? entities.find(e => e.id === activePlayerId) : entities.find(e => e.type === 'player');
     const playerName = activeEntity?.name || entities.find(e => e.type === 'player')?.name || 'the adventurer';
 
+    // Build optional entity metadata block for grounding
+    const actingEntity = entities.find(e => e.name === actorName);
+    const contextLines: string[] = [];
+    if (narrativeContext?.weaponName || actingEntity?.damageFormula) {
+        contextLines.push(`WEAPON: ${narrativeContext?.weaponName || 'unknown'} (${narrativeContext?.damageType || actingEntity?.damageType || 'unknown'} damage)`);
+    }
+    if (narrativeContext?.tacticalRole || actingEntity?.tacticalRole) {
+        contextLines.push(`TACTICAL ROLE: ${narrativeContext?.tacticalRole || actingEntity?.tacticalRole}`);
+    }
+    const entityMetaBlock = contextLines.length > 0
+        ? `\nENTITY DETAILS:\n${contextLines.join('\n')}\n`
+        : '';
+
+    // Determine how to end the narrative based on combat state
+    let endingInstruction: string;
+    if (narrativeContext?.awaitingDamageRoll) {
+        // Player's attack hit — they still need to roll damage. Do NOT announce the enemy's turn.
+        endingInstruction = 'End with the impact of the hit landing — do NOT announce whose turn is next or mention the enemy\'s turn. The player still needs to roll damage.';
+    } else {
+        endingInstruction = 'End with whose turn it is next, or if combat ended';
+    }
+
     let prompt: string;
 
     if (isEnemyTurn) {
@@ -51,7 +95,7 @@ async function computeCombatNarrativePrompts(
 
 PLAYER CHARACTER: ${playerName} (address as "you")
 ENEMY ACTING: ${actorName} (describe in THIRD PERSON - "it", "the creature", "${actorName}")
-
+${entityMetaBlock}
 ENEMY'S FLAVOR:
 "${playerFlavorText}"
 
@@ -62,11 +106,12 @@ CRITICAL: Write a 2-3 sentence narrative from the PLAYER'S perspective:
 - The ENEMY (${actorName}) is described in THIRD PERSON: "it attacks", "the creature lunges", "${actorName} strikes"
 - The PLAYER is always "you": "you dodge", "you take damage", "your guard"
 - NEVER say "you attack" or "you launch" when describing what the enemy does
-- End with whose turn it is next`;
+- ${endingInstruction}`;
     } else {
         prompt = `You are the Dungeon Master narrating combat directly to the player.
 
 PLAYER CHARACTER: ${actorName}
+${entityMetaBlock}
 PLAYER'S DESCRIPTION:
 "${playerFlavorText}"
 
@@ -76,7 +121,7 @@ ${logSummary}
 Write a vivid, immersive 2-3 sentence narrative of what just happened.
 - Address the player in SECOND PERSON ("you") - vary between "you", "your blade", or their name for variety
 - Include the player's flavor where it fits naturally
-- End with whose turn it is next, or if combat ended`;
+- ${endingInstruction}`;
     }
 
     const db = await import('../db');
@@ -97,7 +142,8 @@ export async function generateCombatNarrativeStream(
     actorName: string,
     entities: CombatEntity[] = [],
     isEnemyTurn: boolean = false,
-    activePlayerId?: string
+    activePlayerId?: string,
+    narrativeContext?: CombatNarrativeContext
 ): Promise<AsyncIterable<string>> {
     const pre = await computeCombatNarrativePrompts(
         userId,
@@ -106,7 +152,8 @@ export async function generateCombatNarrativeStream(
         actorName,
         entities,
         isEnemyTurn,
-        activePlayerId
+        activePlayerId,
+        narrativeContext
     );
 
     if (!pre) {
@@ -158,7 +205,8 @@ export async function generateCombatNarrative(
     actorName: string,
     entities: CombatEntity[] = [],
     isEnemyTurn: boolean = false,
-    activePlayerId?: string
+    activePlayerId?: string,
+    narrativeContext?: CombatNarrativeContext
 ): Promise<string> {
     const stream = await generateCombatNarrativeStream(
         sessionId,
@@ -168,7 +216,8 @@ export async function generateCombatNarrative(
         actorName,
         entities,
         isEnemyTurn,
-        activePlayerId
+        activePlayerId,
+        narrativeContext
     );
 
     let narrative = '';
@@ -249,11 +298,12 @@ export async function generateAndSaveNarrativeAsync(
     entities: CombatEntity[],
     isEnemyTurn: boolean,
     activePlayerId?: string,
-    appendText?: string
+    appendText?: string,
+    narrativeContext?: CombatNarrativeContext
 ): Promise<void> {
     try {
         const narrative = await generateCombatNarrative(
-            sessionId, userId, logs, flavorText, actorName, entities, isEnemyTurn, activePlayerId
+            sessionId, userId, logs, flavorText, actorName, entities, isEnemyTurn, activePlayerId, narrativeContext
         );
         const db = await import('../db');
         let content = narrative;
