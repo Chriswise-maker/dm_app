@@ -1172,14 +1172,19 @@ export const appRouter = router({
           if (state.phase === 'AWAIT_ATTACK_ROLL' && state.pendingAttackRoll) {
             const attacker = engine.getEntity(state.pendingAttackRoll.attackerId);
             const target = engine.getEntity(state.pendingAttackRoll.targetId);
+            const hasAdv = state.pendingAttackRoll.advantage && !state.pendingAttackRoll.disadvantage;
+            const hasDisadv = state.pendingAttackRoll.disadvantage && !state.pendingAttackRoll.advantage;
+            const advLabel = hasAdv ? ' (Advantage)' : hasDisadv ? ' (Disadvantage)' : '';
             return {
               type: 'attack' as const,
-              formula: '1d20',
+              formula: (hasAdv || hasDisadv) ? '2d20' : '1d20',
+              advantage: hasAdv,
+              disadvantage: hasDisadv,
               modifier: state.pendingAttackRoll.attackModifier,
               entityId: state.pendingAttackRoll.attackerId,
               entityName: attacker?.name || 'Unknown',
               targetName: target?.name || 'Unknown',
-              prompt: `${attacker?.name} rolls to hit ${target?.name} (d20+${state.pendingAttackRoll.attackModifier})`,
+              prompt: `${attacker?.name} rolls to hit ${target?.name}${advLabel} (d20+${state.pendingAttackRoll.attackModifier})`,
             };
           }
           if (state.phase === 'AWAIT_DAMAGE_ROLL' && state.pendingAttack) {
@@ -1197,6 +1202,12 @@ export const appRouter = router({
           }
           return null;
         })();
+
+        // Compute legal actions for the current turn entity
+        const currentEntity = engine.getCurrentTurnEntity();
+        const legalActions = (state.phase === 'ACTIVE' && currentEntity)
+          ? engine.getLegalActions(currentEntity.id)
+          : [];
 
         return {
           id: state.id,
@@ -1221,6 +1232,8 @@ export const appRouter = router({
           currentTurnEntity: engine.getCurrentTurnEntity()?.name ?? null,
           log: state.log.slice(-20), // Last 20 log entries
           pendingRoll,
+          legalActions,
+          turnResources: state.turnResources ?? null,
         };
       }),
 
@@ -1444,7 +1457,7 @@ export const appRouter = router({
     submitRoll: protectedProcedure
       .input(z.object({
         sessionId: z.number(),
-        rollType: z.enum(['initiative', 'attack', 'damage']),
+        rollType: z.enum(['initiative', 'attack', 'damage', 'deathSave']),
         rawDieValue: z.number().int().min(1),
         entityId: z.string().optional(), // for initiative: which player entity is rolling
       }))
@@ -1467,14 +1480,15 @@ export const appRouter = router({
           initiative: 'AWAIT_INITIATIVE',
           attack: 'AWAIT_ATTACK_ROLL',
           damage: 'AWAIT_DAMAGE_ROLL',
+          deathSave: 'AWAIT_DEATH_SAVE',
         }[rollType];
 
         if (state.phase !== expectedPhase) {
           return { success: false as const, error: `Not in ${expectedPhase} phase (currently ${state.phase})` };
         }
 
-        // Validate d20 roll range for initiative and attack rolls
-        if (rollType === 'initiative' || rollType === 'attack') {
+        // Validate d20 roll range for initiative, attack, and death save rolls
+        if (rollType === 'initiative' || rollType === 'attack' || rollType === 'deathSave') {
           if (rawDieValue > 20) {
             return { success: false as const, error: `Invalid d20 roll: ${rawDieValue} (must be 1-20)` };
           }
@@ -1501,6 +1515,9 @@ export const appRouter = router({
           if (rollType === 'damage' && state.pendingAttack) {
             return engine!.getEntity(state.pendingAttack.attackerId)?.name ?? 'Player';
           }
+          if (rollType === 'deathSave' && entityId) {
+            return engine!.getEntity(entityId)?.name ?? 'Player';
+          }
           return 'Player';
         })();
 
@@ -1517,6 +1534,11 @@ export const appRouter = router({
           };
         } else if (rollType === 'attack') {
           result = engine.resolveAttackRoll(rawDieValue);
+        } else if (rollType === 'deathSave') {
+          if (!entityId) {
+            return { success: false as const, error: 'entityId required for death save roll' };
+          }
+          result = engine.rollDeathSave(entityId, rawDieValue);
         } else {
           result = engine.applyDamage(rawDieValue);
         }
@@ -1582,6 +1604,18 @@ export const appRouter = router({
           await CombatEngineManager.destroy(sessionId);
         }
 
+        // Check if player still has resources after this roll (e.g. bonus action available)
+        const _currentTurnEntityId = newState.turnOrder[newState.turnIndex];
+        const _currentTurnEntity = newState.entities.find(e => e.id === _currentTurnEntityId);
+        // If the current turn entity is still a player and phase is ACTIVE,
+        // the engine did NOT auto-end (they have resources left, e.g. bonus action).
+        // This covers both: miss (rollType=attack) and post-damage (rollType=damage).
+        // It does NOT fire for a hit awaiting damage (phase=AWAIT_DAMAGE_ROLL).
+        const _playerHasRemainingResources =
+          rollType !== 'initiative' &&
+          newState.phase === 'ACTIVE' &&
+          _currentTurnEntity?.type === 'player';
+
         return {
           success: true as const,
           logs: result.logs,
@@ -1597,6 +1631,7 @@ export const appRouter = router({
             activePlayerId,
             hasLogs: result.logs.length > 0,
             phase: newState.phase,
+            playerHasRemainingResources: _playerHasRemainingResources,
           },
         };
         }); // end withLock
@@ -1611,7 +1646,9 @@ export const appRouter = router({
             const { generateAndSaveNarrativeAsync } = await import('./combat/combat-narrator');
             await generateAndSaveNarrativeAsync(
               a.sessionId, a.userId, lockResult.logs, a.flavorText,
-              a.rollingEntityName, a.entities, false, a.activePlayerId
+              a.rollingEntityName, a.entities, false, a.activePlayerId,
+              undefined,
+              a.playerHasRemainingResources ? { playerHasRemainingResources: true } : undefined
             ).catch(err => console.error('[CombatV2] Async narrative error:', err));
           }
 

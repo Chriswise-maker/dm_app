@@ -139,11 +139,15 @@ Extract the player's combat intent from their natural language message.
 **RECOGNITION RULES:**
 - Roleplay attacks count as ATTACK: "I scream a battlecry and charge", "I rush at the enemy", "With a roar, I swing my axe"
 - Explicit attacks: "I attack", "I hit", "I strike", "I cast fireball at"
-- Passing turn: "I'm done", "I wait", "I hold my action", "I end my turn"
+- Standard actions: DODGE ("I dodge", "I go defensive"), DASH ("I sprint"), DISENGAGE ("I back away"), HELP ("I help Thorin"), HIDE ("I sneak"), USE_ITEM ("I drink a potion")
+- Passing turn: "I'm done", "I wait", "I hold my action", "I end my turn", "no", "nah", "that's it", "move on", "I'm good", "next"
+- Questions and queries: QUERY — "what can I do?", "what are my options?", "how does dodge work?", "can I attack twice?", any question about rules, abilities, or combat state
 - If only one enemy exists and player attacks, assume that target
 
 **OUTPUT (JSON ONLY):**
 {"actionType": "ATTACK", "targetName": "Goblin", "confidence": 0.9}
+{"actionType": "DODGE", "confidence": 0.95}
+{"actionType": "QUERY", "confidence": 0.9}
 {"actionType": "END_TURN", "confidence": 0.95}
 {"actionType": "UNKNOWN", "confidence": 0.3}`;
 

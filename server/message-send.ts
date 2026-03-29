@@ -380,6 +380,57 @@ export async function executeMessageSend(
     // 1. Parse player action from chat
     const parsed = await parsePlayerAction(input.sessionId, ctx.user.id, input.message);
 
+    // QUERY: player is asking about options/rules — respond with legal actions, don't consume turn
+    if (parsed.error === 'QUERY') {
+      const state = engine!.getState();
+      const currentEntityId = state.turnOrder[state.turnIndex];
+      const legalActions = engine!.getLegalActions(currentEntityId);
+      const turnRes = state.turnResources;
+      const currentEntity = state.entities.find(e => e.id === currentEntityId);
+
+      // Build context for the LLM to answer the question
+      const resourceStatus = turnRes
+        ? [
+            turnRes.actionUsed ? '~~Action~~ (used)' : '**Action** (available)',
+            turnRes.bonusActionUsed ? '~~Bonus Action~~ (used)' : '**Bonus Action** (available)',
+            turnRes.reactionUsed ? '~~Reaction~~ (used)' : '**Reaction** (available)',
+            turnRes.extraAttacksRemaining > 0 ? `**Extra Attacks**: ${turnRes.extraAttacksRemaining} remaining` : null,
+          ].filter(Boolean).join(', ')
+        : 'Action, Bonus Action, Reaction';
+
+      const actionList = legalActions
+        .map(a => `• **${a.type}**${a.description ? ` — ${a.description}` : ''}`)
+        .join('\n');
+
+      const queryPrompt = `You are a D&D 5e Dungeon Master helping a player understand their combat options. Answer their question concisely and helpfully, in character as the DM.
+
+PLAYER CHARACTER: ${currentEntity?.name || 'Unknown'} (HP: ${currentEntity?.hp}/${currentEntity?.maxHp}, AC: ${currentEntity?.baseAC})
+TURN RESOURCES: ${resourceStatus}
+
+AVAILABLE ACTIONS:
+${actionList}
+
+PLAYER'S QUESTION: "${input.message}"
+
+Answer the question directly. If they're asking what they can do, list their available actions with brief explanations. Keep it concise but helpful. Use D&D 5e rules knowledge to explain mechanics if asked.`;
+
+      const { invokeLLMWithSettings } = await import('./llm-with-settings');
+      const queryResult = await invokeLLMWithSettings(ctx.user.id, {
+        messages: [
+          { role: 'system', content: 'You are a D&D 5e Dungeon Master. Answer combat questions concisely and helpfully.' },
+          { role: 'user', content: queryPrompt },
+        ],
+        max_tokens: 500,
+      });
+      const rawContent = queryResult.choices?.[0]?.message?.content;
+      const queryResponse: string = (typeof rawContent === 'string' ? rawContent : null)
+        || "I'm not sure how to answer that. Try asking about your available actions or D&D 5e rules.";
+
+      await db.saveMessage({ sessionId: input.sessionId, characterName: character.name, content: input.message, isDm: 0 });
+      await db.saveMessage({ sessionId: input.sessionId, characterName: 'DM', content: queryResponse, isDm: 1 });
+      return { response: queryResponse, combatTriggered: false, enemiesAdded: 0 };
+    }
+
     // UNRECOGNIZED_ACTION: ask for clarification, do NOT end turn
     if (parsed.error === 'UNRECOGNIZED_ACTION') {
       await db.saveMessage({ sessionId: input.sessionId, characterName: character.name, content: input.message, isDm: 0 });
@@ -468,7 +519,18 @@ export async function executeMessageSend(
 
     // 5. Generate narrative from logs + flavor (for miss or non-attack actions)
     const currentState = engine!.getState(); // Get fresh state for entities
-    const activePlayerId = parsed.action.type === 'ATTACK' ? parsed.action.attackerId : parsed.action.entityId;
+    const activePlayerId = parsed.action.type === 'ATTACK' ? parsed.action.attackerId
+        : parsed.action.type === 'OPPORTUNITY_ATTACK' ? parsed.action.attackerId
+        : 'entityId' in parsed.action ? parsed.action.entityId : undefined;
+
+    // Check if the player still has remaining resources (turn didn't auto-end)
+    const stillPlayersTurn = currentState.phase === 'ACTIVE'
+        && engine!.getCurrentTurnEntity()?.type === 'player'
+        && parsed.action.type !== 'END_TURN';
+    const playerHasRemainingResources = stillPlayersTurn && currentState.turnResources
+        ? (!currentState.turnResources.actionUsed || !currentState.turnResources.bonusActionUsed)
+        : false;
+
     const narrative = await streamToString(
       await generateCombatNarrativeStream(
         input.sessionId,
@@ -478,7 +540,8 @@ export async function executeMessageSend(
         character.name,
         currentState.entities,
         false,
-        activePlayerId
+        activePlayerId,
+        playerHasRemainingResources ? { playerHasRemainingResources: true } : undefined
       ),
       streamHooks?.onNarrativeDelta
     );

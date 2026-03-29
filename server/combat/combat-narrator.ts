@@ -23,6 +23,8 @@ export interface CombatNarrativeContext {
     pendingDamageFormula?: string;
     /** Whether the pending hit is a critical */
     isCriticalHit?: boolean;
+    /** True when the player still has resources (bonus action, etc.) after their action */
+    playerHasRemainingResources?: boolean;
 }
 
 /**
@@ -84,6 +86,10 @@ async function computeCombatNarrativePrompts(
     if (narrativeContext?.awaitingDamageRoll) {
         // Player's attack hit — they still need to roll damage. Do NOT announce the enemy's turn.
         endingInstruction = 'End with the impact of the hit landing — do NOT announce whose turn is next or mention the enemy\'s turn. The player still needs to roll damage.';
+    } else if (narrativeContext?.playerHasRemainingResources) {
+        // Player used their action but still has bonus action / other resources.
+        // Prompt naturally like a real DM would: "anything else?"
+        endingInstruction = 'End by naturally asking the player if they want to do anything else with their turn — like a real DM would. Examples: "Anything else?", "What else would you like to do?", "Do you want to do anything else before we move on?". Keep it natural and brief, not mechanical. Do NOT announce whose turn is next — it\'s still their turn.';
     } else {
         endingInstruction = 'End with whose turn it is next, or if combat ended';
     }
