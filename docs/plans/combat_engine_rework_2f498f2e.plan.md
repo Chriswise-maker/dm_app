@@ -10,16 +10,16 @@ todos:
     status: done
   - id: stage-3
     content: "Stage 3: Legal Action Architecture — getLegalActions(), wire enemy AI, expose in getState"
-    status: pending
+    status: done
   - id: stage-4
-    content: "Stage 4: Action Economy — turn resource tracking, stop auto-ending turns, new action types (Dodge/Dash/Disengage/Help), update parser and AI"
-    status: pending
+    content: "Stage 4: Action Economy — turn resource tracking, stop auto-ending turns, new action types (Dodge/Dash/Disengage/Help/Hide/Ready/UseItem/OpportunityAttack), update parser and AI, contextual manual ('What can I do?' queries), action point tracker UI"
+    status: done
   - id: stage-5
     content: "Stage 5: Conditions, Death Saves, and Healing — condition schema + effects, death saves, healing action, damage resistance/immunity/vulnerability, tempHp"
-    status: pending
+    status: done
   - id: stage-6
     content: "Stage 6: Spellcasting — spell schema, CAST_SPELL action, AWAIT_SAVE_ROLL phase, concentration, wire into legal actions and AI"
-    status: pending
+    status: done
   - id: stage-7
     content: "Stage 7: Open5e Integration — API client, map to CombatEntity, wire into combat initiation"
     status: pending
@@ -551,6 +551,106 @@ describe("Action Economy", () => {
   it("should prevent attack when action already used and no extra attacks", () => { ... });
   it("should auto-end enemy turn after all actions exhausted", () => { ... });
 });
+```
+
+### 4.7 — Contextual Manual: "What can I do?" support
+
+Goal: When it's a player's turn, they can ask natural-language questions like "What can I do?", "What are my options?", or "How does Dodge work?" and the LLM responds as a contextual rules manual — combining the player's current legal actions, turn resources, and D&D 5e rules knowledge.
+
+**File:** [player-action-parser.ts](dm_app/server/combat/player-action-parser.ts)
+
+Add a new classification category `QUERY` alongside ATTACK, DODGE, etc. The parser should detect questions/help requests:
+
+- "What can I do?" / "What are my options?"
+- "How does grapple work?"
+- "Can I attack twice?"
+- "What does Dodge do?"
+- "How much movement do I have?"
+
+When classified as `QUERY`, return a special result:
+
+```typescript
+return {
+  action: null,           // no action taken — turn is NOT consumed
+  type: 'QUERY',
+  flavorText: '',
+  confidence: 1,
+};
+```
+
+**File:** [routers.ts](dm_app/server/routers.ts), ACTIVE phase handler
+
+When the parser returns `type: 'QUERY'`:
+
+1. Call `engine.getLegalActions(entityId)` to get current options
+2. Read `turnResources` from state to know what's been used
+3. Build an LLM prompt that includes:
+   - The player's legal actions (formatted as a readable list)
+   - Current turn resource state (action used? bonus action available? etc.)
+   - The entity's stats/abilities for context
+   - The original question
+4. Send the LLM response back as a DM message (system-style, not narrative)
+5. Do NOT advance the turn — the player still gets to act
+
+Example interaction:
+```
+Player: "What can I do?"
+DM: "It's your turn! You have your Action and Bonus Action available.
+     You can:
+     • Attack — strike a target with your longsword (+5 to hit, 1d8+3 slashing)
+     • Dodge — impose disadvantage on all attacks against you until your next turn
+     • Dash — double your movement this turn
+     • Disengage — move without provoking opportunity attacks
+     • Help — give an ally advantage on their next attack against a target
+     • End Turn — pass to the next combatant
+     You also have your Reaction available if an enemy tries to flee."
+```
+
+**Tests:**
+
+```typescript
+it("should detect 'what can I do' as a QUERY, not an action", () => { ... });
+it("should NOT consume the player's action when answering a query", () => { ... });
+it("should include legal actions in the query response", () => { ... });
+it("should include turn resource state in the query response", () => { ... });
+```
+
+### 4.8 — Action Point Tracker UI
+
+Goal: Show the player a clear visual tracker of their remaining turn resources (action, bonus action, reaction, movement) so they know what they've spent and what's left.
+
+**File:** [combat-types.ts](dm_app/server/combat/combat-types.ts)
+
+Ensure `turnResources` (from 4.1) is included in the state returned by `getState()` so the client can render it.
+
+**File:** Create `client/src/components/combat/ActionPointTracker.tsx`
+
+A compact UI component that displays:
+
+```
+┌──────────────────────────────────┐
+│  ◉ Action   ◉ Bonus   ◉ React  │
+│  ○ Move                         │
+└──────────────────────────────────┘
+```
+
+- Filled circle (◉) = available, hollow (○) = used
+- Gray out used resources
+- Animate the transition when a resource is consumed
+- Show extra attacks as pips if `extraAttacksRemaining > 0`: e.g. "◉ ◉ Attacks (2 remaining)"
+- Tooltip on each resource explaining what it does (mini rules reference)
+
+**File:** Wire into the combat UI (wherever the "your turn" indicator lives)
+
+- Only show when it's the current player's turn and phase is ACTIVE
+- Collapse/hide when it's an enemy turn or combat is in a rolling phase
+
+**Tests:**
+
+```typescript
+it("should display all resources as available at start of turn", () => { ... });
+it("should mark action as used after attack", () => { ... });
+it("should hide tracker when it is not the player's turn", () => { ... });
 ```
 
 ---

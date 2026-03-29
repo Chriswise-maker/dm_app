@@ -12,18 +12,23 @@ description: Work on the combat engine system
 
 ---
 
-## Current State (as of 2026-03-15)
+## Current State (as of 2026-03-29)
 
-**Phase 5.1 Visual Dice** ✅ Complete.
+**Stages 1–6** ✅ All complete.
 
-**Combat Engine Rework Stage 1 (Bug Fixes and Hardening)** ✅ Complete:
-- Dice mocking, getState deep copy, log persistence, rawD20 crit/fumble, endTurn round skip fix, submitRoll validation, manager lock + AI re-entrancy guard, error handling, dead code cleanup. See `docs/combat/phase-5-roadmap.md` and `docs/combat/COMBAT_ENGINE.md`.
+- **Stage 1**: Dice mocking, getState deep copy, log persistence, rawD20 crit/fumble, endTurn round skip fix, submitRoll validation, manager lock + AI re-entrancy guard, error handling, dead code cleanup.
+- **Stage 2**: Target scoring (pre-LLM), enriched entity data, narrator “you” fix, UNKNOWN parser fix, narrative consistency.
+- **Stage 3**: `getLegalActions(entityId)` on engine, enemy AI uses legal actions (numbered choice prompt), `legalActions` exposed in `combatV2.getState`.
+- **Stage 4**: `TurnResources` tracking (action/bonus/reaction), stop auto-ending turns, Dodge/Dash/Disengage/Help/Hide/Ready/UseItem/Heal actions, Extra Attack, contextual QUERY handler.
+- **Stage 5**: D&D conditions with duration (`activeConditions`), death saves state machine, HEAL action, resistance/immunity/vulnerability/tempHp, concentration condition.
+- **Stage 6**: `SpellSchema`, `CastSpellPayload`, `AWAIT_SAVE_ROLL` phase, `processCastSpell` (slot deduction, area effects, saving throws, healing), concentration tracking + CON save, `submitSavingThrow`, parser + AI spell support, `abilityScores` on entities.
 
 ### 🔜 Next Up
-1. **Stage 2: Smarter Enemies** (from rework plan)
-   - Target scoring (pre-LLM), enriched entity data, narrator “you” fix, UNKNOWN parser fix, narrative consistency
-2. **Phase 5.2 Saving Throws** (later)
-   - DEX/CON/WIS saves, advantage/disadvantage, damage modifiers (resistance/immunity/vulnerability)
+1. **Stage 7: Open5e Integration**
+   - `server/combat/open5e-client.ts` — `fetchMonster(name)`, `fetchSpell(name)`
+   - Map Open5e JSON → `CombatEntity` (multiattack, spells, resistances, ability scores)
+   - Wire into `combat-helpers.ts` for automatic enemy population
+   - Fallback to LLM-generated stats if Open5e lookup fails
 
 ---
 
