@@ -12,7 +12,7 @@ import {
     AlertDialogTitle,
     AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { Sword, ChevronRight, Undo, Skull } from 'lucide-react';
+import { Sword, ChevronRight, Undo, Skull, Zap, SkipForward } from 'lucide-react';
 import { trpc } from '@/lib/trpc';
 import { toast } from 'sonner';
 import { DiceRoller } from './DiceRoller';
@@ -52,6 +52,13 @@ export default function CombatSidebar({ sessionId }: CombatSidebarProps) {
         },
     });
 
+    const submitActionMutation = trpc.combatV2.submitAction.useMutation({
+        onSuccess: () => {
+            utils.combatV2.getState.invalidate({ sessionId });
+            utils.messages.list.invalidate({ sessionId });
+        },
+    });
+
     if (isLoading) return null;
     // Hide sidebar when no combat or combat has ended
     if (!combatState || combatState.phase === 'IDLE' || combatState.phase === 'RESOLVED') return null;
@@ -66,6 +73,17 @@ export default function CombatSidebar({ sessionId }: CombatSidebarProps) {
 
     // Sort by initiative descending for display
     const sortedEntities = [...combatState.entities].sort((a, b) => b.initiative - a.initiative);
+
+    // Current turn state
+    const currentEntityId = combatState.turnOrder[combatState.turnIndex];
+    const currentEntity = combatState.entities.find(e => e.id === currentEntityId);
+    const isPlayerTurn = currentEntity?.type === 'player' && combatState.phase === 'ACTIVE';
+    const tr = combatState.turnResources;
+
+    const handleEndTurn = () => {
+        if (!currentEntityId) return;
+        submitActionMutation.mutate({ sessionId, action: { type: 'END_TURN', entityId: currentEntityId } });
+    };
 
     return (
         <aside className="bg-card flex flex-col h-full w-full overflow-hidden">
@@ -121,6 +139,44 @@ export default function CombatSidebar({ sessionId }: CombatSidebarProps) {
                     sessionId={sessionId}
                     onRollComplete={() => { refetch(); utils.messages.list.invalidate({ sessionId }); }}
                 />
+            )}
+
+            {/* Action economy — shown on player's turn */}
+            {isPlayerTurn && tr && (
+                <div className="px-3 pb-2 border-b">
+                    <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1">
+                            <Zap className="h-3 w-3" />
+                            Action Economy
+                        </span>
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-6 text-[10px] px-2 gap-1"
+                            onClick={handleEndTurn}
+                            disabled={submitActionMutation.isPending}
+                        >
+                            <SkipForward className="h-3 w-3" />
+                            End Turn
+                        </Button>
+                    </div>
+                    <div className="flex gap-1.5 flex-wrap">
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded border font-medium ${tr.actionUsed ? 'bg-muted text-muted-foreground line-through border-muted' : 'bg-primary/10 text-primary border-primary/30'}`}>
+                            Action
+                        </span>
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded border font-medium ${tr.bonusActionUsed ? 'bg-muted text-muted-foreground line-through border-muted' : 'bg-amber-500/10 text-amber-600 border-amber-500/30'}`}>
+                            Bonus
+                        </span>
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded border font-medium ${tr.reactionUsed ? 'bg-muted text-muted-foreground line-through border-muted' : 'bg-blue-500/10 text-blue-600 border-blue-500/30'}`}>
+                            Reaction
+                        </span>
+                        {tr.extraAttacksRemaining > 0 && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded border font-medium bg-green-500/10 text-green-600 border-green-500/30">
+                                +{tr.extraAttacksRemaining} Attack
+                            </span>
+                        )}
+                    </div>
+                </div>
             )}
 
             <ScrollArea className="flex-1 min-h-0 overflow-hidden">

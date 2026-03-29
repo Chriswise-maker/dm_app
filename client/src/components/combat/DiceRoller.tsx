@@ -11,8 +11,10 @@ import { rollFormula, parseFormula } from '@/lib/dice-utils';
 
 export interface PendingRoll {
   type: 'initiative' | 'attack' | 'damage';
-  formula: string;       // e.g. "1d20", "1d8+3", "2d8+3" (critical)
+  formula: string;       // e.g. "1d20", "2d20" (adv/disadv), "1d8+3", "2d8+3" (critical)
   modifier?: number;     // attack modifier shown separately (e.g. +5 for attack rolls)
+  advantage?: boolean;   // roll 2d20 keep highest
+  disadvantage?: boolean; // roll 2d20 keep lowest
   entityId?: string;     // relevant entity (for initiative)
   entityName: string;
   targetName?: string;
@@ -117,9 +119,19 @@ export function DiceRoller({ pendingRoll, sessionId, onRollComplete }: DiceRolle
       submitTimeoutRef.current = setTimeout(() => {
         setAnimState('submitting');
 
-        // initiative & attack → send raw d20 die value
+        // initiative & attack → send the kept raw d20 value
+        // advantage: keep highest; disadvantage: keep lowest
         // damage → send the total (formula already includes modifier)
-        const rawDieValue = pendingRoll.type === 'damage' ? result.total : result.rolls[0];
+        let rawDieValue: number;
+        if (pendingRoll.type === 'damage') {
+          rawDieValue = result.total;
+        } else if (pendingRoll.advantage && result.rolls.length >= 2) {
+          rawDieValue = Math.max(...result.rolls);
+        } else if (pendingRoll.disadvantage && result.rolls.length >= 2) {
+          rawDieValue = Math.min(...result.rolls);
+        } else {
+          rawDieValue = result.rolls[0];
+        }
 
         submitRoll.mutate({
           sessionId,
@@ -131,16 +143,24 @@ export function DiceRoller({ pendingRoll, sessionId, onRollComplete }: DiceRolle
     }, 1200);
   };
 
-  // Detect nat 20 / nat 1 for d20 rolls
-  const rawD20 = finalResult?.rolls[0] ?? null;
-  const isNatTwenty = rawD20 === 20 && pendingRoll.type !== 'damage';
-  const isNatOne = rawD20 === 1 && pendingRoll.type !== 'damage';
+  // For advantage/disadvantage, determine which die is kept
+  const keptD20 = finalResult
+    ? pendingRoll.advantage && finalResult.rolls.length >= 2
+      ? Math.max(...finalResult.rolls)
+      : pendingRoll.disadvantage && finalResult.rolls.length >= 2
+        ? Math.min(...finalResult.rolls)
+        : finalResult.rolls[0]
+    : null;
 
-  // Total shown in breakdown row
+  // Detect nat 20 / nat 1 on the kept die
+  const isNatTwenty = keptD20 === 20 && pendingRoll.type !== 'damage';
+  const isNatOne = keptD20 === 1 && pendingRoll.type !== 'damage';
+
+  // Total shown in breakdown row — for adv/disadv use the kept die, not sum
   const totalDisplay = finalResult
     ? pendingRoll.type === 'damage'
       ? finalResult.total                           // formula already has modifier baked in
-      : finalResult.rolls[0] + displayModifier      // d20 + attack/init modifier
+      : (keptD20 ?? finalResult.rolls[0]) + displayModifier  // kept d20 + attack/init modifier
     : null;
 
   const showResult = animState === 'result' || animState === 'submitting';
@@ -164,12 +184,21 @@ export function DiceRoller({ pendingRoll, sessionId, onRollComplete }: DiceRolle
       <div className="flex items-center justify-center gap-2 mb-3 min-h-[60px]">
         {Array.from({ length: dieCount }).map((_, i) => {
           const val = displayRolls[i] ?? '?';
+          // For advantage/disadvantage, dim the non-kept die after rolling
+          const isKept = !finalResult || dieCount === 1
+            ? true
+            : pendingRoll.advantage
+              ? displayRolls[i] === Math.max(...displayRolls)
+              : pendingRoll.disadvantage
+                ? displayRolls[i] === Math.min(...displayRolls)
+                : true;
           return (
             <motion.div
               key={i}
               className={[
                 'w-14 h-14 rounded-lg border-2 flex items-center justify-center',
-                'text-2xl font-bold select-none cursor-default',
+                'text-2xl font-bold select-none cursor-default transition-opacity',
+                !isKept ? 'opacity-30' : '',
                 isNatTwenty
                   ? 'border-yellow-400 bg-yellow-900/50 text-yellow-200'
                   : isNatOne
