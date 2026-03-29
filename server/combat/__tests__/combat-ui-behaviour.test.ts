@@ -168,10 +168,12 @@ describe("Combat UI behaviour (Stage 1)", () => {
       const state = engine.getState();
       expect(state.phase).not.toBe("AWAIT_DAMAGE_ROLL");
       expect(state.pendingAttack).toBeUndefined();
-      // Turn should have ended (goblin's turn or next)
+      // After a miss, player still has bonus action — turn should NOT auto-end
+      // but there should be no damage phase
       const uiState = getStateForUI(TEST_SESSION);
       expect(uiState!.pendingRoll?.type).not.toBe("damage");
-      expect(uiState!.log.some((l) => l.type === "TURN_END")).toBe(true);
+      // Verify it's still the player's turn (action used, but bonus action remains)
+      expect(state.phase).toBe("ACTIVE");
     });
   });
 

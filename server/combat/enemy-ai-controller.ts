@@ -17,7 +17,7 @@ import { invokeLLMWithSettings } from '../llm-with-settings';
 import { activity } from '../activity-log';
 import { getEnemyAIPrompt } from '../prompts';
 import { generateCombatNarrative } from './combat-narrator';
-import type { CombatEntity, BattleState, ActionPayload, CombatLogEntry } from './combat-types';
+import type { CombatEntity, BattleState, ActionPayload, CombatLogEntry, LegalAction } from './combat-types';
 
 // =============================================================================
 // TARGET SCORING (pre-LLM tactical guidance)
@@ -61,7 +61,7 @@ export function scoreTargets(enemy: CombatEntity, state: BattleState): CombatEnt
  * Build a prompt for the LLM to decide an enemy's action
  * Uses the V2 CombatEntity format
  */
-function buildEnemyDecisionPromptV2(enemy: CombatEntity, state: BattleState, rankedTargets: CombatEntity[]): string {
+function buildEnemyDecisionPromptV2(enemy: CombatEntity, state: BattleState, rankedTargets: CombatEntity[], legalActions: LegalAction[]): string {
     const allies = state.entities.filter((e: CombatEntity) => e.type === 'enemy' && e.id !== enemy.id && e.status === 'ALIVE');
 
     let prompt = `You are controlling: ${enemy.name}\n\n`;
@@ -87,6 +87,15 @@ function buildEnemyDecisionPromptV2(enemy: CombatEntity, state: BattleState, ran
         prompt += `\nAllies: None (you fight alone)\n`;
     }
 
+    // Add spells info if enemy has spells
+    if (enemy.spells && enemy.spells.length > 0) {
+        prompt += `\nYour spells:\n`;
+        for (const spell of enemy.spells) {
+            const slotInfo = spell.level === 0 ? 'cantrip' : `level ${spell.level} (${enemy.spellSlots[String(spell.level)] ?? 0} slots)`;
+            prompt += `- ${spell.name} (${slotInfo}): ${spell.damageFormula ? spell.damageFormula + ' ' + (spell.damageType ?? '') : ''}${spell.healingFormula ? 'heals ' + spell.healingFormula : ''}${spell.isAreaEffect ? ' (area)' : ''}\n`;
+        }
+    }
+
     prompt += `\nRecommended targets (most to least tactical):\n`;
     rankedTargets.forEach((p: CombatEntity, i: number) => {
         const pct = p.maxHp > 0 ? Math.round((p.hp / p.maxHp) * 100) : 0;
@@ -104,15 +113,23 @@ function buildEnemyDecisionPromptV2(enemy: CombatEntity, state: BattleState, ran
         prompt += `\nBiggest threat: ${biggestThreat.name} (${pct}% HP, most dangerous)\n`;
     }
 
+    // List legal actions as numbered choices
+    prompt += `\nYour available actions:\n`;
+    legalActions.forEach((action, i) => {
+        if (action.type === 'ATTACK' && action.targetId) {
+            prompt += `${i + 1}. ATTACK target=${action.targetId} — ${action.description}\n`;
+        } else {
+            prompt += `${i + 1}. ${action.type} — ${action.description}\n`;
+        }
+    });
+
     prompt += `\n---\n\n`;
-    prompt += `Choose your attack target. Pick the most tactical option.\n\n`;
+    prompt += `Choose the number of your action and explain WHY in one sentence.\n\n`;
     prompt += `Return your decision in EXACTLY this format (no other text):\n`;
-    prompt += `ACTION: attack\n`;
-    prompt += `TARGET_ID: [the id of your target, e.g., p1]\n`;
-    prompt += `FLAVOR: [one sentence describing HOW you attack]\n\n`;
+    prompt += `CHOICE: [number]\n`;
+    prompt += `FLAVOR: [one sentence describing HOW you act]\n\n`;
     prompt += `Example:\n`;
-    prompt += `ACTION: attack\n`;
-    prompt += `TARGET_ID: p1\n`;
+    prompt += `CHOICE: 1\n`;
     prompt += `FLAVOR: I lunge forward with a savage snarl, aiming for the warrior's throat.\n`;
 
     return prompt;
@@ -123,60 +140,85 @@ function buildEnemyDecisionPromptV2(enemy: CombatEntity, state: BattleState, ran
 // =============================================================================
 
 interface ParsedEnemyAction {
-    type: 'ATTACK' | 'END_TURN';
+    type: 'ATTACK' | 'DODGE' | 'DASH' | 'DISENGAGE' | 'HELP' | 'HIDE' | 'CAST_SPELL' | 'END_TURN';
     targetId?: string;
+    allyId?: string;
+    spellName?: string;
+    targetIds?: string[];
     flavor?: string;
 }
 
 /**
- * Parse the LLM response into a structured action
+ * Parse the LLM response into a structured action by matching CHOICE back to legal actions.
+ * Falls back to first legal attack if the LLM returns an invalid choice.
  */
-function parseEnemyAction(response: string, enemy: CombatEntity, state: BattleState): ParsedEnemyAction {
+function parseEnemyAction(response: string, enemy: CombatEntity, state: BattleState, legalActions: LegalAction[]): ParsedEnemyAction {
     const lines = response.split('\n');
 
-    let action = 'attack';
-    let targetId: string | undefined;
+    let choiceNum: number | undefined;
     let flavor: string | undefined;
+
+    // Also support legacy ACTION/TARGET_ID format for robustness
+    let legacyTargetId: string | undefined;
+    let legacyAction: string | undefined;
 
     for (const line of lines) {
         const trimmed = line.trim();
 
-        if (trimmed.toUpperCase().startsWith('ACTION:')) {
-            action = trimmed.substring(7).trim().toLowerCase();
-        }
-        if (trimmed.toUpperCase().startsWith('TARGET_ID:')) {
-            targetId = trimmed.substring(10).trim();
+        if (trimmed.toUpperCase().startsWith('CHOICE:')) {
+            const val = trimmed.substring(7).trim();
+            const parsed = parseInt(val, 10);
+            if (!isNaN(parsed)) choiceNum = parsed;
         }
         if (trimmed.toUpperCase().startsWith('FLAVOR:')) {
             flavor = trimmed.substring(7).trim();
         }
-    }
-
-    // Validate target exists and is alive
-    const validTargets = state.entities.filter((e: CombatEntity) => e.type === 'player' && e.status === 'ALIVE');
-
-    if (!targetId || !validTargets.find((t: CombatEntity) => t.id === targetId)) {
-        // Fallback: use first from scoreTargets (tactically best) if available
-        const ranked = scoreTargets(enemy, state);
-        const fallback = ranked.find((t) => validTargets.some((v) => v.id === t.id));
-        if (fallback) {
-            console.warn(`[EnemyAI] Invalid target "${targetId}", using tactical fallback: ${fallback.name}`);
-            targetId = fallback.id;
-        } else if (validTargets.length > 0) {
-            targetId = validTargets[Math.floor(Math.random() * validTargets.length)].id;
+        // Legacy format support
+        if (trimmed.toUpperCase().startsWith('ACTION:')) {
+            legacyAction = trimmed.substring(7).trim().toLowerCase();
+        }
+        if (trimmed.toUpperCase().startsWith('TARGET_ID:')) {
+            legacyTargetId = trimmed.substring(10).trim();
         }
     }
 
-    if (!targetId) {
-        // No valid targets, end turn
-        return { type: 'END_TURN' };
+    // Try to match CHOICE to a legal action
+    if (choiceNum !== undefined && choiceNum >= 1 && choiceNum <= legalActions.length) {
+        const chosen = legalActions[choiceNum - 1];
+        if (chosen.type === 'ATTACK' && chosen.targetId) {
+            return { type: 'ATTACK', targetId: chosen.targetId, flavor };
+        }
+        if (chosen.type === 'END_TURN') {
+            return { type: 'END_TURN', flavor };
+        }
+        // Standard actions (Dodge, Dash, Disengage, Help, Hide)
+        if (['DODGE', 'DASH', 'DISENGAGE', 'HIDE'].includes(chosen.type)) {
+            return { type: chosen.type as ParsedEnemyAction['type'], flavor };
+        }
+        if (chosen.type === 'HELP' && chosen.targetId) {
+            return { type: 'HELP', allyId: chosen.targetId, flavor };
+        }
+        if (chosen.type === 'CAST_SPELL' && chosen.spellName) {
+            return { type: 'CAST_SPELL', spellName: chosen.spellName, targetId: chosen.targetId, flavor };
+        }
     }
 
-    return {
-        type: 'ATTACK',
-        targetId,
-        flavor,
-    };
+    // Legacy fallback: match TARGET_ID against legal actions
+    if (legacyTargetId) {
+        const matchedAction = legalActions.find(a => a.type === 'ATTACK' && a.targetId === legacyTargetId);
+        if (matchedAction) {
+            return { type: 'ATTACK', targetId: legacyTargetId, flavor };
+        }
+    }
+
+    // Final fallback: pick the first legal ATTACK action
+    const firstAttack = legalActions.find(a => a.type === 'ATTACK' && a.targetId);
+    if (firstAttack) {
+        console.warn(`[EnemyAI] Invalid choice from LLM, using first legal attack: ${firstAttack.description}`);
+        return { type: 'ATTACK', targetId: firstAttack.targetId, flavor };
+    }
+
+    return { type: 'END_TURN', flavor };
 }
 
 // =============================================================================
@@ -228,11 +270,14 @@ export async function executeEnemyTurn(sessionId: number, userId: number): Promi
     console.log(`[EnemyAI] Executing turn for ${entity.name}...`);
     activity.ai(sessionId, `Enemy turn: ${entity.name} is deciding...`);
 
+    // Get legal actions from the engine
+    const legalActions = engine.getLegalActions(entity.id);
+
     // Score targets before LLM (pre-LLM tactical guidance)
     const rankedTargets = scoreTargets(entity, state);
 
-    // Build prompt (includes ranked targets for LLM guidance)
-    const prompt = buildEnemyDecisionPromptV2(entity, state, rankedTargets);
+    // Build prompt (includes ranked targets and legal actions for LLM guidance)
+    const prompt = buildEnemyDecisionPromptV2(entity, state, rankedTargets, legalActions);
 
     // Fetch user settings for customizable prompts
     const db = await import('../db');
@@ -255,48 +300,136 @@ export async function executeEnemyTurn(sessionId: number, userId: number): Promi
         console.log(`[EnemyAI] LLM Response for ${entity.name}:`, llmResponse);
     } catch (error) {
         console.error(`[EnemyAI] LLM call failed for ${entity.name}:`, error);
-        // Fallback: attack first valid target
-        const ranked = scoreTargets(entity, state);
-        const fallbackTarget = ranked.find((t) => t.status === 'ALIVE') ?? ranked[0];
-        if (fallbackTarget) {
-            llmResponse = `ACTION: attack\nTARGET_ID: ${fallbackTarget.id}\nFLAVOR: Attacks wildly!`;
+        // Fallback: pick first legal attack action
+        const firstAttack = legalActions.find(a => a.type === 'ATTACK');
+        if (firstAttack) {
+            llmResponse = `CHOICE: ${legalActions.indexOf(firstAttack) + 1}\nFLAVOR: Attacks wildly!`;
         } else {
-            llmResponse = `ACTION: end_turn`;
+            llmResponse = `CHOICE: ${legalActions.length}\nFLAVOR: Holds position.`;
         }
     }
 
-    // Parse response
-    const parsed = parseEnemyAction(llmResponse, entity, state);
+    // Parse response (matched against legal actions)
+    const parsed = parseEnemyAction(llmResponse, entity, state, legalActions);
 
-    // Build action payload
+    // Build action payload based on parsed AI decision
     let actionPayload: ActionPayload;
-    if (parsed.type === 'ATTACK' && parsed.targetId) {
-        actionPayload = {
-            type: 'ATTACK',
-            attackerId: entity.id,
-            targetId: parsed.targetId,
-            weaponName: 'natural weapon',
-            isRanged: false,
-            advantage: false,
-            disadvantage: false,
-        };
-    } else {
-        actionPayload = {
-            type: 'END_TURN',
-            entityId: entity.id,
-        };
+    switch (parsed.type) {
+        case 'ATTACK':
+            if (parsed.targetId) {
+                // Check if target has the 'dodging' condition — applies disadvantage per D&D 5e rules
+                const target = state.entities.find(e => e.id === parsed.targetId);
+                const targetIsDodging = target?.conditions?.some?.(
+                    (c: any) => (typeof c === 'string' ? c === 'dodging' : c.name === 'dodging')
+                ) ?? false;
+
+                actionPayload = {
+                    type: 'ATTACK',
+                    attackerId: entity.id,
+                    targetId: parsed.targetId,
+                    weaponName: 'natural weapon',
+                    isRanged: false,
+                    advantage: false,
+                    disadvantage: targetIsDodging,
+                };
+            } else {
+                actionPayload = { type: 'END_TURN', entityId: entity.id };
+            }
+            break;
+        case 'DODGE':
+            actionPayload = { type: 'DODGE', entityId: entity.id };
+            break;
+        case 'DASH':
+            actionPayload = { type: 'DASH', entityId: entity.id };
+            break;
+        case 'DISENGAGE':
+            actionPayload = { type: 'DISENGAGE', entityId: entity.id };
+            break;
+        case 'HIDE':
+            actionPayload = { type: 'HIDE', entityId: entity.id };
+            break;
+        case 'HELP':
+            if (parsed.allyId) {
+                actionPayload = { type: 'HELP', entityId: entity.id, allyId: parsed.allyId };
+            } else {
+                actionPayload = { type: 'END_TURN', entityId: entity.id };
+            }
+            break;
+        case 'CAST_SPELL':
+            if (parsed.spellName) {
+                const spellTargetIds = parsed.targetIds ?? (parsed.targetId ? [parsed.targetId] : []);
+                actionPayload = {
+                    type: 'CAST_SPELL',
+                    casterId: entity.id,
+                    spellName: parsed.spellName,
+                    targetIds: spellTargetIds,
+                };
+            } else {
+                actionPayload = { type: 'END_TURN', entityId: entity.id };
+            }
+            break;
+        default:
+            actionPayload = { type: 'END_TURN', entityId: entity.id };
     }
 
     // Submit action
     const result = engine.submitAction(actionPayload);
     console.log(`[EnemyAI] Action result for ${entity.name}:`, result.success ? 'SUCCESS' : result.error);
 
+    // Multiattack loop: if the enemy still has extra attacks remaining, keep attacking.
+    // We skip the LLM for extra attacks and just target the best available target.
+    const MAX_EXTRA_ATTACKS = 4;
+    let extraAttackCount = 0;
+    while (extraAttackCount < MAX_EXTRA_ATTACKS) {
+        const freshState = engine.getState();
+        if (freshState.phase !== 'ACTIVE') break;
+        if (freshState.turnOrder[freshState.turnIndex] !== entity.id) break;
+        const freshLegal = engine.getLegalActions(entity.id);
+        if (!freshLegal.some(a => a.type === 'ATTACK')) break;
+
+        const freshTargets = scoreTargets(entity, freshState);
+        if (freshTargets.length === 0) break;
+        const extraTarget = freshTargets[0];
+
+        const freshTargetEntity = freshState.entities.find(e => e.id === extraTarget.id);
+        const extraTargetIsDodging = freshTargetEntity?.conditions?.some?.(
+            (c: any) => (typeof c === 'string' ? c === 'dodging' : c.name === 'dodging')
+        ) ?? false;
+
+        const extraPayload: ActionPayload = {
+            type: 'ATTACK',
+            attackerId: entity.id,
+            targetId: extraTarget.id,
+            weaponName: 'natural weapon',
+            isRanged: false,
+            advantage: false,
+            disadvantage: extraTargetIsDodging,
+        };
+
+        const extraResult = engine.submitAction(extraPayload);
+        console.log(`[EnemyAI] Extra attack ${extraAttackCount + 1} for ${entity.name}:`, extraResult.success ? 'SUCCESS' : extraResult.error);
+        result.logs.push(...extraResult.logs);
+
+        extraAttackCount++;
+    }
+
+    // If the engine hasn't auto-ended the turn (e.g. all extra attacks used but action economy
+    // didn't trigger endTurn), explicitly end it now.
+    {
+        const afterState = engine.getState();
+        if (afterState.phase === 'ACTIVE' && afterState.turnOrder[afterState.turnIndex] === entity.id) {
+            engine.submitAction({ type: 'END_TURN', entityId: entity.id });
+        }
+    }
+
     // Log the action
     if (actionPayload.type === 'ATTACK') {
-        const targetEntity = state.entities.find((e: CombatEntity) => e.id === actionPayload.targetId);
+        const targetEntity = state.entities.find((e: CombatEntity) => e.id === (actionPayload as any).targetId);
         activity.ai(sessionId, `${entity.name} attacks ${targetEntity?.name || 'unknown'}`, { action: actionPayload });
-    } else {
+    } else if (actionPayload.type === 'END_TURN') {
         activity.ai(sessionId, `${entity.name} ends turn`);
+    } else {
+        activity.ai(sessionId, `${entity.name} takes the ${actionPayload.type} action`);
     }
 
     // Persist state
