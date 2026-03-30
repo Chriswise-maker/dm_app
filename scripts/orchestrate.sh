@@ -20,6 +20,7 @@ SKIP_VERIFY=false
 LOG_DIR="scripts/logs"
 RATE_LIMIT_WAIT=65        # seconds to sleep on rate limit
 RATE_LIMIT_MAX_RETRIES=5  # max retries per step before giving up
+MAX_BUDGET_PER_STEP=5     # max USD spend per step (safety net)
 
 # ── Parse flags ───────────────────────────────────────────────────────────────
 args=()
@@ -189,7 +190,9 @@ invoke_claude() {
 
     local exit_code=0
     # Use claude with --print for non-interactive mode
-    claude -p "$prompt" --print > "$output_file" 2>&1 || exit_code=$?
+    # --dangerously-skip-permissions allows autonomous file edits and bash commands
+    # --max-budget-usd caps spend per step as a safety net
+    claude -p "$prompt" --print --dangerously-skip-permissions --max-budget-usd "$MAX_BUDGET_PER_STEP" > "$output_file" 2>&1 || exit_code=$?
 
     # Check for rate limiting (exit code 2 or specific error text)
     if [[ $exit_code -ne 0 ]] && grep -qi "rate.limit\|429\|quota\|too many requests" "$output_file" 2>/dev/null; then

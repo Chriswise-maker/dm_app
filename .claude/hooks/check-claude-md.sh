@@ -49,7 +49,7 @@ if [ "$MATCHED" = false ]; then
   if [ "$TOOL_NAME" = "Write" ] && echo "$FILE_PATH" | grep -qE "server/combat/[^/]+\.(ts|tsx)$"; then
     MATCHED=true
   fi
-done
+fi
 
 [ "$MATCHED" = false ] && exit 0
 
