@@ -164,11 +164,50 @@ export const appRouter = router({
       }))
       .mutation(async ({ input }) => {
         const db = await import('./db');
-        return db.createCharacter({
+        const { deriveInitialState } = await import('./kernel');
+        const crypto = await import('crypto');
+
+        const result = await db.createCharacter({
           ...input,
           stats: JSON.stringify(input.stats),
           inventory: JSON.stringify(input.inventory),
         });
+
+        // Build ActorSheet from input data
+        const hitDieMap: Record<string, string> = {
+          barbarian: 'd12', fighter: 'd10', paladin: 'd10', ranger: 'd10',
+          bard: 'd8', cleric: 'd8', druid: 'd8', monk: 'd8', rogue: 'd8', warlock: 'd8',
+          sorcerer: 'd6', wizard: 'd6',
+        };
+        const sheet = {
+          id: crypto.randomUUID(),
+          name: input.name,
+          ancestry: '',
+          characterClass: input.className,
+          subclass: null,
+          level: input.level,
+          abilityScores: input.stats,
+          proficiencyBonus: Math.floor((input.level - 1) / 4) + 2,
+          proficiencies: { saves: [], skills: [], weapons: [], armor: [], tools: [] },
+          speeds: { walk: 30 },
+          senses: {},
+          hitDie: hitDieMap[input.className.toLowerCase()] ?? 'd8',
+          maxHp: input.hpMax,
+          ac: { base: input.ac, source: 'flat' },
+          spellcasting: null,
+          equipment: [],
+          features: [],
+          background: null,
+          feats: [],
+        };
+        const state = deriveInitialState(sheet as any);
+
+        await db.updateCharacter(result.id, {
+          actorSheet: JSON.stringify(sheet),
+          actorState: JSON.stringify(state),
+        });
+
+        return result;
       }),
 
     list: protectedProcedure
@@ -180,6 +219,8 @@ export const appRouter = router({
           ...char,
           stats: JSON.parse(char.stats),
           inventory: JSON.parse(char.inventory),
+          actorSheet: char.actorSheet ? JSON.parse(char.actorSheet) : null,
+          actorState: char.actorState ? JSON.parse(char.actorState) : null,
         }));
       }),
 
@@ -217,6 +258,7 @@ export const appRouter = router({
       }))
       .mutation(async ({ input }) => {
         const db = await import('./db');
+        const { deriveInitialState } = await import('./kernel');
         const updateData: any = { ...input.data };
         if (updateData.stats) {
           updateData.stats = JSON.stringify(updateData.stats);
@@ -224,6 +266,32 @@ export const appRouter = router({
         if (updateData.inventory) {
           updateData.inventory = JSON.stringify(updateData.inventory);
         }
+
+        // Sync actorSheet if it exists on this character
+        const existing = await db.getCharacter(input.characterId);
+        if (existing?.actorSheet) {
+          const sheet = JSON.parse(existing.actorSheet);
+          if (input.data.name !== undefined) sheet.name = input.data.name;
+          if (input.data.className !== undefined) sheet.characterClass = input.data.className;
+          if (input.data.level !== undefined) {
+            sheet.level = input.data.level;
+            sheet.proficiencyBonus = Math.floor((input.data.level - 1) / 4) + 2;
+          }
+          if (input.data.stats !== undefined) sheet.abilityScores = input.data.stats;
+          if (input.data.hpMax !== undefined) sheet.maxHp = input.data.hpMax;
+          if (input.data.ac !== undefined) sheet.ac = { base: input.data.ac, source: sheet.ac?.source ?? 'flat' };
+          updateData.actorSheet = JSON.stringify(sheet);
+
+          // Re-derive state from updated sheet
+          const state = deriveInitialState(sheet);
+          // Preserve current HP if not changing hpMax
+          if (existing.actorState) {
+            const oldState = JSON.parse(existing.actorState);
+            state.hpCurrent = input.data.hpMax !== undefined ? sheet.maxHp : oldState.hpCurrent;
+          }
+          updateData.actorState = JSON.stringify(state);
+        }
+
         await db.updateCharacter(input.characterId, updateData);
         return { success: true };
       }),
@@ -295,6 +363,44 @@ export const appRouter = router({
           stats: JSON.stringify(characterData.stats),
           inventory: JSON.stringify(characterData.inventory),
           notes: characterData.notes,
+        });
+
+        // Build ActorSheet for generated character
+        const { deriveInitialState: deriveState } = await import('./kernel');
+        const crypto2 = await import('crypto');
+        const hitDieMap2: Record<string, string> = {
+          barbarian: 'd12', fighter: 'd10', paladin: 'd10', ranger: 'd10',
+          bard: 'd8', cleric: 'd8', druid: 'd8', monk: 'd8', rogue: 'd8', warlock: 'd8',
+          sorcerer: 'd6', wizard: 'd6',
+        };
+        const genSheet = {
+          id: crypto2.randomUUID(),
+          name: characterData.name,
+          ancestry: characterData.race ?? '',
+          characterClass: characterData.className,
+          subclass: null,
+          level: characterData.level,
+          abilityScores: characterData.stats,
+          proficiencyBonus: Math.floor((characterData.level - 1) / 4) + 2,
+          proficiencies: { saves: [], skills: [], weapons: [], armor: [], tools: [] },
+          speeds: { walk: 30 },
+          senses: {},
+          hitDie: hitDieMap2[characterData.className.toLowerCase()] ?? 'd8',
+          maxHp: characterData.hpMax,
+          ac: { base: characterData.ac, source: 'flat' },
+          spellcasting: null,
+          equipment: [],
+          features: [],
+          background: characterData.background ?? null,
+          feats: [],
+        };
+        const genState = deriveState(genSheet as any);
+        // Set hpCurrent to match the generated value (may differ from max)
+        genState.hpCurrent = characterData.hpCurrent;
+
+        await db.updateCharacter(result.id, {
+          actorSheet: JSON.stringify(genSheet),
+          actorState: JSON.stringify(genState),
         });
 
         return {

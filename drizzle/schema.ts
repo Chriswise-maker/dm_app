@@ -58,6 +58,9 @@ export const characters = pgTable("characters", {
   initiativeBonus: integer("initiativeBonus").default(0),
   attackBonus: integer("attackBonus").default(0),
   damageFormula: text("damageFormula"), // e.g., "1d8+3"
+  // Rich actor data (JSON strings of ActorSheetSchema / ActorStateSchema)
+  actorSheet: text("actor_sheet"),
+  actorState: text("actor_state"),
   createdAt: timestamp("createdAt", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updatedAt", { withTimezone: true }).defaultNow().notNull(),
 });
