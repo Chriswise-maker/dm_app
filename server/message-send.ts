@@ -571,6 +571,7 @@ export async function executeMessageSend(
     let worldState = parsedContext.worldState;
     const hitDiceToSpend = detectHitDiceToSpend(input.message);
 
+    const { ActorStateSchema } = await import('./kernel/actor-state');
     const summaries: string[] = [];
     for (const sessionCharacter of sessionCharacters) {
       const resourceState = getCharacterResourceState(worldState, sessionCharacter);
@@ -579,6 +580,40 @@ export async function executeMessageSend(
         await db.updateCharacterHP(sessionCharacter.id, result.hpAfter);
         worldState = setCharacterResourceState(worldState, sessionCharacter.id, result.resourceState);
         summaries.push(result.summary);
+
+        // Sync actorState for long rest
+        if (sessionCharacter.actorState && sessionCharacter.actorSheet) {
+          try {
+            const state = ActorStateSchema.parse(JSON.parse(sessionCharacter.actorState));
+            const sheet = JSON.parse(sessionCharacter.actorSheet);
+            state.hpCurrent = state.hpMax;
+            // Restore all spell slots from sheet
+            if (sheet.spellcasting?.spellSlots) {
+              for (const [level, max] of Object.entries(sheet.spellcasting.spellSlots)) {
+                state.spellSlotsCurrent[level] = max as number;
+              }
+            }
+            // Restore hit dice: up to half level (rounded up)
+            const halfLevel = Math.max(1, Math.ceil(sheet.level / 2));
+            state.hitDiceCurrent = Math.min(sheet.level, state.hitDiceCurrent + halfLevel);
+            // Restore feature uses for long_rest features
+            if (sheet.features) {
+              for (const feature of sheet.features) {
+                if (feature.rechargeOn === 'long_rest' && feature.usesMax != null) {
+                  state.featureUses[feature.name] = feature.usesMax;
+                }
+              }
+            }
+            // Reduce exhaustion by 1
+            if (state.exhaustion > 0) state.exhaustion -= 1;
+            // Clear concentration and death saves
+            state.concentration = null;
+            state.deathSaves = { successes: 0, failures: 0 };
+            await db.updateCharacter(sessionCharacter.id, { actorState: JSON.stringify(state) });
+          } catch (e) {
+            console.warn('[ActorState] Failed to sync long rest:', e);
+          }
+        }
       } else {
         // Only apply explicit hit dice count to the speaking character; others spend 1 by default
         const diceForThisChar = sessionCharacter.id === character.id ? hitDiceToSpend : undefined;
@@ -586,6 +621,27 @@ export async function executeMessageSend(
         await db.updateCharacterHP(sessionCharacter.id, result.hpAfter);
         worldState = setCharacterResourceState(worldState, sessionCharacter.id, result.resourceState);
         summaries.push(result.summary);
+
+        // Sync actorState for short rest
+        if (sessionCharacter.actorState && sessionCharacter.actorSheet) {
+          try {
+            const state = ActorStateSchema.parse(JSON.parse(sessionCharacter.actorState));
+            const sheet = JSON.parse(sessionCharacter.actorSheet);
+            state.hpCurrent = result.hpAfter;
+            state.hitDiceCurrent = Math.max(0, state.hitDiceCurrent - result.hitDiceSpent);
+            // Restore feature uses for short_rest features
+            if (sheet.features) {
+              for (const feature of sheet.features) {
+                if (feature.rechargeOn === 'short_rest' && feature.usesMax != null) {
+                  state.featureUses[feature.name] = feature.usesMax;
+                }
+              }
+            }
+            await db.updateCharacter(sessionCharacter.id, { actorState: JSON.stringify(state) });
+          } catch (e) {
+            console.warn('[ActorState] Failed to sync short rest:', e);
+          }
+        }
       }
     }
 
@@ -1099,6 +1155,31 @@ export async function executeMessageSend(
           console.log('[Character Updates] No updates to apply for:', character.name);
         }
       }
+    }
+  }
+
+  // Sync gameStateChanges to actorState (structured path is source of truth)
+  if (structured.gameStateChanges && character.actorState) {
+    try {
+      const { ActorStateSchema } = await import('./kernel/actor-state');
+      const parsed = ActorStateSchema.parse(JSON.parse(character.actorState));
+      let changed = false;
+
+      // HP changes from structured gameStateChanges (takes priority over narrative extraction)
+      if (structured.gameStateChanges.hpChanges) {
+        for (const hpChange of structured.gameStateChanges.hpChanges) {
+          if (hpChange.target.toLowerCase() === character.name.toLowerCase()) {
+            parsed.hpCurrent = Math.max(0, Math.min(parsed.hpMax, parsed.hpCurrent + hpChange.amount));
+            changed = true;
+          }
+        }
+      }
+
+      if (changed) {
+        await db.updateCharacter(character.id, { actorState: JSON.stringify(parsed) });
+      }
+    } catch (e) {
+      console.warn('[ActorState] Failed to sync gameStateChanges to actorState:', e);
     }
   }
 

@@ -226,6 +226,14 @@ DO NOT output plain text. DO NOT use markdown code blocks. ONLY output raw JSON.
 
 ═══════════════════════════════════════════════════════════════
 
+MECHANICAL BOUNDARY — STRICT:
+You MUST NOT specify exact damage numbers, healing amounts, or dice results in your narrative unless the combat engine has already resolved them and provided the numbers in the combat state context.
+You MUST NOT deduct spell slots, modify HP, add/remove conditions, or change any mechanical state in your narrative text. The engine handles ALL mechanical state changes.
+When a character casts a spell out of combat, describe the narrative effect. The engine will deduct the spell slot and apply mechanical effects.
+When you narrate damage, use only the numbers provided by the engine in the combat log — never invent your own.
+
+═══════════════════════════════════════════════════════════════
+
 **COMBAT INITIATION - CRITICAL:**
 You MUST set "combatInitiated": true when ANY of these occur:
 - Player says "attack", "fight", "strike", "cast [offensive spell]", "shoot"
