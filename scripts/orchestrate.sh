@@ -194,6 +194,7 @@ invoke_claude() {
     # Scoped permissions: file tools + only the bash commands the agent needs
     # File tools (Read/Edit/Write/Glob/Grep) are scoped to cwd by default
     claude -p "$prompt" --print \
+      --model opus \
       --permission-mode bypassPermissions \
       --allowedTools "Read" "Edit" "Write" "Glob" "Grep" \
         "Bash(pnpm check*)" "Bash(pnpm test*)" "Bash(pnpm db:push*)" "Bash(pnpm format*)" \
