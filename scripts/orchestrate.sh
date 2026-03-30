@@ -191,9 +191,15 @@ invoke_claude() {
 
     local exit_code=0
     # Use claude with --print for non-interactive mode
-    # --dangerously-skip-permissions allows autonomous file edits and bash commands
-    # --max-budget-usd caps spend per step as a safety net
-    claude -p "$prompt" --print --dangerously-skip-permissions --max-budget-usd "$MAX_BUDGET_PER_STEP" > "$output_file" 2>&1 || exit_code=$?
+    # Scoped permissions: file tools + only the bash commands the agent needs
+    # File tools (Read/Edit/Write/Glob/Grep) are scoped to cwd by default
+    claude -p "$prompt" --print \
+      --allowedTools "Read" "Edit" "Write" "Glob" "Grep" \
+        "Bash(pnpm check*)" "Bash(pnpm test*)" "Bash(pnpm db:push*)" "Bash(pnpm format*)" \
+        "Bash(npx tsx *)" "Bash(mkdir *)" "Bash(git clone *)" "Bash(git diff*)" "Bash(git status*)" \
+        "Bash(curl *)" "Bash(ls *)" "Bash(cat *)" "Bash(chmod *)" \
+      --max-budget-usd "$MAX_BUDGET_PER_STEP" \
+      > "$output_file" 2>&1 || exit_code=$?
 
     # Check for rate limiting (exit code 2 or specific error text)
     if [[ $exit_code -ne 0 ]] && grep -qi "rate.limit\|429\|quota\|too many requests" "$output_file" 2>/dev/null; then
@@ -299,7 +305,13 @@ Run \`pnpm check\` and \`pnpm test\` after your fixes to verify they work."
     local fix_output="$LOG_DIR/claude_step${num}_fix${fix_attempt}_${RUN_ID}.md"
     local fix_exit=0
     log "  [fix] Sending fix prompt to Claude..."
-    claude -p "$fix_prompt" --print --dangerously-skip-permissions --max-budget-usd "$MAX_BUDGET_PER_STEP" > "$fix_output" 2>&1 || fix_exit=$?
+    claude -p "$fix_prompt" --print \
+      --allowedTools "Read" "Edit" "Write" "Glob" "Grep" \
+        "Bash(pnpm check*)" "Bash(pnpm test*)" "Bash(pnpm db:push*)" "Bash(pnpm format*)" \
+        "Bash(npx tsx *)" "Bash(mkdir *)" "Bash(git clone *)" "Bash(git diff*)" "Bash(git status*)" \
+        "Bash(curl *)" "Bash(ls *)" "Bash(cat *)" "Bash(chmod *)" \
+      --max-budget-usd "$MAX_BUDGET_PER_STEP" \
+      > "$fix_output" 2>&1 || fix_exit=$?
 
     if [[ $fix_exit -ne 0 ]] && grep -qi "rate.limit\|429\|quota\|too many requests" "$fix_output" 2>/dev/null; then
       log "  [fix] Rate limited — sleeping ${RATE_LIMIT_WAIT}s"
