@@ -9,7 +9,130 @@ import { createPlayerEntity, createEnemyEntity, type CombatEntity, type Spell } 
 import { runAILoop, shouldExecuteAI } from './enemy-ai-controller';
 import type { ActorSheet } from '../kernel/actor-sheet';
 import type { ActorState } from '../kernel/actor-state';
+import { deriveInitialState } from '../kernel/actor-state';
 import { getSrdLoader, lookupByName } from '../srd';
+import type { ContentPackLoader } from '../srd/content-pack';
+
+// =============================================================================
+// ActorSheet → CombatEntity helpers
+// =============================================================================
+
+/**
+ * Convert ActorSheet spellcasting data to CombatEntity Spell[] format.
+ * Looks up each spell in the SRD to get damage formulas, save info, etc.
+ */
+export function buildCombatSpells(
+    sheet: ActorSheet,
+    srdLoader: ContentPackLoader,
+): Spell[] {
+    if (!sheet.spellcasting) return [];
+
+    const spells: Spell[] = [];
+    const allNames = [
+        ...sheet.spellcasting.cantripsKnown,
+        ...sheet.spellcasting.spellsKnown,
+    ];
+    for (const name of allNames) {
+        const srd = lookupByName(srdLoader, 'spells', name);
+        if (srd) {
+            spells.push(srdSpellToCombatSpell(srd));
+        }
+    }
+    return spells;
+}
+
+/** Resistance keywords to scan for in features/equipment. */
+const DAMAGE_TYPES = [
+    'acid', 'bludgeoning', 'cold', 'fire', 'force', 'lightning',
+    'necrotic', 'piercing', 'poison', 'psychic', 'radiant', 'slashing', 'thunder',
+];
+
+function scanForDamageTypes(text: string, keyword: string): string[] {
+    const lower = text.toLowerCase();
+    if (!lower.includes(keyword)) return [];
+    return DAMAGE_TYPES.filter(dt => lower.includes(dt));
+}
+
+/**
+ * Collect damage resistances from racial traits, features, and equipment.
+ */
+export function collectResistances(sheet: ActorSheet): string[] {
+    const resistances = new Set<string>();
+    for (const feat of sheet.features) {
+        for (const dt of scanForDamageTypes(feat.description, 'resistance')) {
+            resistances.add(dt);
+        }
+    }
+    for (const item of sheet.equipment) {
+        const props = item.properties ?? {};
+        if (typeof props.resistances === 'string') {
+            for (const dt of scanForDamageTypes(props.resistances, 'resistance')) {
+                resistances.add(dt);
+            }
+        }
+    }
+    return Array.from(resistances);
+}
+
+/**
+ * Collect damage immunities from features and equipment.
+ */
+export function collectImmunities(sheet: ActorSheet): string[] {
+    const immunities = new Set<string>();
+    for (const feat of sheet.features) {
+        for (const dt of scanForDamageTypes(feat.description, 'immun')) {
+            immunities.add(dt);
+        }
+    }
+    for (const item of sheet.equipment) {
+        const props = item.properties ?? {};
+        if (typeof props.immunities === 'string') {
+            for (const dt of scanForDamageTypes(props.immunities, 'immun')) {
+                immunities.add(dt);
+            }
+        }
+    }
+    return Array.from(immunities);
+}
+
+/**
+ * Derive weapon attack bonus from ActorSheet.
+ * Uses STR for melee (or DEX if finesse/higher), plus proficiency bonus.
+ */
+export function deriveAttackBonus(sheet: ActorSheet): number {
+    const strMod = Math.floor((sheet.abilityScores.str - 10) / 2);
+    const dexMod = Math.floor((sheet.abilityScores.dex - 10) / 2);
+
+    // Check if character has a finesse weapon
+    const hasFinesse = sheet.equipment.some(e =>
+        e.properties && typeof e.properties.finesse === 'boolean' && e.properties.finesse
+    );
+
+    const abilityMod = hasFinesse ? Math.max(strMod, dexMod) : strMod;
+    return abilityMod + sheet.proficiencyBonus;
+}
+
+/**
+ * Derive primary damage formula from equipped weapon.
+ * Falls back to "1d4" (unarmed) if no weapon found.
+ */
+export function deriveDamageFormula(sheet: ActorSheet): string {
+    const strMod = Math.floor((sheet.abilityScores.str - 10) / 2);
+    const dexMod = Math.floor((sheet.abilityScores.dex - 10) / 2);
+
+    // Find first weapon in equipment
+    const weapon = sheet.equipment.find(e => e.type === 'weapon');
+    if (!weapon || !weapon.properties) return `1d4+${Math.max(strMod, 0)}`;
+
+    const baseDie = typeof weapon.properties.damage === 'string'
+        ? weapon.properties.damage
+        : '1d8';
+
+    const hasFinesse = weapon.properties.finesse === true;
+    const abilityMod = hasFinesse ? Math.max(strMod, dexMod) : strMod;
+
+    return abilityMod >= 0 ? `${baseDie}+${abilityMod}` : `${baseDie}${abilityMod}`;
+}
 
 /**
  * Handle automatic combat initiation from structured DM response
@@ -77,46 +200,54 @@ export async function handleAutoCombatInitiation(
             if (character.actorSheet) {
                 try {
                     const sheet: ActorSheet = JSON.parse(character.actorSheet);
-                    const state: ActorState | null = character.actorState
+                    const state: ActorState = character.actorState
                         ? JSON.parse(character.actorState)
-                        : null;
+                        : deriveInitialState(sheet);
 
-                    // Build combat spells from ActorSheet spellcasting data
-                    const combatSpells: Spell[] = [];
-                    if (sheet.spellcasting) {
-                        const loader = getSrdLoader();
-                        const allSpellNames = [
-                            ...sheet.spellcasting.cantripsKnown,
-                            ...sheet.spellcasting.spellsKnown,
-                        ];
-                        for (const spellName of allSpellNames) {
-                            const srdSpell = lookupByName(loader, 'spells', spellName);
-                            if (srdSpell) {
-                                combatSpells.push(srdSpellToCombatSpell(srdSpell));
-                            }
-                        }
-                    }
+                    const loader = getSrdLoader();
+                    const combatSpells = buildCombatSpells(sheet, loader);
+                    const dexModSheet = Math.floor((sheet.abilityScores.dex - 10) / 2);
 
                     extraOptions = {
                         ...extraOptions,
                         abilityScores: sheet.abilityScores,
+                        initiativeModifier: dexModSheet,
+                        attackModifier: deriveAttackBonus(sheet),
+                        damageFormula: deriveDamageFormula(sheet),
                         spells: combatSpells,
-                        spellSlots: state?.spellSlotsCurrent ?? resourceState.spellSlotsCurrent,
+                        spellSlots: state.spellSlotsCurrent,
                         spellSaveDC: sheet.spellcasting?.saveDC,
-                        resistances: [],
-                        immunities: [],
+                        resistances: collectResistances(sheet),
+                        immunities: collectImmunities(sheet),
                     };
                 } catch (e) {
                     console.warn(`[AutoCombat] Failed to parse actorSheet for ${character.name}:`, e);
                 }
             }
 
+            // When ActorSheet is available, prefer its AC and state HP
+            const useSheet = character.actorSheet != null;
+            let hp = character.hpCurrent;
+            let maxHp = character.hpMax;
+            let ac = character.ac;
+            if (useSheet && extraOptions.abilityScores) {
+                try {
+                    const sheet: ActorSheet = JSON.parse(character.actorSheet!);
+                    const state: ActorState = character.actorState
+                        ? JSON.parse(character.actorState)
+                        : deriveInitialState(sheet);
+                    hp = state.hpCurrent;
+                    maxHp = state.hpMax;
+                    ac = sheet.ac.base;
+                } catch { /* already warned above */ }
+            }
+
             const playerEntity = createPlayerEntity(
                 `player-${character.id}`,
                 character.name,
-                character.hpCurrent,
-                character.hpMax,
-                character.ac,
+                hp,
+                maxHp,
+                ac,
                 0, // Initiative 0 triggers roll
                 extraOptions,
             );
@@ -235,6 +366,24 @@ export async function syncCombatStateToDb(sessionId: number): Promise<void> {
 
                 const character = await db.getCharacter(entity.dbCharacterId);
                 if (character) {
+                    // Sync actorState if character has one
+                    if (character.actorState) {
+                        try {
+                            const actorState: ActorState = JSON.parse(character.actorState);
+                            actorState.hpCurrent = entity.hp;
+                            if (Object.keys(entity.spellSlots ?? {}).length > 0) {
+                                actorState.spellSlotsCurrent = { ...entity.spellSlots };
+                            }
+                            await db.updateCharacter(entity.dbCharacterId, {
+                                actorState: JSON.stringify(actorState),
+                            });
+                            console.log(`[Sync] Updated actorState for ${entity.name}`);
+                        } catch (e) {
+                            console.warn(`[Sync] Failed to update actorState for ${entity.name}:`, e);
+                        }
+                    }
+
+                    // Backwards compat: also sync to worldState resource tracking
                     const resourceState = getCharacterResourceState(worldState, character);
                     worldState = setCharacterResourceState(worldState, character.id, {
                         ...resourceState,
