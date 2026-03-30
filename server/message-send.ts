@@ -31,6 +31,36 @@ async function streamToString(
   return full;
 }
 
+function formatCombatParserError(error: string): string {
+  if (error.startsWith('Could not find target:')) {
+    return `I couldn't identify that target. Try naming the creature directly.`;
+  }
+  if (error === 'No spell name detected') {
+    return `Tell me which spell you're casting.`;
+  }
+  if (error.startsWith('Player does not know spell:')) {
+    const spellName = error.replace('Player does not know spell:', '').trim();
+    return spellName
+      ? `I don't see ${spellName} in your current combat spell list.`
+      : `I don't see that spell in your current combat spell list.`;
+  }
+  return error;
+}
+
+function formatCombatExecutionError(error?: string): string {
+  if (!error) {
+    return `That action couldn't be completed right now.`;
+  }
+  if (error.startsWith('No action available for')) {
+    const actionName = error.replace('No action available for', '').trim();
+    return `You can't ${actionName.toLowerCase()} right now because your action is already spent.`;
+  }
+  if (error.startsWith('No movement remaining')) {
+    return `You don't have any movement left this turn.`;
+  }
+  return error;
+}
+
 export async function executeMessageSend(
   ctx: TrpcContext,
   input: MessageSendInput,
@@ -42,7 +72,7 @@ export async function executeMessageSend(
 
   const db = await import('./db');
   const { invokeLLMWithSettings } = await import('./llm-with-settings');
-  const { buildChatSystemPrompt, buildChatUserPrompt } = await import('./prompts');
+  const { buildChatSystemPrompt, buildChatUserPrompt, buildCombatQueryPrompt } = await import('./prompts');
   const { parseStructuredResponse, hasCombatInitiation, hasCombatEnd, getEnemies } = await import('./response-parser');
   const { handleAutoCombatInitiation, handleAutoCombatEnd } = await import('./combat/combat-helpers');
   const { CombatEngineManager } = await import('./combat/combat-engine-manager');
@@ -179,6 +209,158 @@ export async function executeMessageSend(
   }
 
   // Handle AWAIT_ATTACK_ROLL phase - player provides their d20 via chat (fallback for visual dice)
+  if (engine && enginePhase === 'AWAIT_SAVE_ROLL') {
+    console.log('[CombatV2] In save roll phase, extracting roll value from chat');
+
+    const pending = engine.getState().pendingSpellSave;
+    const targetEntityId = pending?.pendingTargetIds[0];
+    const targetEntity = targetEntityId ? engine.getEntity(targetEntityId) : null;
+    const rollMatch = input.message.match(/\b(\d{1,2})\b/);
+
+    if (!pending || !targetEntityId || !targetEntity) {
+      return { response: 'No save is pending right now.', combatTriggered: false, enemiesAdded: 0 };
+    }
+
+    if (!rollMatch) {
+      await db.saveMessage({
+        sessionId: input.sessionId,
+        characterName: character.name,
+        content: input.message,
+        isDm: 0,
+      });
+      await db.saveMessage({
+        sessionId: input.sessionId,
+        characterName: 'DM',
+        content: `${targetEntity.name} needs to roll a ${pending.saveStat} saving throw against ${pending.spellName} (DC ${pending.spellSaveDC}). Use the dice roller or type the d20 result.`,
+        isDm: 1,
+      });
+      return { response: `Roll a ${pending.saveStat} save for ${targetEntity.name} (DC ${pending.spellSaveDC}).`, combatTriggered: false, enemiesAdded: 0 };
+    }
+
+    const rawRoll = parseInt(rollMatch[1], 10);
+    if (rawRoll < 1 || rawRoll > 20) {
+      await db.saveMessage({ sessionId: input.sessionId, characterName: character.name, content: input.message, isDm: 0 });
+      await db.saveMessage({ sessionId: input.sessionId, characterName: 'DM', content: `That doesn't look like a valid d20 roll. Roll a d20 (1-20) and tell me the result.`, isDm: 1 });
+      return { response: `Roll a d20 (1-20) for the saving throw.`, combatTriggered: false, enemiesAdded: 0 };
+    }
+
+    const result = engine.submitSavingThrow(targetEntityId, rawRoll);
+    if (!result.success) {
+      await db.saveMessage({ sessionId: input.sessionId, characterName: character.name, content: input.message, isDm: 0 });
+      await db.saveMessage({ sessionId: input.sessionId, characterName: 'DM', content: result.error ?? 'Something went wrong with that saving throw.', isDm: 1 });
+      return { response: result.error ?? 'Invalid saving throw.', combatTriggered: false, enemiesAdded: 0 };
+    }
+
+    await CombatEngineManager.persist(input.sessionId);
+    const { syncCombatStateToDb } = await import('./combat/combat-helpers');
+    await syncCombatStateToDb(input.sessionId);
+
+    const currentState = engine.getState();
+    const narrative = await streamToString(
+      await generateCombatNarrativeStream(
+        input.sessionId,
+        ctx.user.id,
+        result.logs,
+        input.message,
+        character.name,
+        currentState.entities,
+        false,
+        targetEntityId
+      ),
+      streamHooks?.onNarrativeDelta
+    );
+
+    await db.saveMessage({ sessionId: input.sessionId, characterName: character.name, content: input.message, isDm: 0 });
+    await db.saveMessage({ sessionId: input.sessionId, characterName: 'DM', content: narrative, isDm: 1 });
+
+    if (currentState.phase === 'RESOLVED') {
+      await CombatEngineManager.destroy(input.sessionId);
+    } else {
+      const nextEntity = engine.getCurrentTurnEntity();
+      if (nextEntity && nextEntity.type === 'enemy') {
+        const { runAILoop } = await import('./combat/enemy-ai-controller');
+        runAILoop(input.sessionId, ctx.user.id).catch(err => console.error('[CombatV2] AI loop error:', err));
+      }
+    }
+
+    return { response: narrative, combatTriggered: false, enemiesAdded: 0 };
+  }
+
+  if (engine && enginePhase === 'AWAIT_DEATH_SAVE') {
+    console.log('[CombatV2] In death save phase, extracting roll value from chat');
+
+    const currentEntity = engine.getCurrentTurnEntity();
+    const rollMatch = input.message.match(/\b(\d{1,2})\b/);
+
+    if (!currentEntity) {
+      return { response: 'No death save is pending right now.', combatTriggered: false, enemiesAdded: 0 };
+    }
+
+    if (!rollMatch) {
+      await db.saveMessage({
+        sessionId: input.sessionId,
+        characterName: character.name,
+        content: input.message,
+        isDm: 0,
+      });
+      await db.saveMessage({
+        sessionId: input.sessionId,
+        characterName: 'DM',
+        content: `${currentEntity.name} must make a death saving throw. Use the dice roller or type the d20 result.`,
+        isDm: 1,
+      });
+      return { response: `${currentEntity.name} needs a death save roll.`, combatTriggered: false, enemiesAdded: 0 };
+    }
+
+    const rawRoll = parseInt(rollMatch[1], 10);
+    if (rawRoll < 1 || rawRoll > 20) {
+      await db.saveMessage({ sessionId: input.sessionId, characterName: character.name, content: input.message, isDm: 0 });
+      await db.saveMessage({ sessionId: input.sessionId, characterName: 'DM', content: `That doesn't look like a valid d20 roll. Roll a d20 (1-20) and tell me the result.`, isDm: 1 });
+      return { response: `Roll a d20 (1-20) for the death save.`, combatTriggered: false, enemiesAdded: 0 };
+    }
+
+    const result = engine.rollDeathSave(currentEntity.id, rawRoll);
+    if (!result.success) {
+      await db.saveMessage({ sessionId: input.sessionId, characterName: character.name, content: input.message, isDm: 0 });
+      await db.saveMessage({ sessionId: input.sessionId, characterName: 'DM', content: result.error ?? 'Something went wrong with that death save.', isDm: 1 });
+      return { response: result.error ?? 'Invalid death save.', combatTriggered: false, enemiesAdded: 0 };
+    }
+
+    await CombatEngineManager.persist(input.sessionId);
+    const { syncCombatStateToDb } = await import('./combat/combat-helpers');
+    await syncCombatStateToDb(input.sessionId);
+
+    const currentState = engine.getState();
+    const narrative = await streamToString(
+      await generateCombatNarrativeStream(
+        input.sessionId,
+        ctx.user.id,
+        result.logs,
+        input.message,
+        character.name,
+        currentState.entities,
+        false,
+        currentEntity.id
+      ),
+      streamHooks?.onNarrativeDelta
+    );
+
+    await db.saveMessage({ sessionId: input.sessionId, characterName: character.name, content: input.message, isDm: 0 });
+    await db.saveMessage({ sessionId: input.sessionId, characterName: 'DM', content: narrative, isDm: 1 });
+
+    if (currentState.phase === 'RESOLVED') {
+      await CombatEngineManager.destroy(input.sessionId);
+    } else {
+      const nextEntity = engine.getCurrentTurnEntity();
+      if (nextEntity && nextEntity.type === 'enemy') {
+        const { runAILoop } = await import('./combat/enemy-ai-controller');
+        runAILoop(input.sessionId, ctx.user.id).catch(err => console.error('[CombatV2] AI loop error:', err));
+      }
+    }
+
+    return { response: narrative, combatTriggered: false, enemiesAdded: 0 };
+  }
+
   if (engine && enginePhase === 'AWAIT_ATTACK_ROLL') {
     console.log('[CombatV2] In attack roll phase, extracting roll value from chat');
 
@@ -372,6 +554,53 @@ export async function executeMessageSend(
     }
   }
 
+  const longRestMatch = input.message.match(/\b(long rest|take a long rest|rest for the night|camp for the night)\b/i);
+  const shortRestMatch = input.message.match(/\b(short rest|take a short rest|take a breather|catch our breath)\b/i);
+  if (longRestMatch || shortRestMatch) {
+    const isCombatOngoing = !!engine && enginePhase && enginePhase !== 'IDLE' && enginePhase !== 'RESOLVED';
+    if (isCombatOngoing) {
+      await db.saveMessage({ sessionId: input.sessionId, characterName: character.name, content: input.message, isDm: 0 });
+      await db.saveMessage({ sessionId: input.sessionId, characterName: 'DM', content: `You can't take a ${longRestMatch ? 'long' : 'short'} rest during combat.`, isDm: 1 });
+      return { response: `You can't rest during combat.`, combatTriggered: false, enemiesAdded: 0 };
+    }
+
+    const { detectHitDiceToSpend, getCharacterResourceState, resolveLongRest, resolveShortRest, setCharacterResourceState } = await import('./rest');
+    const sessionCharacters = await db.getSessionCharacters(input.sessionId);
+    const storedContext = await db.getSessionContext(input.sessionId);
+    const parsedContext = db.parseSessionContext(storedContext);
+    let worldState = parsedContext.worldState;
+    const hitDiceToSpend = detectHitDiceToSpend(input.message);
+
+    const summaries: string[] = [];
+    for (const sessionCharacter of sessionCharacters) {
+      const resourceState = getCharacterResourceState(worldState, sessionCharacter);
+      if (longRestMatch) {
+        const result = resolveLongRest(sessionCharacter, resourceState);
+        await db.updateCharacterHP(sessionCharacter.id, result.hpAfter);
+        worldState = setCharacterResourceState(worldState, sessionCharacter.id, result.resourceState);
+        summaries.push(result.summary);
+      } else {
+        // Only apply explicit hit dice count to the speaking character; others spend 1 by default
+        const diceForThisChar = sessionCharacter.id === character.id ? hitDiceToSpend : undefined;
+        const result = resolveShortRest(sessionCharacter, resourceState, { hitDiceToSpend: diceForThisChar });
+        await db.updateCharacterHP(sessionCharacter.id, result.hpAfter);
+        worldState = setCharacterResourceState(worldState, sessionCharacter.id, result.resourceState);
+        summaries.push(result.summary);
+      }
+    }
+
+    await db.upsertSessionContext(input.sessionId, {
+      ...parsedContext,
+      worldState,
+      recentEvent: longRestMatch ? 'The party completes a long rest.' : 'The party takes a short rest.',
+    });
+
+    const restNarrative = summaries.join('\n');
+    await db.saveMessage({ sessionId: input.sessionId, characterName: character.name, content: input.message, isDm: 0 });
+    await db.saveMessage({ sessionId: input.sessionId, characterName: 'DM', content: restNarrative, isDm: 1 });
+    return { response: restNarrative, combatTriggered: false, enemiesAdded: 0 };
+  }
+
   const isV2CombatActive = engine && enginePhase === 'ACTIVE';
 
   if (isV2CombatActive && isPlayerTurn(input.sessionId)) {
@@ -402,17 +631,17 @@ export async function executeMessageSend(
         .map(a => `• **${a.type}**${a.description ? ` — ${a.description}` : ''}`)
         .join('\n');
 
-      const queryPrompt = `You are a D&D 5e Dungeon Master helping a player understand their combat options. Answer their question concisely and helpfully, in character as the DM.
-
-PLAYER CHARACTER: ${currentEntity?.name || 'Unknown'} (HP: ${currentEntity?.hp}/${currentEntity?.maxHp}, AC: ${currentEntity?.baseAC})
-TURN RESOURCES: ${resourceStatus}
-
-AVAILABLE ACTIONS:
-${actionList}
-
-PLAYER'S QUESTION: "${input.message}"
-
-Answer the question directly. If they're asking what they can do, list their available actions with brief explanations. Keep it concise but helpful. Use D&D 5e rules knowledge to explain mechanics if asked.`;
+      const queryPrompt = buildCombatQueryPrompt({
+        battleState: state,
+        focusEntityId: currentEntityId,
+        playerName: currentEntity?.name || 'Unknown',
+        playerHp: currentEntity?.hp,
+        playerMaxHp: currentEntity?.maxHp,
+        playerAc: currentEntity?.baseAC,
+        resourceStatus,
+        actionList,
+        question: input.message,
+      });
 
       const { invokeLLMWithSettings } = await import('./llm-with-settings');
       const queryResult = await invokeLLMWithSettings(ctx.user.id, {
@@ -441,18 +670,27 @@ Answer the question directly. If they're asking what they can do, list their ava
 
     if (parsed.error) {
       console.warn('[CombatV2] Action parsing warning:', parsed.error);
+      const parserErrorMessage = formatCombatParserError(parsed.error);
+      await db.saveMessage({ sessionId: input.sessionId, characterName: character.name, content: input.message, isDm: 0 });
+      await db.saveMessage({ sessionId: input.sessionId, characterName: 'DM', content: parserErrorMessage, isDm: 1 });
+      return { response: parserErrorMessage, combatTriggered: false, enemiesAdded: 0 };
     }
 
     // 2. Execute action through engine
     // Note: parsePlayerAction returns a valid ActionPayload
     const result = engine!.submitAction(parsed.action);
 
-    // 3. Persist state
-    if (result.success) {
-      await CombatEngineManager.persist(input.sessionId);
-      const { syncCombatStateToDb } = await import('./combat/combat-helpers');
-      await syncCombatStateToDb(input.sessionId);
+    if (!result.success) {
+      const executionErrorMessage = formatCombatExecutionError(result.error);
+      await db.saveMessage({ sessionId: input.sessionId, characterName: character.name, content: input.message, isDm: 0 });
+      await db.saveMessage({ sessionId: input.sessionId, characterName: 'DM', content: executionErrorMessage, isDm: 1 });
+      return { response: executionErrorMessage, combatTriggered: false, enemiesAdded: 0 };
     }
+
+    // 3. Persist state
+    await CombatEngineManager.persist(input.sessionId);
+    const { syncCombatStateToDb } = await import('./combat/combat-helpers');
+    await syncCombatStateToDb(input.sessionId);
 
     // 4a. Check if waiting for attack roll (visual dice roller)
     if (result.awaitingAttackRoll) {
@@ -711,6 +949,26 @@ Answer the question directly. If they're asking what they can do, list their ava
   if (hasCombatEnd(structured) && existingCombatState?.inCombat) {
     console.log('[AutoCombat] Combat ended by DM response');
     await handleAutoCombatEnd(input.sessionId);
+  }
+
+  const combatStillInactive = !(engine && enginePhase && enginePhase !== 'IDLE' && enginePhase !== 'RESOLVED');
+  if (structured.gameStateChanges?.skillCheck && combatStillInactive) {
+    const { normalizeAbilityName, normalizeSkillName, resolveSkillCheck } = await import('./skill-check');
+    const request = structured.gameStateChanges.skillCheck;
+    const skillResult = resolveSkillCheck({
+      characterName: character.name,
+      stats,
+      level: character.level,
+      dc: request.dc,
+      ability: normalizeAbilityName(request.ability),
+      skill: normalizeSkillName(request.skill),
+      proficientSkills: [],
+      advantage: request.advantage,
+      disadvantage: request.disadvantage,
+    });
+    const extra = `\n\n${skillResult.summary}${request.reason ? `\nReason: ${request.reason}.` : ''}`;
+    dmNarrative += extra;
+    streamHooks?.onNarrativeDelta?.(extra);
   }
 
   // Save messages (only the narrative part, not the full JSON)

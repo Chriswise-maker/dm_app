@@ -140,11 +140,12 @@ function buildEnemyDecisionPromptV2(enemy: CombatEntity, state: BattleState, ran
 // =============================================================================
 
 interface ParsedEnemyAction {
-    type: 'ATTACK' | 'DODGE' | 'DASH' | 'DISENGAGE' | 'HELP' | 'HIDE' | 'CAST_SPELL' | 'END_TURN';
+    type: 'ATTACK' | 'MOVE' | 'DODGE' | 'DASH' | 'DISENGAGE' | 'HELP' | 'HIDE' | 'CAST_SPELL' | 'END_TURN';
     targetId?: string;
     allyId?: string;
     spellName?: string;
     targetIds?: string[];
+    direction?: 'toward' | 'away';
     flavor?: string;
 }
 
@@ -187,6 +188,9 @@ function parseEnemyAction(response: string, enemy: CombatEntity, state: BattleSt
         const chosen = legalActions[choiceNum - 1];
         if (chosen.type === 'ATTACK' && chosen.targetId) {
             return { type: 'ATTACK', targetId: chosen.targetId, flavor };
+        }
+        if (chosen.type === 'MOVE' && chosen.targetId && chosen.direction) {
+            return { type: 'MOVE', targetId: chosen.targetId, direction: chosen.direction, flavor };
         }
         if (chosen.type === 'END_TURN') {
             return { type: 'END_TURN', flavor };
@@ -328,9 +332,21 @@ export async function executeEnemyTurn(sessionId: number, userId: number): Promi
                     attackerId: entity.id,
                     targetId: parsed.targetId,
                     weaponName: 'natural weapon',
-                    isRanged: false,
+                    isRanged: entity.isRanged ?? false,
                     advantage: false,
                     disadvantage: targetIsDodging,
+                };
+            } else {
+                actionPayload = { type: 'END_TURN', entityId: entity.id };
+            }
+            break;
+        case 'MOVE':
+            if (parsed.targetId && parsed.direction) {
+                actionPayload = {
+                    type: 'MOVE',
+                    entityId: entity.id,
+                    targetId: parsed.targetId,
+                    direction: parsed.direction,
                 };
             } else {
                 actionPayload = { type: 'END_TURN', entityId: entity.id };
@@ -401,7 +417,7 @@ export async function executeEnemyTurn(sessionId: number, userId: number): Promi
             attackerId: entity.id,
             targetId: extraTarget.id,
             weaponName: 'natural weapon',
-            isRanged: false,
+            isRanged: entity.isRanged ?? false,
             advantage: false,
             disadvantage: extraTargetIsDodging,
         };

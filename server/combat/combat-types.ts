@@ -353,6 +353,7 @@ export const ActionTypeSchema = z.enum([
     // Standard Actions (consume Action by default)
     "ATTACK",
     "CAST_SPELL",           // Stage 6
+    "MOVE",                 // Uses the movement resource, not the action
     "DASH",
     "DISENGAGE",
     "DODGE",
@@ -375,6 +376,7 @@ export type ActionType = z.infer<typeof ActionTypeSchema>;
 export const ACTION_DEFAULT_COST: Record<ActionType, ResourceCost> = {
     ATTACK:             "action",
     CAST_SPELL:         "action",       // some spells are bonus_action; spell schema will override
+    MOVE:               "movement",
     DASH:               "action",
     DISENGAGE:          "action",
     DODGE:              "action",
@@ -434,6 +436,19 @@ export const DashPayloadSchema = z.object({
     resourceCost: ResourceCostSchema.optional(),
 });
 export type DashPayload = z.infer<typeof DashPayloadSchema>;
+
+/**
+ * Move Payload — Shift relative distance bands without using your action.
+ * `toward` closes distance by one band, `away` opens it by one band.
+ */
+export const MovePayloadSchema = z.object({
+    type: z.literal("MOVE"),
+    entityId: z.string(),
+    targetId: z.string(),
+    direction: z.enum(["toward", "away"]),
+    resourceCost: ResourceCostSchema.optional(),
+});
+export type MovePayload = z.infer<typeof MovePayloadSchema>;
 
 /**
  * Disengage Payload — Take the Disengage action
@@ -571,6 +586,7 @@ export type PendingSpellSave = z.infer<typeof PendingSpellSaveSchema>;
  */
 export const ActionPayloadSchema = z.discriminatedUnion("type", [
     AttackPayloadSchema,
+    MovePayloadSchema,
     DodgePayloadSchema,
     DashPayloadSchema,
     DisengagePayloadSchema,
@@ -614,6 +630,7 @@ export const PendingAttackSchema = z.object({
     attackerId: z.string(),
     targetId: z.string(),
     isCritical: z.boolean(),
+    isRanged: z.boolean().default(false),
     weaponName: z.string().optional(),
     damageFormula: z.string(),      // Expected damage formula (e.g., "1d8+3")
     createdAt: z.number(),
@@ -768,6 +785,7 @@ export interface LegalAction {
     targetName?: string;
     weaponName?: string;
     spellName?: string;
+    direction?: "toward" | "away";
     description: string;
     resourceCost: ResourceCost;  // Which turn resource this action would consume
 }

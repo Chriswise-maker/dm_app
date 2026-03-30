@@ -19,11 +19,21 @@ export interface HpChange {
     amount: number;
 }
 
+export interface SkillCheckRequest {
+    ability?: string;
+    skill?: string;
+    dc: number;
+    advantage?: boolean;
+    disadvantage?: boolean;
+    reason?: string;
+}
+
 export interface GameStateChanges {
     combatInitiated?: boolean;
     combatEnded?: boolean;
     enemies?: EnemyData[];
     hpChanges?: HpChange[];
+    skillCheck?: SkillCheckRequest;
 }
 
 export interface StructuredDMResponse {
@@ -167,6 +177,10 @@ function parseGameStateChanges(changes: unknown): GameStateChanges | undefined {
             .map(normalizeHpChange);
     }
 
+    if (isValidSkillCheck(changesObj.skillCheck)) {
+        result.skillCheck = normalizeSkillCheck(changesObj.skillCheck);
+    }
+
     // Only return if we have at least one change
     if (Object.keys(result).length === 0) {
         return undefined;
@@ -219,6 +233,23 @@ function normalizeHpChange(change: Record<string, unknown>): HpChange {
     return {
         target: String(change.target),
         amount: Number(change.amount),
+    };
+}
+
+function isValidSkillCheck(value: unknown): value is Record<string, unknown> {
+    if (!value || typeof value !== 'object') return false;
+    const check = value as Record<string, unknown>;
+    return typeof check.dc === 'number';
+}
+
+function normalizeSkillCheck(value: Record<string, unknown>): SkillCheckRequest {
+    return {
+        ability: typeof value.ability === 'string' ? value.ability : undefined,
+        skill: typeof value.skill === 'string' ? value.skill : undefined,
+        dc: Math.max(1, Math.min(30, Math.round(Number(value.dc)))),
+        advantage: value.advantage === true,
+        disadvantage: value.disadvantage === true,
+        reason: typeof value.reason === 'string' ? value.reason : undefined,
     };
 }
 

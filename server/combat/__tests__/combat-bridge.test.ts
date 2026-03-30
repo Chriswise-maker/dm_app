@@ -7,6 +7,8 @@ import type { EnemyData } from '../../response-parser';
 // Mock the DB module
 vi.mock('../../db', () => ({
     getCharacter: vi.fn(),
+    getSessionContext: vi.fn().mockResolvedValue(undefined),
+    parseSessionContext: vi.fn().mockReturnValue({}),
     getSessionCharacters: vi.fn().mockResolvedValue([
         {
             id: 123,

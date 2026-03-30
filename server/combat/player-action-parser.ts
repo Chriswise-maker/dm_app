@@ -32,7 +32,7 @@ export interface ParsedPlayerAction {
 }
 
 interface LLMParseResult {
-    actionType: 'ATTACK' | 'DODGE' | 'DASH' | 'DISENGAGE' | 'HELP' | 'HIDE' | 'READY' | 'USE_ITEM' | 'CAST_SPELL' | 'END_TURN' | 'QUERY' | 'UNKNOWN';
+    actionType: 'ATTACK' | 'MOVE' | 'DODGE' | 'DASH' | 'DISENGAGE' | 'HELP' | 'HIDE' | 'READY' | 'USE_ITEM' | 'CAST_SPELL' | 'END_TURN' | 'QUERY' | 'UNKNOWN';
     targetName?: string;
     allyName?: string;   // For HELP: who to help
     attackRoll?: number; // Player-provided roll value (e.g., "I roll 20")
@@ -41,6 +41,7 @@ interface LLMParseResult {
     spellName?: string;  // For CAST_SPELL
     targetNames?: string[]; // For area spells
     trigger?: string;    // For READY: trigger condition
+    moveDirection?: 'toward' | 'away';
     advantage?: boolean; // "with advantage"
     disadvantage?: boolean; // "at disadvantage"
     confidence: number;
@@ -108,6 +109,7 @@ function buildActionParserPrompt(
     prompt += `- Any action implying physical violence toward an enemy = ATTACK\n\n`;
 
     prompt += `D&D 5e STANDARD ACTIONS (recognize these):\n`;
+    prompt += `- MOVE: "I move toward the goblin", "I retreat from the ogre", "I close the distance", "I fall back"\n`;
     prompt += `- DODGE: "I dodge", "I take the Dodge action", "I brace for attacks", "I go defensive"\n`;
     prompt += `- DASH: "I dash", "I run", "I sprint", "I move double speed"\n`;
     prompt += `- DISENGAGE: "I disengage", "I back away carefully", "I withdraw safely"\n`;
@@ -118,9 +120,10 @@ function buildActionParserPrompt(
     prompt += `- CAST_SPELL: "I cast Fireball", "I use Magic Missile on the goblin", "I cast Cure Wounds on Elara"\n`;
     prompt += `- END_TURN: "done", "end turn", "pass", "I wait", "no", "nah", "that's it", "move on", "I'm good", "nothing else", "next", "no thanks"\n`;
     prompt += `- QUERY: "what can I do?", "what are my options?", "how does dodge work?", "can I attack twice?", "what's my AC?", any question about rules, abilities, or combat state\n\n`;
+    prompt += `IMPORTANT: If the message is phrased as a question ("can I...", "could I...", "do I...", "what if..."), classify it as QUERY even if it mentions an action like attack, ready, dodge, or cast.\n\n`;
 
     prompt += `Analyze the message and determine:\n`;
-    prompt += `1. actionType: ATTACK, DODGE, DASH, DISENGAGE, HELP, HIDE, READY, USE_ITEM, END_TURN, QUERY, or UNKNOWN\n`;
+    prompt += `1. actionType: ATTACK, MOVE, DODGE, DASH, DISENGAGE, HELP, HIDE, READY, USE_ITEM, END_TURN, QUERY, or UNKNOWN\n`;
     prompt += `2. targetName: If attacking, who are they targeting? Match to a name from VALID TARGETS. If only one enemy, assume that target.\n`;
     prompt += `3. allyName: If helping, who are they helping? Match to a name from ALLIES.\n`;
     prompt += `4. attackRoll: If the player mentions a number ("I roll 20", "got an 18", "nat 20"), extract it as their attack roll.\n`;
@@ -130,10 +133,12 @@ function buildActionParserPrompt(
     prompt += `8. advantage/disadvantage: true if explicitly stated.\n`;
     prompt += `9. confidence: How confident are you (0.0 to 1.0)?\n`;
     prompt += `10. spellName: If casting a spell, the exact spell name.\n`;
-    prompt += `11. targetNames: Array of target names if multiple targets (area spells).\n\n`;
+    prompt += `11. targetNames: Array of target names if multiple targets (area spells).\n`;
+    prompt += `12. moveDirection: For MOVE, use "toward" or "away".\n\n`;
 
     prompt += `Return ONLY valid JSON:\n`;
     prompt += `{"actionType": "ATTACK", "targetName": "Goblin", "attackRoll": 20, "weaponName": "longsword", "confidence": 0.9}\n`;
+    prompt += `{"actionType": "MOVE", "targetName": "Goblin", "moveDirection": "toward", "confidence": 0.9}\n`;
     prompt += `{"actionType": "DODGE", "confidence": 0.95}\n`;
     prompt += `{"actionType": "HELP", "allyName": "Thorin", "targetName": "Goblin", "confidence": 0.85}\n`;
     prompt += `{"actionType": "USE_ITEM", "itemName": "healing potion", "targetName": "Elara", "confidence": 0.9}\n`;
@@ -162,7 +167,7 @@ function parseLLMResponse(response: string): LLMParseResult {
 
         const parsed = JSON.parse(jsonStr);
 
-        const validActions = ['ATTACK', 'DODGE', 'DASH', 'DISENGAGE', 'HELP', 'HIDE', 'READY', 'USE_ITEM', 'CAST_SPELL', 'END_TURN', 'QUERY', 'UNKNOWN'];
+        const validActions = ['ATTACK', 'MOVE', 'DODGE', 'DASH', 'DISENGAGE', 'HELP', 'HIDE', 'READY', 'USE_ITEM', 'CAST_SPELL', 'END_TURN', 'QUERY', 'UNKNOWN'];
         return {
             actionType: validActions.includes(parsed.actionType) ? parsed.actionType : 'UNKNOWN',
             targetName: parsed.targetName,
@@ -173,6 +178,7 @@ function parseLLMResponse(response: string): LLMParseResult {
             spellName: typeof parsed.spellName === 'string' ? parsed.spellName : undefined,
             targetNames: Array.isArray(parsed.targetNames) ? parsed.targetNames : undefined,
             trigger: typeof parsed.trigger === 'string' ? parsed.trigger : undefined,
+            moveDirection: parsed.moveDirection === 'away' ? 'away' : parsed.moveDirection === 'toward' ? 'toward' : undefined,
             advantage: parsed.advantage === true,
             disadvantage: parsed.disadvantage === true,
             confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0.5,
@@ -218,6 +224,21 @@ function matchTargetToEntity(
     });
 
     return wordMatch;
+}
+
+function isLikelyRangedAttack(weaponName: string | undefined, playerMessage: string, currentEntity: CombatEntity): boolean {
+    if (currentEntity.isRanged) return true;
+
+    const text = `${weaponName || ''} ${playerMessage}`.toLowerCase();
+    return /\b(bow|longbow|shortbow|crossbow|arrow|bolt|sling|shoot|fire)\b/.test(text);
+}
+
+function isDirectCombatQuestion(message: string): boolean {
+    const trimmed = message.trim().toLowerCase();
+    if (!trimmed) return false;
+
+    return trimmed.includes("?")
+        || /^(can i|could i|do i|am i|may i|should i|what|how|where|who|when|why|which)\b/.test(trimmed);
 }
 
 // =============================================================================
@@ -269,6 +290,16 @@ export async function parsePlayerAction(
 
     console.log(`[PlayerActionParser] Parsing: "${playerMessage}" for ${currentEntity.name}`);
     activity.parser(sessionId, `Parsing: "${playerMessage.substring(0, 50)}..." for ${currentEntity.name}`);
+
+    if (isDirectCombatQuestion(playerMessage)) {
+        activity.parser(sessionId, `Parsed: QUERY (question shortcut)`, { message: playerMessage });
+        return {
+            action: { type: 'END_TURN', entityId: currentEntity.id },
+            flavorText: playerMessage,
+            confidence: 1,
+            error: 'QUERY',
+        };
+    }
 
     // Build prompt for LLM
     const prompt = buildActionParserPrompt(playerMessage, state, currentEntity.id);
@@ -333,7 +364,7 @@ export async function parsePlayerAction(
                     attackerId: currentEntity.id,
                     targetId: target.id,
                     weaponName: llmResult.weaponName || 'weapon',
-                    isRanged: false,
+                    isRanged: isLikelyRangedAttack(llmResult.weaponName, playerMessage, currentEntity),
                     advantage: llmResult.advantage || false,
                     disadvantage: llmResult.disadvantage || false,
                     attackRoll: llmResult.attackRoll, // Pass player's roll to engine
@@ -348,6 +379,34 @@ export async function parsePlayerAction(
                 flavorText: playerMessage,
                 confidence: llmResult.confidence,
                 error: `Could not find target: "${llmResult.targetName}"`,
+            };
+        }
+    }
+
+    if (llmResult.actionType === 'MOVE') {
+        const candidates = state.entities.filter(
+            (e: CombatEntity) => e.id !== currentEntity.id && e.status === 'ALIVE'
+        );
+        let target: CombatEntity | undefined;
+
+        if (llmResult.targetName) {
+            target = matchTargetToEntity(llmResult.targetName, candidates);
+        } else if (candidates.length === 1) {
+            target = candidates[0];
+        }
+
+        if (target) {
+            const direction = llmResult.moveDirection || 'toward';
+            activity.parser(sessionId, `Parsed: MOVE ${direction} ${target.name} (conf: ${llmResult.confidence.toFixed(2)})`);
+            return {
+                action: {
+                    type: 'MOVE',
+                    entityId: currentEntity.id,
+                    targetId: target.id,
+                    direction,
+                },
+                flavorText: playerMessage,
+                confidence: llmResult.confidence,
             };
         }
     }
@@ -422,6 +481,10 @@ export async function parsePlayerAction(
     }
 
     if (llmResult.actionType === 'READY') {
+        const enemies = state.entities.filter(
+            (e: CombatEntity) => e.type === 'enemy' && e.status === 'ALIVE'
+        );
+        const readiedTarget = llmResult.targetName ? matchTargetToEntity(llmResult.targetName, enemies) : undefined;
         activity.parser(sessionId, `Parsed: READY (conf: ${llmResult.confidence.toFixed(2)})`);
         return {
             action: {
@@ -429,7 +492,7 @@ export async function parsePlayerAction(
                 entityId: currentEntity.id,
                 trigger: llmResult.trigger || 'when a creature comes within reach',
                 readiedAction: 'ATTACK',
-                targetId: undefined,
+                targetId: readiedTarget?.id,
             },
             flavorText: playerMessage,
             confidence: llmResult.confidence,
@@ -642,6 +705,26 @@ function fallbackParse(message: string): LLMParseResult {
     const dodgeKeywords = ['dodge', 'go defensive', 'brace', 'take the dodge'];
     if (dodgeKeywords.some((k) => lower.includes(k))) {
         return { actionType: 'DODGE', confidence: 0.7 };
+    }
+
+    if (/\b(move|advance|approach|close in|close the distance|get closer|step toward)\b/.test(lower)) {
+        const targetMatch = lower.match(/(?:toward|towards|to|at)\s+(?:the\s+)?(\w+)/i);
+        return {
+            actionType: 'MOVE',
+            targetName: targetMatch?.[1],
+            moveDirection: 'toward',
+            confidence: 0.65,
+        };
+    }
+
+    if (/\b(retreat|reposition|move away|fall back|step back|create distance)\b/.test(lower)) {
+        const targetMatch = lower.match(/(?:from|away from)\s+(?:the\s+)?(\w+)/i);
+        return {
+            actionType: 'MOVE',
+            targetName: targetMatch?.[1],
+            moveDirection: 'away',
+            confidence: 0.65,
+        };
     }
 
     // Dash keywords

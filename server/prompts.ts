@@ -5,7 +5,7 @@
  */
 
 import type { UserSettings, Character, Session, CombatState, Combatant, Message } from "../drizzle/schema";
-import type { BattleState, CombatEntity } from "./combat/combat-types";
+import { RangeBand, type BattleState, type CombatEntity } from "./combat/combat-types";
 import type { ExtractedContext } from "./context-extraction";
 
 // Default Prompts (Chaos Weaver Style)
@@ -234,6 +234,31 @@ When combat is clearly over (enemies defeated, fled, or surrendered):
   }
 }
 
+**OUT-OF-COMBAT CHECKS:**
+When the fiction calls for uncertainty outside combat, you may request ONE mechanical check:
+{
+  "narrative": "Dust veils the hallway as you search the broken shrine for clues.",
+  "gameStateChanges": {
+    "skillCheck": {
+      "skill": "perception",
+      "dc": 14,
+      "reason": "spotting the hidden compartment"
+    }
+  }
+}
+You may also use an ability directly instead of a skill:
+{
+  "narrative": "The stone lid is heavy and slick with old moss.",
+  "gameStateChanges": {
+    "skillCheck": {
+      "ability": "str",
+      "dc": 12,
+      "reason": "forcing the sarcophagus open"
+    }
+  }
+}
+Only request a skill check when the outcome is uncertain and meaningful. Do not narrate certainty and request a check for the same beat.
+
 **FOR NORMAL RESPONSES (exploration, dialogue, non-combat):**
 {"narrative": "Your response text here..."}
 
@@ -357,6 +382,127 @@ Return ONLY a JSON object with this exact structure:
 }`;
 }
 
+function describeRangeBand(range?: RangeBand): string {
+    switch (range) {
+        case RangeBand.MELEE:
+            return "melee (5 ft)";
+        case RangeBand.NEAR:
+            return "near (30 ft)";
+        case RangeBand.FAR:
+            return "far (60+ ft)";
+        default:
+            return "unknown range";
+    }
+}
+
+function getBattleEntityById(state: BattleState, entityId?: string): CombatEntity | undefined {
+    if (!entityId) return undefined;
+    return state.entities.find(entity => entity.id === entityId);
+}
+
+function getOrderedBattleEntities(state: BattleState): CombatEntity[] {
+    const ordered = state.turnOrder
+        .map(entityId => getBattleEntityById(state, entityId))
+        .filter((entity): entity is CombatEntity => !!entity);
+
+    if (ordered.length === state.entities.length) {
+        return ordered;
+    }
+
+    const seen = new Set(ordered.map(entity => entity.id));
+    return [
+        ...ordered,
+        ...state.entities.filter(entity => !seen.has(entity.id)),
+    ];
+}
+
+function findBattleEntityForCharacter(state: BattleState, character: Character): CombatEntity | undefined {
+    return state.entities.find(entity => entity.dbCharacterId === character.id)
+        ?? state.entities.find(entity =>
+            entity.type === "player" && entity.name.toLowerCase() === character.name.toLowerCase()
+        );
+}
+
+export function buildBattlefieldSnapshot(
+    state: BattleState,
+    focusEntityId?: string
+): string {
+    const currentTurnEntity = getBattleEntityById(state, state.turnOrder[state.turnIndex]);
+    const orderedEntities = getOrderedBattleEntities(state);
+    let snapshot = `Round: ${state.round}\n`;
+    snapshot += `Current Turn: ${currentTurnEntity?.name || "Unknown"} (Initiative: ${currentTurnEntity?.initiative || 0})\n\n`;
+    snapshot += `Initiative Order:\n`;
+
+    orderedEntities.forEach((entity, idx) => {
+        const isCurrent = entity.id === currentTurnEntity?.id;
+        const status = entity.status === "ALIVE" ? "" : ` [${entity.status}]`;
+        snapshot += `${idx + 1}. ${entity.name} (${entity.type}) - Init: ${entity.initiative}, HP: ${entity.hp}/${entity.maxHp}, AC: ${entity.baseAC}${status}${isCurrent ? " <- CURRENT TURN" : ""}\n`;
+    });
+
+    const focusEntity = getBattleEntityById(state, focusEntityId);
+    if (focusEntity) {
+        const otherEntities = state.entities.filter(entity => entity.id !== focusEntity.id && entity.status === "ALIVE");
+        snapshot += `\nRelative Positioning for ${focusEntity.name}:\n`;
+
+        if (otherEntities.length === 0) {
+            snapshot += `- No other active combatants.\n`;
+        } else {
+            otherEntities.forEach(entity => {
+                const range = focusEntity.rangeTo?.[entity.id] ?? entity.rangeTo?.[focusEntity.id];
+                snapshot += `- ${entity.name} (${entity.type}): ${describeRangeBand(range)}\n`;
+            });
+        }
+    }
+
+    return snapshot.trimEnd();
+}
+
+export function buildCombatQueryPrompt(params: {
+    battleState: BattleState;
+    focusEntityId?: string;
+    playerName: string;
+    playerHp?: number;
+    playerMaxHp?: number;
+    playerAc?: number;
+    resourceStatus: string;
+    actionList: string;
+    question: string;
+}): string {
+    const {
+        battleState,
+        focusEntityId,
+        playerName,
+        playerHp,
+        playerMaxHp,
+        playerAc,
+        resourceStatus,
+        actionList,
+        question,
+    } = params;
+
+    return `You are a D&D 5e Dungeon Master helping a player understand their combat state and options.
+
+The combat engine is using theater-of-mind range bands instead of a tactical grid.
+The battlefield snapshot below is authoritative. Do NOT say you need a tactical map or enemy positions.
+
+PLAYER CHARACTER: ${playerName} (HP: ${playerHp ?? "?"}/${playerMaxHp ?? "?"}, AC: ${playerAc ?? "?"})
+TURN RESOURCES: ${resourceStatus}
+
+BATTLEFIELD SNAPSHOT:
+${buildBattlefieldSnapshot(battleState, focusEntityId)}
+
+AVAILABLE ACTIONS:
+${actionList}
+
+PLAYER'S QUESTION: "${question}"
+
+Answer the question directly.
+- If they ask where they are, summarize who is in melee, near, and far relative to them.
+- If they ask how far enemies are, use the exact range bands above.
+- If they ask what they can do, use AVAILABLE ACTIONS.
+Keep it concise, helpful, and in character as the DM.`;
+}
+
 /**
  * Build the chat user prompt with full context
  */
@@ -398,25 +544,20 @@ export function buildChatUserPrompt(
     const recentEvents = recentMessages
         .map(m => `${m.characterName}: ${m.content}`)
         .join('\n');
+    const resourceState = (context.worldState as any)?.characterResources?.[String(character.id)];
+    const resourceText = resourceState
+        ? `Hit Dice: ${resourceState.hitDiceRemaining}/${resourceState.hitDiceMax}; Spell Slots: ${Object.entries(resourceState.spellSlotsCurrent || {}).map(([level, count]) => `L${level} ${count}`).join(', ') || 'none'}`
+        : 'Hit Dice / spell slots not yet tracked';
 
     let combatContext = '';
 
     // V2 Combat Engine takes priority if active
     if (v2BattleState && v2BattleState.phase === 'ACTIVE') {
-        const currentEntity = v2BattleState.entities[v2BattleState.turnIndex];
-        const sortedEntities = [...v2BattleState.entities].sort((a, b) => b.initiative - a.initiative);
-
+        const focusEntity = findBattleEntityForCharacter(v2BattleState, character);
         combatContext = `\n[COMBAT ENGINE V2 - ACTIVE]\n`;
-        combatContext += `Round: ${v2BattleState.round}\n`;
-        combatContext += `Current Turn: ${currentEntity?.name || 'Unknown'} (Initiative: ${currentEntity?.initiative || 0})\n\n`;
-        combatContext += `Initiative Order:\n`;
-        sortedEntities.forEach((e: CombatEntity, idx: number) => {
-            const isCurrent = e.id === currentEntity?.id;
-            const status = e.status === 'ALIVE' ? '' : ` [${e.status}]`;
-            combatContext += `${idx + 1}. ${e.name} (${e.type}) - Init: ${e.initiative}, HP: ${e.hp}/${e.maxHp}, AC: ${e.baseAC}${status}${isCurrent ? ' ← CURRENT TURN' : ''}\n`;
-        });
-
+        combatContext += `${buildBattlefieldSnapshot(v2BattleState, focusEntity?.id)}\n`;
         combatContext += `\n**IMPORTANT:** Combat is being managed by the V2 engine. Initiative has already been rolled.\n`;
+        combatContext += `Range bands are the authoritative battlefield positions. Do NOT claim you need a tactical map to answer distance questions.\n`;
         combatContext += `Do NOT ask the player to roll initiative. Simply narrate based on the current turn.\n`;
     } else if (combatState && combatState.inCombat === 1) {
         // Fallback to V1 combat state
@@ -477,6 +618,7 @@ AC: ${character.ac}
 Stats: STR ${stats.str}, DEX ${stats.dex}, CON ${stats.con}, INT ${stats.int}, WIS ${stats.wis}, CHA ${stats.cha}
 Inventory: ${inventory.join(', ') || 'Empty'}
 Notes: ${character.notes || 'None'}
+Resources: ${resourceText}
 
 [CURRENT ACTION]
 ${character.name}: ${userMessage}

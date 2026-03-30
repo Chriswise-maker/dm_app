@@ -29,6 +29,7 @@ import {
     type TurnResources,
     type ResourceCost,
     type DodgePayload,
+    type MovePayload,
     type DashPayload,
     type DisengagePayload,
     type HealPayload,
@@ -41,6 +42,7 @@ import {
     type Spell,
     type PendingSpellSave,
     ACTION_DEFAULT_COST,
+    RangeBand,
     TurnResourcesSchema,
     BattleStateSchema,
     GameSettingsSchema,
@@ -215,6 +217,7 @@ export class CombatEngineV2 {
 
         // Add all entities
         this.state.entities = [...entities];
+        this.initializeSpatialState();
 
         // Find players who need to roll initiative (those with initiative === 0)
         const playersNeedingRolls = this.state.entities.filter(
@@ -396,16 +399,10 @@ export class CombatEngineV2 {
         // Activity log for combat start
         activity.system(this.state.sessionId, `Combat started with ${this.state.entities.length} combatants`);
 
-        // Initialize turn resources for the first entity
         const firstEntity = this.getEntity(this.state.turnOrder[0]);
         if (firstEntity) {
-            this.initTurnResources(firstEntity);
+            logs.push(...this.startTurn(firstEntity.id));
         }
-
-        logs.push(this.createLogEntry("TURN_START", {
-            actorId: this.state.turnOrder[0],
-            description: `${this.getEntity(this.state.turnOrder[0])?.name}'s turn begins.`,
-        }));
 
         return logs;
     }
@@ -421,6 +418,7 @@ export class CombatEngineV2 {
 
         // Add all entities
         this.state.entities = [...entities];
+        this.initializeSpatialState();
 
         // Roll initiative for ALL entities with initiative === 0
         for (const entity of this.state.entities) {
@@ -480,16 +478,10 @@ export class CombatEngineV2 {
 
         activity.system(this.state.sessionId, `Combat started with ${this.state.entities.length} combatants`);
 
-        // Initialize turn resources for the first entity
         const firstEntity = this.getEntity(this.state.turnOrder[0]);
         if (firstEntity) {
-            this.initTurnResources(firstEntity);
+            logs.push(...this.startTurn(firstEntity.id));
         }
-
-        logs.push(this.createLogEntry("TURN_START", {
-            actorId: this.state.turnOrder[0],
-            description: `${this.getEntity(this.state.turnOrder[0])?.name}'s turn begins.`,
-        }));
 
         return logs;
     }
@@ -536,6 +528,7 @@ export class CombatEngineV2 {
         const r = this.state.turnResources;
         const hasAction = r ? !r.actionUsed || r.extraAttacksRemaining > 0 : true;
         const hasFullAction = r ? !r.actionUsed : true; // Not consumed by extra attacks
+        const canMove = this.canSpendMovementStep(entity);
         // const hasBonusAction = r ? !r.bonusActionUsed : true; // Future: bonus action abilities
 
         const actions: LegalAction[] = [];
@@ -561,16 +554,51 @@ export class CombatEngineV2 {
         // --- Actions requiring the Action resource ---
 
         if (hasAction) {
-            // ATTACK — one per valid target
+            // ATTACK — only advertise targets that are currently reachable
             for (const target of validTargets) {
+                const range = this.getRangeBetween(entity.id, target.id);
+                const canReachMelee = range === RangeBand.MELEE || (range === RangeBand.NEAR && canMove);
+                const isAttackLegal = entity.isRanged ? true : canReachMelee;
+                if (!isAttackLegal) continue;
+
                 actions.push({
                     type: "ATTACK",
                     targetId: target.id,
                     targetName: target.name,
                     weaponName: entity.damageFormula,
-                    description: `Attack ${target.name}`,
+                    description: range === RangeBand.MELEE
+                        ? `Attack ${target.name}`
+                        : `Move into melee and attack ${target.name}`,
                     resourceCost: "action",
                 });
+            }
+        }
+
+        if (canMove) {
+            for (const target of validTargets) {
+                const range = this.getRangeBetween(entity.id, target.id);
+
+                if (range !== RangeBand.MELEE) {
+                    actions.push({
+                        type: "MOVE",
+                        targetId: target.id,
+                        targetName: target.name,
+                        direction: "toward",
+                        description: `Move toward ${target.name} (${range === RangeBand.FAR ? "far -> near" : "near -> melee"})`,
+                        resourceCost: "movement",
+                    });
+                }
+
+                if (range !== RangeBand.FAR) {
+                    actions.push({
+                        type: "MOVE",
+                        targetId: target.id,
+                        targetName: target.name,
+                        direction: "away",
+                        description: `Move away from ${target.name} (${range === RangeBand.MELEE ? "melee -> near" : "near -> far"})`,
+                        resourceCost: "movement",
+                    });
+                }
             }
         }
 
@@ -646,13 +674,15 @@ export class CombatEngineV2 {
                 }
 
                 if (spell.isAreaEffect) {
-                    // Area spells — all valid targets at once
-                    actions.push({
-                        type: "CAST_SPELL",
-                        spellName: spell.name,
-                        description: `Cast ${spell.name} (area, ${spell.castingTime})`,
-                        resourceCost: spell.castingTime === 'bonus_action' ? 'bonus_action' : 'action',
-                    });
+                    const hasTargetInRange = validTargets.some(target => this.isSpellInRange(entity, target.id, spell.range));
+                    if (hasTargetInRange) {
+                        actions.push({
+                            type: "CAST_SPELL",
+                            spellName: spell.name,
+                            description: `Cast ${spell.name} (area, ${spell.castingTime})`,
+                            resourceCost: spell.castingTime === 'bonus_action' ? 'bonus_action' : 'action',
+                        });
+                    }
                 } else if (spell.healingFormula) {
                     // Healing spells — can target self or allies
                     const healTargets = [entity, ...this.state.entities.filter(e =>
@@ -661,6 +691,7 @@ export class CombatEngineV2 {
                         (e.status === 'ALIVE' || e.status === 'UNCONSCIOUS')
                     )];
                     for (const t of healTargets) {
+                        if (t.id !== entity.id && !this.isSpellInRange(entity, t.id, spell.range)) continue;
                         actions.push({
                             type: "CAST_SPELL",
                             spellName: spell.name,
@@ -673,6 +704,7 @@ export class CombatEngineV2 {
                 } else {
                     // Damage/effect spells — target enemies
                     for (const target of validTargets) {
+                        if (!this.isSpellInRange(entity, target.id, spell.range)) continue;
                         actions.push({
                             type: "CAST_SPELL",
                             spellName: spell.name,
@@ -707,13 +739,14 @@ export class CombatEngineV2 {
 
         // Initialize turn resources (D&D 5e action economy)
         this.initTurnResources(entity);
+        this.refreshReaction(entityId);
 
         // Tick durations on active D&D conditions (Stage 5)
         logs.push(...this.tickConditions(entityId));
 
         // Clear turn-scoped internal flags from this entity's previous turn
         entity.conditions = entity.conditions.filter(c =>
-            c !== "dodging" && c !== "disengaging" && c !== "hidden"
+            c !== "dodging" && c !== "disengaging" && c !== "hidden" && c !== "dashing"
         );
         // Clear readied action conditions (they expire if not triggered)
         entity.conditions = entity.conditions.filter(c => !c.startsWith("readied:"));
@@ -727,6 +760,8 @@ export class CombatEngineV2 {
             actorId: entityId,
             description: `${entity.name}'s turn begins.`,
         }));
+
+        logs.push(...this.triggerReadiedActions("turn_start", entityId));
 
         // Death saving throws: unconscious essential entities must roll at the start of their turn
         if (entity.status === 'UNCONSCIOUS' && entity.isEssential) {
@@ -777,6 +812,13 @@ export class CombatEngineV2 {
             case "reaction":
                 if (r.reactionUsed) return false;
                 r.reactionUsed = true;
+                {
+                    const currentEntityId = this.state.turnOrder[this.state.turnIndex];
+                    const currentEntity = this.getEntity(currentEntityId);
+                    if (currentEntity && !currentEntity.conditions.includes("reaction_used")) {
+                        currentEntity.conditions.push("reaction_used");
+                    }
+                }
                 return true;
             case "movement":
                 if (r.movementUsed) return false;
@@ -925,6 +967,7 @@ export class CombatEngineV2 {
     addEntity(entity: CombatEntity): void {
         this.pushHistory();
         this.state.entities.push(entity);
+        this.initializeSpatialRelationsForEntity(entity);
 
         // Insert into turn order based on initiative
         const insertIndex = this.state.turnOrder.findIndex(id => {
@@ -954,6 +997,411 @@ export class CombatEngineV2 {
     }
 
     // ===========================================================================
+    // SPATIAL / REACTION HELPERS (Phase A)
+    // ===========================================================================
+
+    private areHostile(a: CombatEntity, b: CombatEntity): boolean {
+        return (
+            (a.type === "player" && b.type === "enemy") ||
+            (a.type === "enemy" && (b.type === "player" || b.type === "ally")) ||
+            (a.type === "ally" && b.type === "enemy")
+        );
+    }
+
+    private getDefaultRange(a: CombatEntity, b: CombatEntity): RangeBand {
+        return this.areHostile(a, b) ? RangeBand.NEAR : RangeBand.MELEE;
+    }
+
+    private initializeSpatialState(): void {
+        for (const entity of this.state.entities) {
+            entity.rangeTo = entity.rangeTo ?? {};
+        }
+
+        for (const entity of this.state.entities) {
+            for (const other of this.state.entities) {
+                if (entity.id === other.id) continue;
+                const existing = entity.rangeTo[other.id];
+                if (existing === undefined) {
+                    entity.rangeTo[other.id] = this.getDefaultRange(entity, other);
+                }
+            }
+        }
+    }
+
+    private initializeSpatialRelationsForEntity(entity: CombatEntity): void {
+        entity.rangeTo = entity.rangeTo ?? {};
+
+        for (const other of this.state.entities) {
+            if (other.id === entity.id) continue;
+            const defaultRange = this.getDefaultRange(entity, other);
+            entity.rangeTo[other.id] = entity.rangeTo[other.id] ?? defaultRange;
+            other.rangeTo = other.rangeTo ?? {};
+            other.rangeTo[entity.id] = other.rangeTo[entity.id] ?? defaultRange;
+        }
+    }
+
+    private getRangeBetween(aId: string, bId: string): RangeBand {
+        const a = this.getEntity(aId);
+        const b = this.getEntity(bId);
+        if (!a || !b) return RangeBand.NEAR;
+
+        const existing = a.rangeTo?.[bId];
+        if (existing !== undefined) return existing;
+
+        const fallback = this.getDefaultRange(a, b);
+        this.setRangeBetween(aId, bId, fallback);
+        return fallback;
+    }
+
+    private setRangeBetween(aId: string, bId: string, range: RangeBand): void {
+        const a = this.getEntity(aId);
+        const b = this.getEntity(bId);
+        if (!a || !b) return;
+
+        a.rangeTo = a.rangeTo ?? {};
+        b.rangeTo = b.rangeTo ?? {};
+        a.rangeTo[bId] = range;
+        b.rangeTo[aId] = range;
+    }
+
+    private getCloserRange(range: RangeBand): RangeBand {
+        if (range === RangeBand.FAR) return RangeBand.NEAR;
+        return RangeBand.MELEE;
+    }
+
+    private getFartherRange(range: RangeBand): RangeBand {
+        if (range === RangeBand.MELEE) return RangeBand.NEAR;
+        return RangeBand.FAR;
+    }
+
+    private canSpendMovementStep(entity: CombatEntity): boolean {
+        const r = this.state.turnResources;
+        if (!r) return false;
+        return !r.movementUsed || entity.conditions.includes("dashing");
+    }
+
+    private consumeMovementStep(entity: CombatEntity): boolean {
+        const r = this.state.turnResources;
+        if (!r) return false;
+
+        if (!r.movementUsed) {
+            r.movementUsed = true;
+            return true;
+        }
+
+        const dashIndex = entity.conditions.indexOf("dashing");
+        if (dashIndex !== -1) {
+            entity.conditions.splice(dashIndex, 1);
+            return true;
+        }
+
+        return false;
+    }
+
+    private refreshReaction(entityId: string): void {
+        const entity = this.getEntity(entityId);
+        if (!entity) return;
+
+        entity.conditions = entity.conditions.filter(c => c !== "reaction_used");
+        if (this.state.turnOrder[this.state.turnIndex] === entityId && this.state.turnResources) {
+            this.state.turnResources.reactionUsed = false;
+        }
+    }
+
+    private hasReactionAvailable(entityId: string): boolean {
+        const entity = this.getEntity(entityId);
+        if (!entity || entity.status !== "ALIVE") return false;
+
+        if (entity.conditions.includes("reaction_used")) return false;
+
+        if (this.state.turnOrder[this.state.turnIndex] === entityId && this.state.turnResources?.reactionUsed) {
+            return false;
+        }
+
+        return true;
+    }
+
+    private consumeReaction(entityId: string): boolean {
+        if (!this.hasReactionAvailable(entityId)) return false;
+
+        const entity = this.getEntity(entityId);
+        if (!entity) return false;
+
+        entity.conditions = entity.conditions.filter(c => c !== "reaction_used");
+        entity.conditions.push("reaction_used");
+
+        if (this.state.turnOrder[this.state.turnIndex] === entityId && this.state.turnResources) {
+            this.state.turnResources.reactionUsed = true;
+        }
+
+        return true;
+    }
+
+    private getEngagedHostiles(entityId: string): CombatEntity[] {
+        const entity = this.getEntity(entityId);
+        if (!entity) return [];
+
+        return this.state.entities.filter(other =>
+            other.id !== entityId &&
+            other.status === "ALIVE" &&
+            this.areHostile(entity, other) &&
+            this.getRangeBetween(entityId, other.id) === RangeBand.MELEE
+        );
+    }
+
+    private isSpellInRange(caster: CombatEntity, targetId: string, spellRange: number): boolean {
+        const band = this.getRangeBetween(caster.id, targetId);
+        if (spellRange <= 5) return band === RangeBand.MELEE;
+        if (spellRange <= 30) return band === RangeBand.MELEE || band === RangeBand.NEAR;
+        return true;
+    }
+
+    private applyWeaponDamage(
+        attacker: CombatEntity,
+        target: CombatEntity,
+        rawDamage: number,
+        damageFormula: string,
+        isCritical: boolean,
+        isRanged: boolean
+    ): CombatLogEntry[] {
+        const logs: CombatLogEntry[] = [];
+        const dt = attacker.damageType;
+
+        let damage: number;
+        if (target.immunities.includes(dt)) {
+            damage = 0;
+        } else {
+            damage = Math.max(1, rawDamage);
+            if (target.vulnerabilities.includes(dt)) damage *= 2;
+            if (target.resistances.includes(dt)) damage = Math.floor(damage / 2);
+        }
+
+        if (target.status === "UNCONSCIOUS" && target.isEssential && damage > 0) {
+            const deathFailures = isRanged ? 1 : 2;
+            target.deathSaves.failures += deathFailures;
+            logs.push(this.createLogEntry("CUSTOM", {
+                targetId: target.id,
+                description: `${target.name} takes damage while unconscious — ${deathFailures} death save failure(s)! (${target.deathSaves.failures}/3)`,
+            }));
+            if (target.deathSaves.failures >= 3) {
+                target.status = "DEAD";
+                activity.death(this.state.sessionId, `${target.name} dies from death save failures`);
+                logs.push(this.createLogEntry("DEATH", {
+                    targetId: target.id,
+                    description: `${target.name} dies from accumulated death save failures.`,
+                }));
+            }
+        }
+
+        if (target.tempHp > 0) {
+            const absorbed = Math.min(target.tempHp, damage);
+            target.tempHp -= absorbed;
+            damage -= absorbed;
+        }
+
+        target.hp = Math.max(0, target.hp - damage);
+
+        if (damage > 0) {
+            logs.push(this.createLogEntry("DAMAGE", {
+                actorId: attacker.id,
+                targetId: target.id,
+                amount: damage,
+                damageType: attacker.damageType,
+                roll: {
+                    formula: damageFormula,
+                    result: damage,
+                    isCritical,
+                    isFumble: false,
+                },
+                description: `${attacker.name} deals ${damage} ${attacker.damageType} damage to ${target.name}! (${target.hp}/${target.maxHp} HP remaining)`,
+            }));
+
+            activity.damage(this.state.sessionId, `${attacker.name} deals ${damage} ${attacker.damageType} to ${target.name} (${target.hp}/${target.maxHp} HP)`);
+            logs.push(...this.checkConcentrationSave(target.id, damage));
+        } else if (target.immunities.includes(dt)) {
+            logs.push(this.createLogEntry("CUSTOM", {
+                targetId: target.id,
+                description: `${target.name} is immune to ${dt} damage!`,
+            }));
+        }
+
+        if (target.hp <= 0 && target.status === "ALIVE") {
+            if (target.isEssential) {
+                target.status = "UNCONSCIOUS";
+                logs.push(this.createLogEntry("UNCONSCIOUS", {
+                    targetId: target.id,
+                    description: `${target.name} falls unconscious!`,
+                }));
+            } else {
+                target.status = "DEAD";
+                activity.death(this.state.sessionId, `${target.name} is slain!`);
+                logs.push(this.createLogEntry("DEATH", {
+                    targetId: target.id,
+                    description: `${target.name} is slain!`,
+                }));
+            }
+        }
+
+        return logs;
+    }
+
+    private resolveImmediateAttack(
+        attackerId: string,
+        targetId: string,
+        reason: "opportunity" | "readied"
+    ): CombatLogEntry[] {
+        const attacker = this.getEntity(attackerId);
+        const target = this.getEntity(targetId);
+        if (!attacker || !target || attacker.status !== "ALIVE" || target.status === "DEAD") {
+            return [];
+        }
+
+        const isRanged = false;
+        const targetDodging = target.conditions.includes("dodging");
+        const attackerBlinded = this.hasActiveCondition(attacker.id, "blinded");
+        const attackerPoisoned = this.hasActiveCondition(attacker.id, "poisoned");
+        const attackerFrightened = this.hasActiveCondition(attacker.id, "frightened");
+        const attackerInvisible = this.hasActiveCondition(attacker.id, "invisible");
+        const targetProne = this.hasActiveCondition(target.id, "prone");
+        const targetIncapacitated = this.hasActiveCondition(target.id, "stunned")
+            || this.hasActiveCondition(target.id, "paralyzed");
+
+        const hasDisadvantage = targetDodging || attackerBlinded || attackerPoisoned || attackerFrightened;
+        const hasAdvantage = attackerInvisible || targetProne || targetIncapacitated;
+
+        let diceFormula = "1d20";
+        if (hasAdvantage && !hasDisadvantage) {
+            diceFormula = "2d20kh1";
+        } else if (hasDisadvantage && !hasAdvantage) {
+            diceFormula = "2d20kl1";
+        }
+
+        const attackRoll = this.rollFn(diceFormula);
+        const totalAttack = attackRoll.total + attacker.attackModifier;
+        const isCritical = targetIncapacitated || attackRoll.isCritical;
+        const isFumble = attackRoll.isFumble && !targetIncapacitated;
+        const isHit = isCritical || (!isFumble && totalAttack >= target.baseAC);
+
+        const logs: CombatLogEntry[] = [];
+        logs.push(this.createLogEntry("ATTACK_ROLL", {
+            actorId: attacker.id,
+            targetId: target.id,
+            roll: {
+                formula: `${diceFormula}+${attacker.attackModifier}`,
+                result: totalAttack,
+                isCritical,
+                isFumble,
+            },
+            success: isHit,
+            description: `${attacker.name} makes a ${reason} attack against ${target.name}${isHit ? " and hits" : " but misses"}! (${totalAttack} vs AC ${target.baseAC})`,
+        }));
+
+        activity.roll(this.state.sessionId, `${attacker.name} ${reason} attack: ${totalAttack} vs AC ${target.baseAC}`);
+
+        if (!isHit) {
+            return logs;
+        }
+
+        const damageFormula = isCritical
+            ? this.doubleDiceFormula(attacker.damageFormula)
+            : attacker.damageFormula;
+        const damageRoll = this.rollFn(damageFormula);
+        logs.push(...this.applyWeaponDamage(attacker, target, damageRoll.total, damageFormula, isCritical, isRanged));
+        return logs;
+    }
+
+    private triggerOpportunityAttacks(movingEntityId: string): CombatLogEntry[] {
+        const movingEntity = this.getEntity(movingEntityId);
+        if (!movingEntity || movingEntity.conditions.includes("disengaging")) {
+            return [];
+        }
+
+        const attackers = this.getEngagedHostiles(movingEntityId);
+        const logs: CombatLogEntry[] = [];
+
+        for (const attacker of attackers) {
+            if (!this.consumeReaction(attacker.id)) continue;
+
+            logs.push(this.createLogEntry("ACTION", {
+                actorId: attacker.id,
+                targetId: movingEntityId,
+                description: `${attacker.name} makes an opportunity attack against ${movingEntity.name}!`,
+            }));
+            logs.push(...this.resolveImmediateAttack(attacker.id, movingEntityId, "opportunity"));
+        }
+
+        return logs;
+    }
+
+    private parseReadiedCondition(condition: string): {
+        readiedAction: string;
+        trigger: string;
+        targetId?: string;
+    } | null {
+        if (!condition.startsWith("readied:")) return null;
+
+        const targetMarker = ":target:";
+        const markerIndex = condition.lastIndexOf(targetMarker);
+        const targetId = markerIndex >= 0 ? condition.slice(markerIndex + targetMarker.length) : undefined;
+        const body = markerIndex >= 0 ? condition.slice(0, markerIndex) : condition;
+        const parts = body.split(":");
+        if (parts.length < 3) return null;
+
+        return {
+            readiedAction: parts[1],
+            trigger: parts.slice(2).join(":"),
+            targetId,
+        };
+    }
+
+    private triggerReadiedActions(
+        event: "turn_start" | "enter_melee",
+        triggeringEntityId: string
+    ): CombatLogEntry[] {
+        const logs: CombatLogEntry[] = [];
+
+        for (const entity of this.state.entities) {
+            if (entity.status !== "ALIVE") continue;
+
+            const readiedCondition = entity.conditions.find(c => c.startsWith("readied:"));
+            if (!readiedCondition) continue;
+
+            const parsed = this.parseReadiedCondition(readiedCondition);
+            if (!parsed) continue;
+            if (parsed.readiedAction !== "ATTACK") continue;
+            if (parsed.targetId && parsed.targetId !== triggeringEntityId) continue;
+
+            const triggerText = parsed.trigger.toLowerCase();
+            const expectsReachTrigger =
+                triggerText.includes("reach") ||
+                triggerText.includes("close") ||
+                triggerText.includes("near") ||
+                triggerText.includes("within");
+
+            if (event === "enter_melee" && !expectsReachTrigger) continue;
+            if (event === "turn_start" && expectsReachTrigger) continue;
+
+            const target = this.getEntity(parsed.targetId ?? triggeringEntityId);
+            if (!target) continue;
+            if (!entity.isRanged && this.getRangeBetween(entity.id, target.id) !== RangeBand.MELEE) {
+                continue;
+            }
+            if (!this.consumeReaction(entity.id)) continue;
+
+            entity.conditions = entity.conditions.filter(c => c !== readiedCondition);
+
+            logs.push(this.createLogEntry("ACTION", {
+                actorId: entity.id,
+                targetId: target.id,
+                description: `${entity.name}'s readied attack triggers against ${target.name}!`,
+            }));
+            logs.push(...this.resolveImmediateAttack(entity.id, target.id, "readied"));
+        }
+
+        return logs;
+    }
+
+    // ===========================================================================
     // ACTION PROCESSING (Chunk 3 will expand this)
     // ===========================================================================
 
@@ -974,6 +1422,9 @@ export class CombatEngineV2 {
                 }
                 return this.processAttack(attackPayload);
             }
+
+            case "MOVE":
+                return this.processMove(payload as MovePayload);
 
             case "DODGE":
                 return this.processDodge(payload as DodgePayload);
@@ -999,6 +1450,9 @@ export class CombatEngineV2 {
             case "USE_ITEM":
                 return this.processUseItem(payload as UseItemPayload);
 
+            case "OPPORTUNITY_ATTACK":
+                return this.processOpportunityAttack(payload as any);
+
             case "CAST_SPELL":
                 return this.processCastSpell(payload as CastSpellPayload);
 
@@ -1022,6 +1476,79 @@ export class CombatEngineV2 {
     // ===========================================================================
     // ACTION HANDLERS — D&D 5e standard actions
     // ===========================================================================
+
+    /**
+     * Move — shift one range band toward or away from a target.
+     */
+    private processMove(payload: MovePayload): ActionResult {
+        const entity = this.getEntity(payload.entityId);
+        const target = this.getEntity(payload.targetId);
+        if (!entity) return this.actionError(`Entity not found: ${payload.entityId}`);
+        if (!target) return this.actionError(`Target not found: ${payload.targetId}`);
+        const currentRange = this.getRangeBetween(entity.id, target.id);
+
+        if (payload.direction === "toward") {
+            if (currentRange === RangeBand.MELEE) {
+                return this.actionError(`${entity.name} is already in melee with ${target.name}`);
+            }
+        } else {
+            if (currentRange === RangeBand.FAR) {
+                return this.actionError(`${entity.name} is already far from ${target.name}`);
+            }
+        }
+
+        if (!this.consumeMovementStep(entity)) {
+            return this.actionError("No movement remaining this turn");
+        }
+
+        const logs: CombatLogEntry[] = [];
+
+        if (payload.direction === "toward") {
+            const newRange = this.getCloserRange(currentRange);
+            this.setRangeBetween(entity.id, target.id, newRange);
+            logs.push(this.createLogEntry("MOVEMENT", {
+                actorId: entity.id,
+                targetId: target.id,
+                description: `${entity.name} moves toward ${target.name}, closing from ${currentRange === RangeBand.FAR ? "far" : "near"} to ${newRange === RangeBand.MELEE ? "melee" : "near"} range.`,
+            }));
+
+            if (newRange === RangeBand.MELEE) {
+                logs.push(...this.triggerReadiedActions("enter_melee", entity.id));
+            }
+        } else {
+            // Trigger opportunity attacks before updating ranges (they check current melee)
+            if (currentRange === RangeBand.MELEE) {
+                logs.push(...this.triggerOpportunityAttacks(entity.id));
+            }
+
+            // Move one band farther from the intended target
+            const newRange = this.getFartherRange(currentRange);
+            this.setRangeBetween(entity.id, target.id, newRange);
+
+            // If leaving melee, also break engagement with all other melee hostiles
+            if (currentRange === RangeBand.MELEE) {
+                for (const hostile of this.getEngagedHostiles(entity.id)) {
+                    if (hostile.id !== target.id) {
+                        this.setRangeBetween(entity.id, hostile.id, RangeBand.NEAR);
+                    }
+                }
+            }
+
+            const rangeName = newRange === RangeBand.FAR ? "far" : "near";
+            logs.push(this.createLogEntry("MOVEMENT", {
+                actorId: entity.id,
+                targetId: target.id,
+                description: `${entity.name} moves away from ${target.name}, opening the distance to ${rangeName} range.`,
+            }));
+        }
+
+        activity.system(this.state.sessionId, `${entity.name} moves ${payload.direction} ${target.name}`);
+        this.state.updatedAt = Date.now();
+
+        const turnLogs = this.autoEndTurnIfExhausted(entity);
+        logs.push(...turnLogs);
+        return { success: true, logs, newState: this.getState() as BattleState };
+    }
 
     /**
      * Dodge — Until your next turn, attacks against you have disadvantage
@@ -1071,9 +1598,10 @@ export class CombatEngineV2 {
             return this.actionError(`No ${cost} available for Dash`);
         }
 
-        // In theater-of-mind, "Dash" means the entity can move an extra range band.
-        // The movement system (range bands) will check this flag.
-        // For now we just log it — range band movement is a future enhancement.
+        if (!entity.conditions.includes("dashing")) {
+            entity.conditions.push("dashing");
+        }
+
         const logs: CombatLogEntry[] = [];
         logs.push(this.createLogEntry("ACTION", {
             actorId: entity.id,
@@ -1086,6 +1614,36 @@ export class CombatEngineV2 {
         const turnLogs = this.autoEndTurnIfExhausted(entity);
         logs.push(...turnLogs);
 
+        return { success: true, logs, newState: this.getState() as BattleState };
+    }
+
+    /**
+     * Explicit opportunity attack entry point.
+     * Most Phase A reactions are fired automatically from movement events,
+     * but keeping the action concrete avoids the "advertised but not implemented" gap.
+     */
+    private processOpportunityAttack(payload: { attackerId: string; targetId: string }): ActionResult {
+        const attacker = this.getEntity(payload.attackerId);
+        const target = this.getEntity(payload.targetId);
+        if (!attacker) return this.actionError(`Attacker not found: ${payload.attackerId}`);
+        if (!target) return this.actionError(`Target not found: ${payload.targetId}`);
+        if (this.getRangeBetween(attacker.id, target.id) !== RangeBand.MELEE) {
+            return this.actionError(`${target.name} is not leaving ${attacker.name}'s reach`);
+        }
+        if (!this.consumeReaction(attacker.id)) {
+            return this.actionError(`${attacker.name} has no reaction available`);
+        }
+
+        const logs = [
+            this.createLogEntry("ACTION", {
+                actorId: attacker.id,
+                targetId: target.id,
+                description: `${attacker.name} makes an opportunity attack against ${target.name}!`,
+            }),
+            ...this.resolveImmediateAttack(attacker.id, target.id, "opportunity"),
+        ];
+
+        this.state.updatedAt = Date.now();
         return { success: true, logs, newState: this.getState() as BattleState };
     }
 
@@ -1304,6 +1862,21 @@ export class CombatEngineV2 {
             };
         }
 
+        const isRangedAttack = payload.isRanged || attacker.isRanged || false;
+        const currentRange = this.getRangeBetween(attacker.id, target.id);
+        if (!isRangedAttack) {
+            const canReachMelee = currentRange === RangeBand.MELEE
+                || (currentRange === RangeBand.NEAR && this.canSpendMovementStep(attacker));
+            if (!canReachMelee) {
+                return {
+                    success: false,
+                    logs: [],
+                    newState: this.getState() as BattleState,
+                    error: `${target.name} is too far away to attack in melee right now`,
+                };
+            }
+        }
+
         // Engine-level dodge check: if target has 'dodging' internal flag, force disadvantage
         const targetIsDodging = target.conditions?.some?.(
             (c: any) => (typeof c === 'string' ? c === 'dodging' : c.name === 'dodging')
@@ -1312,11 +1885,12 @@ export class CombatEngineV2 {
         const attackerCondDisadv = this.hasActiveCondition(attacker.id, 'blinded')
             || this.hasActiveCondition(attacker.id, 'poisoned')
             || this.hasActiveCondition(attacker.id, 'frightened')
-            || (this.hasActiveCondition(attacker.id, 'prone') && payload.isRanged);
+            || (this.hasActiveCondition(attacker.id, 'prone') && isRangedAttack);
         const targetCondAdv = this.hasActiveCondition(target.id, 'stunned')
             || this.hasActiveCondition(target.id, 'paralyzed')
-            || (!payload.isRanged && this.hasActiveCondition(target.id, 'prone'));
-        const effectiveDisadvantage = (payload.disadvantage || false) || targetIsDodging || attackerCondDisadv;
+            || (!isRangedAttack && this.hasActiveCondition(target.id, 'prone'));
+        const rangedInMeleeDisadvantage = isRangedAttack && this.getEngagedHostiles(attacker.id).length > 0;
+        const effectiveDisadvantage = (payload.disadvantage || false) || targetIsDodging || attackerCondDisadv || rangedInMeleeDisadvantage;
         const effectiveAdvantage = (payload.advantage || false) || this.hasActiveCondition(attacker.id, 'invisible') || targetCondAdv;
 
         this.state.phase = 'AWAIT_ATTACK_ROLL';
@@ -1440,6 +2014,39 @@ export class CombatEngineV2 {
             };
         }
 
+        const isRangedAttack = payload.isRanged || attacker.isRanged || false;
+        const currentRange = this.getRangeBetween(attacker.id, target.id);
+
+        if (!isRangedAttack) {
+            if (currentRange === RangeBand.FAR) {
+                return {
+                    success: false,
+                    logs: [],
+                    newState: this.getState() as BattleState,
+                    error: `${target.name} is too far away for a melee attack`,
+                };
+            }
+
+            if (currentRange === RangeBand.NEAR) {
+                if (!this.consumeMovementStep(attacker)) {
+                    return {
+                        success: false,
+                        logs: [],
+                        newState: this.getState() as BattleState,
+                        error: `${attacker.name} has no movement left to close into melee`,
+                    };
+                }
+
+                this.setRangeBetween(attacker.id, target.id, RangeBand.MELEE);
+                logs.push(this.createLogEntry("MOVEMENT", {
+                    actorId: attacker.id,
+                    targetId: target.id,
+                    description: `${attacker.name} closes the distance to ${target.name}, moving into melee.`,
+                }));
+                logs.push(...this.triggerReadiedActions("enter_melee", attacker.id));
+            }
+        }
+
         // Engine-level dodge check: if target has 'dodging' internal flag, force disadvantage
         const targetDodging = target.conditions?.some?.(
             (c: any) => (typeof c === 'string' ? c === 'dodging' : c.name === 'dodging')
@@ -1451,26 +2058,28 @@ export class CombatEngineV2 {
         const attackerFrightened = this.hasActiveCondition(attacker.id, 'frightened');
         const attackerInvisible = this.hasActiveCondition(attacker.id, 'invisible');
         // Prone attacker: ranged attacks have disadvantage, melee attacks unaffected as attacker
-        const attackerProne = this.hasActiveCondition(attacker.id, 'prone') && payload.isRanged;
+        const attackerProne = this.hasActiveCondition(attacker.id, 'prone') && isRangedAttack;
 
         // Active condition effects on target (Stage 5)
         // Prone target: melee attacks have advantage, ranged attacks have disadvantage
         const targetProne = this.hasActiveCondition(target.id, 'prone');
-        const targetProneAdv = targetProne && !payload.isRanged;
-        const targetProneDisadv = targetProne && payload.isRanged;
+        const targetProneAdv = targetProne && !isRangedAttack;
+        const targetProneDisadv = targetProne && isRangedAttack;
         // Stunned/paralyzed: attacks against them have advantage; auto-crit if within 5ft (melee)
         const targetStunned = this.hasActiveCondition(target.id, 'stunned');
         const targetParalyzed = this.hasActiveCondition(target.id, 'paralyzed');
         const targetIncapacitated = targetStunned || targetParalyzed;
+        const rangedInMeleeDisadvantage = isRangedAttack && this.getEngagedHostiles(attacker.id).length > 0;
 
         const hasDisadvantage = (payload.disadvantage || false) || targetDodging
             || attackerBlinded || attackerPoisoned || attackerFrightened || attackerProne
+            || rangedInMeleeDisadvantage
             || targetProneDisadv;
         const hasAdvantage = (payload.advantage || false) || attackerInvisible
             || targetProneAdv || targetIncapacitated;
 
         // Auto-crit: attacks against stunned/paralyzed within 5ft (melee) always crit
-        const forceAutoCrit = targetIncapacitated && !payload.isRanged;
+        const forceAutoCrit = targetIncapacitated && !isRangedAttack;
 
         // Determine dice formula (advantage/disadvantage)
         let diceFormula = "1d20";
@@ -1598,6 +2207,7 @@ export class CombatEngineV2 {
                 targetId: target.id,
                 isCritical,
                 weaponName: payload.weaponName,
+                isRanged: isRangedAttack,
                 damageFormula,
                 createdAt: Date.now(),
             };
@@ -1615,95 +2225,7 @@ export class CombatEngineV2 {
 
         // For ENEMY attacks: auto-roll damage immediately
         const damageRoll = this.rollFn(damageFormula);
-        const rawDamage = Math.max(1, damageRoll.total);  // Minimum 1 before modifiers
-
-        // Apply damage modifiers: immunity > resistance > vulnerability (Stage 5)
-        const dt = attacker.damageType;
-        let damage: number;
-        if (target.immunities.includes(dt)) {
-            damage = 0;
-        } else {
-            damage = rawDamage;
-            if (target.vulnerabilities.includes(dt)) damage *= 2;
-            if (target.resistances.includes(dt)) damage = Math.floor(damage / 2);
-        }
-
-        // Auto-fail death save if target is already unconscious and takes damage (Stage 5)
-        if (target.status === 'UNCONSCIOUS' && target.isEssential && damage > 0) {
-            // Melee = 2 failures, ranged = 1 failure
-            const deathFailures = payload.isRanged ? 1 : 2;
-            target.deathSaves.failures += deathFailures;
-            logs.push(this.createLogEntry("CUSTOM", {
-                targetId: target.id,
-                description: `${target.name} takes damage while unconscious — ${deathFailures} death save failure(s)! (${target.deathSaves.failures}/3)`,
-            }));
-            if (target.deathSaves.failures >= 3) {
-                target.status = 'DEAD';
-                activity.death(this.state.sessionId, `${target.name} dies from death save failures`);
-                logs.push(this.createLogEntry("DEATH", {
-                    targetId: target.id,
-                    description: `${target.name} dies from accumulated death save failures.`,
-                }));
-            }
-        }
-
-        // Absorb damage through tempHp first (Stage 5)
-        if (target.tempHp > 0) {
-            const absorbed = Math.min(target.tempHp, damage);
-            target.tempHp -= absorbed;
-            damage -= absorbed;
-        }
-
-        // Apply remaining damage to HP
-        target.hp = Math.max(0, target.hp - damage);
-
-        if (damage > 0) {
-            logs.push(this.createLogEntry("DAMAGE", {
-                actorId: attacker.id,
-                targetId: target.id,
-                amount: damage,
-                damageType: attacker.damageType,
-                roll: {
-                    formula: damageFormula,
-                    result: damage,
-                    isCritical: false,
-                    isFumble: false,
-                },
-                description: `${attacker.name} deals ${damage} ${attacker.damageType} damage to ${target.name}! (${target.hp}/${target.maxHp} HP remaining)`,
-            }));
-
-            // Activity log for damage with formula breakdown
-            const diceResults = damageRoll.rolls.length > 0 ? `[${damageRoll.rolls.join(',')}]` : damageRoll.total;
-            activity.damage(this.state.sessionId, `${attacker.name} deals ${damage} ${attacker.damageType} to ${target.name} (${damageFormula} → ${diceResults} = ${damage}) (${target.hp}/${target.maxHp} HP)`);
-
-            // Concentration check (Stage 6) — if target is concentrating, they must save
-            logs.push(...this.checkConcentrationSave(target.id, damage));
-        } else if (target.immunities.includes(dt)) {
-            logs.push(this.createLogEntry("CUSTOM", {
-                targetId: target.id,
-                description: `${target.name} is immune to ${dt} damage!`,
-            }));
-        }
-
-        // Check for death/unconscious (only for entities that weren't already unconscious)
-        if (target.hp <= 0 && target.status === 'ALIVE') {
-            if (target.isEssential) {
-                // Players go unconscious
-                target.status = "UNCONSCIOUS";
-                logs.push(this.createLogEntry("UNCONSCIOUS", {
-                    targetId: target.id,
-                    description: `${target.name} falls unconscious!`,
-                }));
-            } else {
-                // Monsters die
-                target.status = "DEAD";
-                activity.death(this.state.sessionId, `${target.name} is slain!`);
-                logs.push(this.createLogEntry("DEATH", {
-                    targetId: target.id,
-                    description: `${target.name} is slain!`,
-                }));
-            }
-        }
+        logs.push(...this.applyWeaponDamage(attacker, target, damageRoll.total, damageFormula, isCritical, isRangedAttack));
 
         this.state.updatedAt = Date.now();
 
@@ -1763,87 +2285,14 @@ export class CombatEngineV2 {
             };
         }
 
-        // Apply damage modifiers: immunity > resistance > vulnerability (Stage 5)
-        const rawDamage = Math.max(1, damageRoll);
-        const dt = attacker.damageType;
-        let damage: number;
-        if (target.immunities.includes(dt)) {
-            damage = 0;
-        } else {
-            damage = rawDamage;
-            if (target.vulnerabilities.includes(dt)) damage *= 2;
-            if (target.resistances.includes(dt)) damage = Math.floor(damage / 2);
-        }
-
-        // Auto-fail death save if target is already unconscious and takes damage (Stage 5)
-        if (target.status === 'UNCONSCIOUS' && target.isEssential && damage > 0) {
-            target.deathSaves.failures += 1; // player attacks assume ranged/5ft-ambiguous → 1 failure
-            logs.push(this.createLogEntry("CUSTOM", {
-                targetId: target.id,
-                description: `${target.name} takes damage while unconscious — 1 death save failure! (${target.deathSaves.failures}/3)`,
-            }));
-            if (target.deathSaves.failures >= 3) {
-                target.status = 'DEAD';
-                activity.death(this.state.sessionId, `${target.name} dies from death save failures`);
-                logs.push(this.createLogEntry("DEATH", {
-                    targetId: target.id,
-                    description: `${target.name} dies from accumulated death save failures.`,
-                }));
-            }
-        }
-
-        // Absorb damage through tempHp first (Stage 5)
-        if (target.tempHp > 0) {
-            const absorbed = Math.min(target.tempHp, damage);
-            target.tempHp -= absorbed;
-            damage -= absorbed;
-        }
-
-        target.hp = Math.max(0, target.hp - damage);
-
-        if (damage > 0) {
-            logs.push(this.createLogEntry("DAMAGE", {
-                actorId: attacker.id,
-                targetId: target.id,
-                amount: damage,
-                damageType: attacker.damageType,
-                roll: {
-                    formula: pending.damageFormula,
-                    result: damage,
-                    isCritical: pending.isCritical,
-                    isFumble: false,
-                },
-                description: `${attacker.name} deals ${damage} ${attacker.damageType} damage to ${target.name}! (${target.hp}/${target.maxHp} HP remaining)`,
-            }));
-
-            activity.damage(this.state.sessionId, `${attacker.name} deals ${damage} ${attacker.damageType} to ${target.name} (player rolled ${rawDamage}) (${target.hp}/${target.maxHp} HP)`);
-
-            // Concentration check (Stage 6) — if target is concentrating, they must save
-            logs.push(...this.checkConcentrationSave(target.id, damage));
-        } else if (target.immunities.includes(dt)) {
-            logs.push(this.createLogEntry("CUSTOM", {
-                targetId: target.id,
-                description: `${target.name} is immune to ${dt} damage!`,
-            }));
-        }
-
-        // Check for death/unconscious (only for entities that weren't already unconscious)
-        if (target.hp <= 0 && target.status === 'ALIVE') {
-            if (target.isEssential) {
-                target.status = "UNCONSCIOUS";
-                logs.push(this.createLogEntry("UNCONSCIOUS", {
-                    targetId: target.id,
-                    description: `${target.name} falls unconscious!`,
-                }));
-            } else {
-                target.status = "DEAD";
-                activity.death(this.state.sessionId, `${target.name} is slain!`);
-                logs.push(this.createLogEntry("DEATH", {
-                    targetId: target.id,
-                    description: `${target.name} is slain!`,
-                }));
-            }
-        }
+        logs.push(...this.applyWeaponDamage(
+            attacker,
+            target,
+            damageRoll,
+            pending.damageFormula,
+            pending.isCritical,
+            pending.isRanged ?? false
+        ));
 
         // Clear pending attack and resume normal phase
         this.state.pendingAttack = undefined;
@@ -1959,6 +2408,13 @@ export class CombatEngineV2 {
         for (const cond of entity.activeConditions) {
             if (cond.duration === undefined) {
                 remaining.push(cond); // permanent — keep it
+                continue;
+            }
+            // Conditions applied earlier in the current round should survive until
+            // this entity reaches a later turn cycle. Otherwise, same-round effects
+            // like Hold Person would expire before the target meaningfully suffers them.
+            if (cond.appliedAtRound === this.state.round) {
+                remaining.push(cond);
                 continue;
             }
             const newDuration = cond.duration - 1;
@@ -2176,6 +2632,13 @@ export class CombatEngineV2 {
 
         // Resolve targets (area spells can have multiple targets)
         const targetIds = payload.targetIds;
+
+        for (const targetId of targetIds) {
+            if (!this.isSpellInRange(caster, targetId, spell.range)) {
+                const target = this.getEntity(targetId);
+                return this.actionError(`${target?.name ?? "Target"} is out of range for ${spell.name}`);
+            }
+        }
 
         // If spell has no effect (no damage, no healing, no conditions), just log and end
         if (!spell.damageFormula && !spell.healingFormula && spell.conditions.length === 0) {
@@ -2415,6 +2878,7 @@ export class CombatEngineV2 {
             // Build a minimal Spell object for applySpellEffect
             const spellForEffect = SpellSchema.parse({
                 name: pending.spellName,
+                level: 0,
                 halfOnSave: pending.halfOnSave,
                 damageFormula: pending.damageFormula,
                 damageType: pending.damageType,

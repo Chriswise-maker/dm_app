@@ -59,6 +59,9 @@ export interface ExtractedContext {
 
   // Narrative summary
   recentEvent?: string; // One-sentence summary of what just happened
+
+  // Extensible session-scoped mechanical state
+  worldState?: Record<string, any>;
 }
 
 /**
@@ -377,6 +380,19 @@ export function mergeContext(
   // Keep most recent event
   if (newContext.recentEvent) {
     merged.recentEvent = newContext.recentEvent;
+  }
+
+  if (newContext.worldState || merged.worldState) {
+    const existingWorld = merged.worldState || {};
+    const incomingWorld = newContext.worldState || {};
+    merged.worldState = {
+      ...existingWorld,
+      ...incomingWorld,
+      characterResources: {
+        ...(existingWorld.characterResources || {}),
+        ...(incomingWorld.characterResources || {}),
+      },
+    };
   }
 
   return merged;

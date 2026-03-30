@@ -53,11 +53,15 @@ export async function handleAutoCombatInitiation(
         // 2. Fetch and convert ALL session players to CombatEntities
         // Issue 4 Fix: Query all characters in the session, not just the active one
         const sessionCharacters = await db.getSessionCharacters(sessionId);
+        const storedContext = await db.getSessionContext(sessionId);
+        const parsedContext = db.parseSessionContext(storedContext);
+        const { getCharacterResourceState } = await import('../rest');
         console.log(`[AutoCombat] Found ${sessionCharacters.length} characters in session`);
 
         for (const character of sessionCharacters) {
             const stats = JSON.parse(character.stats || '{}');
             const dexMod = Math.floor(((stats.dex || 10) - 10) / 2);
+            const resourceState = getCharacterResourceState(parsedContext.worldState, character);
 
             const playerEntity = createPlayerEntity(
                 `player-${character.id}`,
@@ -68,6 +72,8 @@ export async function handleAutoCombatInitiation(
                 0, // Initiative 0 triggers roll
                 {
                     initiativeModifier: dexMod,
+                    abilityScores: stats,
+                    spellSlots: resourceState.spellSlotsCurrent,
                     dbCharacterId: character.id,
                 }
             );
@@ -133,14 +139,34 @@ export async function syncCombatStateToDb(sessionId: number): Promise<void> {
         if (!engine) return;
 
         const db = await import('../db');
+        const { getCharacterResourceState, setCharacterResourceState } = await import('../rest');
         const state = engine.getState();
+        const storedContext = await db.getSessionContext(sessionId);
+        const parsedContext = db.parseSessionContext(storedContext);
+        let worldState = parsedContext.worldState;
 
         for (const entity of state.entities) {
             if (entity.type === 'player' && entity.dbCharacterId) {
                 console.log(`[Sync] Syncing HP for ${entity.name}: ${entity.hp}/${entity.maxHp}`);
                 await db.updateCharacterHP(entity.dbCharacterId, entity.hp);
+
+                const character = await db.getCharacter(entity.dbCharacterId);
+                if (character) {
+                    const resourceState = getCharacterResourceState(worldState, character);
+                    worldState = setCharacterResourceState(worldState, character.id, {
+                        ...resourceState,
+                        spellSlotsCurrent: Object.keys(entity.spellSlots ?? {}).length > 0
+                            ? { ...entity.spellSlots }
+                            : resourceState.spellSlotsCurrent,
+                    });
+                }
             }
         }
+
+        await db.upsertSessionContext(sessionId, {
+            ...parsedContext,
+            worldState,
+        });
     } catch (error) {
         console.error('[Sync] Failed to sync combat state to DB:', error);
     }

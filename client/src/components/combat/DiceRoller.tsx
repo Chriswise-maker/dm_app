@@ -10,7 +10,7 @@ import { rollFormula, parseFormula } from '@/lib/dice-utils';
 // ---------------------------------------------------------------------------
 
 export interface PendingRoll {
-  type: 'initiative' | 'attack' | 'damage';
+  type: 'initiative' | 'attack' | 'damage' | 'save' | 'deathSave';
   formula: string;       // e.g. "1d20", "2d20" (adv/disadv), "1d8+3", "2d8+3" (critical)
   modifier?: number;     // attack modifier shown separately (e.g. +5 for attack rolls)
   advantage?: boolean;   // roll 2d20 keep highest

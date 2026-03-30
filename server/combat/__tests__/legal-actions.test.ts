@@ -171,7 +171,7 @@ describe("getLegalActions", () => {
 
         expect(attack).toBeDefined();
         expect(attack!.targetName).toBe("Goblin");
-        expect(attack!.description).toBe("Attack Goblin");
+        expect(attack!.description).toBe("Move into melee and attack Goblin");
     });
 
     it("should not let players attack other players", () => {

@@ -379,7 +379,7 @@ export async function upsertSessionContext(
     relationships: context.relationships ? JSON.stringify(context.relationships) : null,
     factions: context.factions ? JSON.stringify(context.factions) : null,
     quests: context.quests ? JSON.stringify(context.quests) : null,
-    worldState: null, // Reserved for future use
+    worldState: context.worldState ? JSON.stringify(context.worldState) : null,
     campaignSummary: null, // Will be generated separately
     recentEvents: context.recentEvent ? JSON.stringify([context.recentEvent]) : null,
   };
@@ -419,6 +419,7 @@ export function parseSessionContext(stored: SessionContext | undefined): Partial
     factions: stored.factions ? JSON.parse(stored.factions) : undefined,
     quests: stored.quests ? JSON.parse(stored.quests) : undefined,
     recentEvent: stored.recentEvents ? JSON.parse(stored.recentEvents)[0] : undefined,
+    worldState: stored.worldState ? JSON.parse(stored.worldState) : undefined,
   };
 }
 
@@ -629,4 +630,3 @@ export async function deleteCombatEngineState(sessionId: number): Promise<void> 
     })
     .where(eq(combatState.sessionId, sessionId));
 }
-

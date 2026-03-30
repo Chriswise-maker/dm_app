@@ -304,6 +304,161 @@ export const appRouter = router({
       }),
   }),
 
+  mechanics: router({
+    skillCheck: protectedProcedure
+      .input(z.object({
+        characterId: z.number(),
+        ability: z.enum(['str', 'dex', 'con', 'int', 'wis', 'cha']).optional(),
+        skill: z.enum([
+          'acrobatics',
+          'animal_handling',
+          'arcana',
+          'athletics',
+          'deception',
+          'history',
+          'insight',
+          'intimidation',
+          'investigation',
+          'medicine',
+          'nature',
+          'perception',
+          'performance',
+          'persuasion',
+          'religion',
+          'sleight_of_hand',
+          'stealth',
+          'survival',
+        ]).optional(),
+        dc: z.number().int().min(1).max(30),
+        advantage: z.boolean().optional(),
+        disadvantage: z.boolean().optional(),
+        rawRoll: z.number().int().min(1).max(20).optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await import('./db');
+        const { resolveSkillCheck } = await import('./skill-check');
+
+        const character = await db.getCharacter(input.characterId);
+        if (!character) throw new Error('Character not found');
+
+        const session = await db.getSession(character.sessionId);
+        if (!session || session.userId !== ctx.user.id) throw new Error('Unauthorized');
+
+        const result = resolveSkillCheck({
+          characterName: character.name,
+          stats: JSON.parse(character.stats),
+          level: character.level,
+          dc: input.dc,
+          ability: input.ability,
+          skill: input.skill,
+          proficientSkills: [],
+          advantage: input.advantage,
+          disadvantage: input.disadvantage,
+          rawRoll: input.rawRoll,
+        });
+
+        await db.saveMessage({
+          sessionId: character.sessionId,
+          characterName: 'DM',
+          content: result.summary,
+          isDm: 1,
+        });
+
+        return result;
+      }),
+
+    shortRest: protectedProcedure
+      .input(z.object({
+        sessionId: z.number(),
+        hitDiceToSpend: z.number().int().min(1).max(20).optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await import('./db');
+        const { CombatEngineManager } = await import('./combat/combat-engine-manager');
+
+        const session = await db.getSession(input.sessionId);
+        if (!session || session.userId !== ctx.user.id) throw new Error('Unauthorized');
+        const { getCharacterResourceState, resolveShortRest, setCharacterResourceState } = await import('./rest');
+
+        const activeEngine = CombatEngineManager.get(input.sessionId);
+        const enginePhase = activeEngine?.getState().phase;
+        if (enginePhase && enginePhase !== 'IDLE' && enginePhase !== 'RESOLVED') {
+          throw new Error('Cannot rest during combat');
+        }
+
+        const characters = await db.getSessionCharacters(input.sessionId);
+        const storedContext = await db.getSessionContext(input.sessionId);
+        const parsedContext = db.parseSessionContext(storedContext);
+        let worldState = parsedContext.worldState;
+        const results: Array<{ characterId: number; summary: string }> = [];
+
+        for (const character of characters) {
+          const resourceState = getCharacterResourceState(worldState, character);
+          const result = resolveShortRest(character, resourceState, { hitDiceToSpend: input.hitDiceToSpend });
+          await db.updateCharacterHP(character.id, result.hpAfter);
+          worldState = setCharacterResourceState(worldState, character.id, result.resourceState);
+          results.push({ characterId: character.id, summary: result.summary });
+        }
+
+        await db.upsertSessionContext(input.sessionId, {
+          ...parsedContext,
+          worldState,
+          recentEvent: 'The party takes a short rest.',
+        });
+
+        return {
+          success: true,
+          summary: results.map(r => r.summary).join('\n'),
+          results,
+        };
+      }),
+
+    longRest: protectedProcedure
+      .input(z.object({
+        sessionId: z.number(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await import('./db');
+        const { CombatEngineManager } = await import('./combat/combat-engine-manager');
+        const { getCharacterResourceState, resolveLongRest, setCharacterResourceState } = await import('./rest');
+
+        const session = await db.getSession(input.sessionId);
+        if (!session || session.userId !== ctx.user.id) throw new Error('Unauthorized');
+
+        const activeEngine = CombatEngineManager.get(input.sessionId);
+        const enginePhase = activeEngine?.getState().phase;
+        if (enginePhase && enginePhase !== 'IDLE' && enginePhase !== 'RESOLVED') {
+          throw new Error('Cannot rest during combat');
+        }
+
+        const characters = await db.getSessionCharacters(input.sessionId);
+        const storedContext = await db.getSessionContext(input.sessionId);
+        const parsedContext = db.parseSessionContext(storedContext);
+        let worldState = parsedContext.worldState;
+        const results: Array<{ characterId: number; summary: string }> = [];
+
+        for (const character of characters) {
+          const resourceState = getCharacterResourceState(worldState, character);
+          const result = resolveLongRest(character, resourceState);
+          await db.updateCharacterHP(character.id, result.hpAfter);
+          worldState = setCharacterResourceState(worldState, character.id, result.resourceState);
+          results.push({ characterId: character.id, summary: result.summary });
+        }
+
+        await db.upsertSessionContext(input.sessionId, {
+          ...parsedContext,
+          worldState,
+          recentEvent: 'The party completes a long rest.',
+        });
+
+        return {
+          success: true,
+          summary: results.map(r => r.summary).join('\n'),
+          results,
+        };
+      }),
+  }),
+
   messages: router({
     list: protectedProcedure
       .input(z.object({ sessionId: z.number(), limit: z.number().default(50) }))
@@ -1200,6 +1355,45 @@ export const appRouter = router({
               prompt: `${attacker?.name} rolls damage against ${target?.name} (${state.pendingAttack.damageFormula}${state.pendingAttack.isCritical ? ' — CRITICAL!' : ''})`,
             };
           }
+          if (state.phase === 'AWAIT_SAVE_ROLL' && state.pendingSpellSave) {
+            const nextEntityId = state.pendingSpellSave.pendingTargetIds[0];
+            const target = engine.getEntity(nextEntityId);
+            const caster = engine.getEntity(state.pendingSpellSave.casterId);
+            const saveStat = state.pendingSpellSave.saveStat;
+            const scoreMap = target?.abilityScores
+              ? {
+                  STR: target.abilityScores.str,
+                  DEX: target.abilityScores.dex,
+                  CON: target.abilityScores.con,
+                  INT: target.abilityScores.int,
+                  WIS: target.abilityScores.wis,
+                  CHA: target.abilityScores.cha,
+                }
+              : null;
+            const score = scoreMap?.[saveStat] ?? 10;
+            const modifier = Math.floor((score - 10) / 2);
+            return {
+              type: 'save' as const,
+              formula: '1d20',
+              modifier,
+              entityId: nextEntityId,
+              entityName: target?.name || 'Unknown',
+              targetName: caster?.name || 'Unknown',
+              prompt: `${target?.name || 'Player'} must make a ${saveStat} save vs DC ${state.pendingSpellSave.spellSaveDC} (${state.pendingSpellSave.spellName})`,
+            };
+          }
+          if (state.phase === 'AWAIT_DEATH_SAVE') {
+            const currentEntityId = state.turnOrder[state.turnIndex];
+            const entity = engine.getEntity(currentEntityId);
+            return {
+              type: 'deathSave' as const,
+              formula: '1d20',
+              modifier: 0,
+              entityId: currentEntityId,
+              entityName: entity?.name || 'Unknown',
+              prompt: `${entity?.name || 'Player'} must make a death saving throw.`,
+            };
+          }
           return null;
         })();
 
@@ -1457,7 +1651,7 @@ export const appRouter = router({
     submitRoll: protectedProcedure
       .input(z.object({
         sessionId: z.number(),
-        rollType: z.enum(['initiative', 'attack', 'damage', 'deathSave']),
+        rollType: z.enum(['initiative', 'attack', 'damage', 'deathSave', 'save']),
         rawDieValue: z.number().int().min(1),
         entityId: z.string().optional(), // for initiative: which player entity is rolling
       }))
@@ -1481,6 +1675,7 @@ export const appRouter = router({
           attack: 'AWAIT_ATTACK_ROLL',
           damage: 'AWAIT_DAMAGE_ROLL',
           deathSave: 'AWAIT_DEATH_SAVE',
+          save: 'AWAIT_SAVE_ROLL',
         }[rollType];
 
         if (state.phase !== expectedPhase) {
@@ -1488,7 +1683,7 @@ export const appRouter = router({
         }
 
         // Validate d20 roll range for initiative, attack, and death save rolls
-        if (rollType === 'initiative' || rollType === 'attack' || rollType === 'deathSave') {
+        if (rollType === 'initiative' || rollType === 'attack' || rollType === 'deathSave' || rollType === 'save') {
           if (rawDieValue > 20) {
             return { success: false as const, error: `Invalid d20 roll: ${rawDieValue} (must be 1-20)` };
           }
@@ -1515,6 +1710,10 @@ export const appRouter = router({
           if (rollType === 'damage' && state.pendingAttack) {
             return engine!.getEntity(state.pendingAttack.attackerId)?.name ?? 'Player';
           }
+          if (rollType === 'save' && state.pendingSpellSave) {
+            const eid = entityId || state.pendingSpellSave.pendingTargetIds[0];
+            return engine!.getEntity(eid)?.name ?? 'Player';
+          }
           if (rollType === 'deathSave' && entityId) {
             return engine!.getEntity(entityId)?.name ?? 'Player';
           }
@@ -1534,6 +1733,9 @@ export const appRouter = router({
           };
         } else if (rollType === 'attack') {
           result = engine.resolveAttackRoll(rawDieValue);
+        } else if (rollType === 'save') {
+          const targetEntityId = entityId || state.pendingSpellSave!.pendingTargetIds[0];
+          result = engine.submitSavingThrow(targetEntityId, rawDieValue);
         } else if (rollType === 'deathSave') {
           if (!entityId) {
             return { success: false as const, error: 'entityId required for death save roll' };
@@ -1552,7 +1754,15 @@ export const appRouter = router({
         const { syncCombatStateToDb } = await import('./combat/combat-helpers');
         await syncCombatStateToDb(sessionId);
 
-        const rollLabel = rollType === 'initiative' ? `d20 initiative` : rollType === 'attack' ? `d20 attack` : `damage`;
+        const rollLabel = rollType === 'initiative'
+          ? `d20 initiative`
+          : rollType === 'attack'
+            ? `d20 attack`
+            : rollType === 'save'
+              ? `d20 saving throw`
+              : rollType === 'deathSave'
+                ? `d20 death save`
+                : `damage`;
         const flavorText = `${rollingEntityName} rolls ${rawDieValue} (${rollLabel})`;
 
         const activePlayerId =
@@ -1560,7 +1770,11 @@ export const appRouter = router({
             ? (entityId || state.pendingInitiative?.pendingEntityIds[0])
             : rollType === 'attack'
               ? state.pendingAttackRoll?.attackerId
-              : state.pendingAttack?.attackerId;
+              : rollType === 'save'
+                ? (entityId || state.pendingSpellSave?.pendingTargetIds[0])
+                : rollType === 'deathSave'
+                  ? entityId
+                  : state.pendingAttack?.attackerId;
 
         // Save player roll message (fast, no LLM)
         await db.saveMessage({
