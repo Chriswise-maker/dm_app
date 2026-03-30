@@ -1,0 +1,24 @@
+{
+  "name": "Step 8 — Combat with populated spell list",
+  "description": "Verify that characters with ActorSheets enter combat with real spells. Silas Gravemourn (Wizard 5) should be able to use spells in combat after migration.",
+  "sessionId": 25,
+  "characterId": 26,
+  "steps": [
+    {
+      "message": "Silas cautiously descends the stone staircase into the crypt. What does he see?",
+      "expect": {
+        "minLength": 50,
+        "combatTriggered": false,
+        "notContains": ["error", "undefined"]
+      }
+    },
+    {
+      "message": "Suddenly a group of skeletons rises from the sarcophagi and attacks!",
+      "expect": {
+        "minLength": 30,
+        "combatTriggered": true,
+        "notContains": ["error", "undefined"]
+      }
+    }
+  ]
+}

@@ -142,3 +142,9 @@ vite.config.ts.timestamp-*
 server.log
 check_db.ts
 run_migration.ts
+
+# SRD raw download (normalized data in data/srd-2014/ IS committed)
+data/raw/
+
+# Orchestrator run logs
+scripts/logs/

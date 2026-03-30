@@ -1,0 +1,28 @@
+{
+  "name": "Basic chat and combat trigger",
+  "sessionId": 1,
+  "characterId": 1,
+  "steps": [
+    {
+      "message": "I look around the tavern. What do I see?",
+      "expect": {
+        "minLength": 50,
+        "combatTriggered": false
+      }
+    },
+    {
+      "message": "I walk up to the barkeeper and ask about any rumors.",
+      "expect": {
+        "minLength": 50,
+        "combatTriggered": false
+      }
+    },
+    {
+      "message": "I draw my sword and attack the nearest goblin!",
+      "expect": {
+        "minLength": 30,
+        "combatTriggered": true
+      }
+    }
+  ]
+}

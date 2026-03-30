@@ -1,0 +1,34 @@
+{
+  "name": "Step 6 — SRD lookup via LLM tool calls",
+  "description": "Verify the DM can look up real SRD data during chat instead of hallucinating stats.",
+  "sessionId": 25,
+  "characterId": 26,
+  "steps": [
+    {
+      "message": "Silas flips through his spellbook. Can you remind me what Fireball does exactly?",
+      "expect": {
+        "minLength": 100,
+        "contains": ["8d6", "fire"],
+        "notContains": ["error", "undefined", "cannot"],
+        "combatTriggered": false
+      }
+    },
+    {
+      "message": "What about the Shield spell? I want to make sure I have it prepared.",
+      "expect": {
+        "minLength": 50,
+        "contains": ["reaction"],
+        "notContains": ["error", "undefined"],
+        "combatTriggered": false
+      }
+    },
+    {
+      "message": "What kind of creatures might we run into in an underground tomb? Anything around CR 2 or lower?",
+      "expect": {
+        "minLength": 80,
+        "notContains": ["error", "undefined"],
+        "combatTriggered": false
+      }
+    }
+  ]
+}

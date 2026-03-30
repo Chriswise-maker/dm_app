@@ -1,0 +1,30 @@
+{
+  "name": "Step 1 — Save roll wiring",
+  "description": "Verify the chat flow handles saving throw scenarios correctly end-to-end.",
+  "sessionId": 1,
+  "characterId": 1,
+  "steps": [
+    {
+      "message": "We enter the dungeon. I look around carefully.",
+      "expect": {
+        "minLength": 40,
+        "combatTriggered": false
+      }
+    },
+    {
+      "message": "I attack the goblin shaman!",
+      "expect": {
+        "minLength": 30,
+        "combatTriggered": true
+      }
+    },
+    {
+      "message": "I rolled a 14 on my saving throw against the fireball.",
+      "expect": {
+        "minLength": 20,
+        "combatTriggered": false,
+        "contains": ["save", "damage"]
+      }
+    }
+  ]
+}
