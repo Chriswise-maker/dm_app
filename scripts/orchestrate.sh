@@ -18,8 +18,8 @@ DRY_RUN=false
 START_AT=1
 SKIP_VERIFY=false
 LOG_DIR="scripts/logs"
-RATE_LIMIT_WAIT=65        # seconds to sleep on rate limit
-RATE_LIMIT_MAX_RETRIES=5  # max retries per step before giving up
+RATE_LIMIT_WAIT=1800      # 30 minutes between retries (plan rate limits)
+RATE_LIMIT_MAX_RETRIES=8  # 8 retries × 30 min = 4 hours max wait
 MAX_BUDGET_PER_STEP=5     # max USD spend per step (safety net)
 MAX_FIX_ATTEMPTS=3        # max times Claude can try to fix a failing step
 
