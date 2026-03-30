@@ -282,14 +282,22 @@ Important:
     log "  [fix] Attempt $fix_attempt/$MAX_FIX_ATTEMPTS — sending errors back to Claude"
 
     # Read the verification log to get the actual errors
-    local verify_log="$LOG_DIR/verify_step${num}_${RUN_ID}.log"
-    local errors=""
+    verify_log="$LOG_DIR/verify_step${num}_${RUN_ID}.log"
+    errors=""
     if [[ -f "$verify_log" ]]; then
       errors=$(tail -50 "$verify_log")
     fi
 
+    # Also read chat verification log if it exists
+    chat_log="$LOG_DIR/chat_step${num}_${RUN_ID}.log"
+    if [[ -f "$chat_log" ]]; then
+      errors="$errors
+--- Chat scenario output ---
+$(cat "$chat_log")"
+    fi
+
     # Build a fix prompt with the original task + error output
-    local fix_prompt="You are working on the D&D DM App project. You just attempted Step $num but verification failed.
+    fix_prompt="You are working on the D&D DM App project. You just attempted Step $num but verification failed.
 
 ## Original task: $title
 
@@ -304,8 +312,8 @@ $errors
 Fix these errors. The original task instructions above still apply.
 Run \`pnpm check\` and \`pnpm test\` after your fixes to verify they work."
 
-    local fix_output="$LOG_DIR/claude_step${num}_fix${fix_attempt}_${RUN_ID}.md"
-    local fix_exit=0
+    fix_output="$LOG_DIR/claude_step${num}_fix${fix_attempt}_${RUN_ID}.md"
+    fix_exit=0
     log "  [fix] Sending fix prompt to Claude..."
     claude -p "$fix_prompt" --print \
       --allowedTools "Read" "Edit" "Write" "Glob" "Grep" \
