@@ -148,3 +148,6 @@ data/raw/
 
 # Orchestrator run logs
 scripts/logs/
+
+# Claude Code worktrees and local config
+.claude/worktrees/
