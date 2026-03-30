@@ -52,6 +52,16 @@ import {
     PendingSpellSaveSchema,
 } from "./combat-types";
 import { validateDiceRoll } from "./combat-validators";
+import { resolveCheck } from "../kernel/check-resolver";
+import {
+    getEntityModifiers,
+    getProficiencyBonus,
+    getAttackStat,
+    getAttackBonusCorrection,
+    isProficientInSave,
+    DEFAULT_ABILITY_SCORES,
+} from "../kernel/combat-adapter";
+import type { AbilityStat } from "../kernel/actor-sheet";
 
 // =============================================================================
 // HELPER FUNCTIONS
@@ -2132,11 +2142,21 @@ export class CombatEngineV2 {
             rollDescription = `(player rolled ${totalAttack})`;
             console.log(`[CombatEngine] Using player-provided roll: ${totalAttack}`);
         } else {
-            // Auto-roll
+            // Auto-roll: roll d20 (with adv/disadv formula), then delegate modifier math to CheckResolver
             const attackRoll = this.rollFn(diceFormula);
-            totalAttack = attackRoll.total + attacker.attackModifier;
-            isCritical = attackRoll.isCritical;
-            isFumble = attackRoll.isFumble;
+            const attackResult = resolveCheck({
+                type: 'attack',
+                abilityScores: attacker.abilityScores ?? DEFAULT_ABILITY_SCORES,
+                proficiencyBonus: getProficiencyBonus(attacker),
+                stat: getAttackStat(attacker),
+                isProficient: true,
+                activeModifiers: [...getEntityModifiers(attacker), ...getAttackBonusCorrection(attacker)],
+                targetAC: target.baseAC,
+                preRolledD20: attackRoll.total,
+            });
+            totalAttack = attackResult.total;
+            isCritical = attackResult.isCritical;
+            isFumble = attackResult.isFumble;
             const diceStr = attackRoll.rolls.length > 0 ? `[${attackRoll.rolls.join(',')}]` : attackRoll.total;
             rollDescription = `(${diceFormula}+${attacker.attackModifier} → ${diceStr}+${attacker.attackModifier} = ${totalAttack})`;
         }
@@ -2863,10 +2883,21 @@ export class CombatEngineV2 {
         this.pushHistory();
         const logs: CombatLogEntry[] = [];
 
-        // Calculate save total
-        const saveMod = this.getAbilityModById(entityId, pending.saveStat);
-        const total = roll + saveMod;
-        const saveSuccess = total >= pending.spellSaveDC;
+        // Calculate save total via CheckResolver
+        const saveStat = pending.saveStat.toLowerCase() as AbilityStat;
+        const saveResult = resolveCheck({
+            type: 'save',
+            abilityScores: target.abilityScores ?? DEFAULT_ABILITY_SCORES,
+            proficiencyBonus: getProficiencyBonus(target),
+            stat: saveStat,
+            isProficient: isProficientInSave(target, saveStat),
+            activeModifiers: getEntityModifiers(target),
+            dc: pending.spellSaveDC,
+            preRolledD20: roll,
+        });
+        const saveMod = saveResult.abilityMod + saveResult.proficiencyMod + saveResult.effectBonuses;
+        const total = saveResult.total;
+        const saveSuccess = saveResult.success;
 
         logs.push(this.createLogEntry("ACTION", {
             actorId: entityId,
