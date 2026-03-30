@@ -8,3 +8,6 @@ export { ModifierSchema, EffectDefinitionSchema, EffectInstanceSchema } from './
 export type { Modifier, EffectDefinition, EffectInstance } from './effect-types';
 
 export { getActiveModifiers, tickEffects, resolveConcentration } from './effect-pipeline';
+
+export { resolveCheck, getAbilityMod } from './check-resolver';
+export type { CheckInput, CheckResult } from './check-resolver';
