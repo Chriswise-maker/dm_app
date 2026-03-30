@@ -24,7 +24,7 @@ export function registerChatStreamRoute(app: Express) {
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('X-Accel-Buffering', 'no');
 
-    const ctx = await createContext({ req, res });
+    const ctx = await createContext({ req, res } as any);
     if (!ctx.user) {
       writeSse(res, { type: 'error', message: 'Unauthorized' });
       res.end();

@@ -56,6 +56,7 @@ const trpcClient = trpc.createClient({
 // This client handles superjson serialization properly for mutations
 if (typeof window !== "undefined") {
   import("@trpc/client").then(({ createTRPCClient, httpBatchLink: vanillaHttpBatchLink }) => {
+    // @ts-expect-error — dev-only console tool, cross-boundary import
     const vanillaClient = createTRPCClient<typeof import("../../../server/routers").AppRouter>({
       links: [
         vanillaHttpBatchLink({
