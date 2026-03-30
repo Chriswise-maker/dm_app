@@ -5,8 +5,11 @@
 
 import type { EnemyData } from '../response-parser';
 import { CombatEngineManager } from './combat-engine-manager';
-import { createPlayerEntity, createEnemyEntity, type CombatEntity } from './combat-types';
+import { createPlayerEntity, createEnemyEntity, type CombatEntity, type Spell } from './combat-types';
 import { runAILoop, shouldExecuteAI } from './enemy-ai-controller';
+import type { ActorSheet } from '../kernel/actor-sheet';
+import type { ActorState } from '../kernel/actor-state';
+import { getSrdLoader, lookupByName } from '../srd';
 
 /**
  * Handle automatic combat initiation from structured DM response
@@ -63,6 +66,51 @@ export async function handleAutoCombatInitiation(
             const dexMod = Math.floor(((stats.dex || 10) - 10) / 2);
             const resourceState = getCharacterResourceState(parsedContext.worldState, character);
 
+            // Build richer entity from ActorSheet if available
+            let extraOptions: Partial<CombatEntity> = {
+                initiativeModifier: dexMod,
+                abilityScores: stats,
+                spellSlots: resourceState.spellSlotsCurrent,
+                dbCharacterId: character.id,
+            };
+
+            if (character.actorSheet) {
+                try {
+                    const sheet: ActorSheet = JSON.parse(character.actorSheet);
+                    const state: ActorState | null = character.actorState
+                        ? JSON.parse(character.actorState)
+                        : null;
+
+                    // Build combat spells from ActorSheet spellcasting data
+                    const combatSpells: Spell[] = [];
+                    if (sheet.spellcasting) {
+                        const loader = getSrdLoader();
+                        const allSpellNames = [
+                            ...sheet.spellcasting.cantripsKnown,
+                            ...sheet.spellcasting.spellsKnown,
+                        ];
+                        for (const spellName of allSpellNames) {
+                            const srdSpell = lookupByName(loader, 'spells', spellName);
+                            if (srdSpell) {
+                                combatSpells.push(srdSpellToCombatSpell(srdSpell));
+                            }
+                        }
+                    }
+
+                    extraOptions = {
+                        ...extraOptions,
+                        abilityScores: sheet.abilityScores,
+                        spells: combatSpells,
+                        spellSlots: state?.spellSlotsCurrent ?? resourceState.spellSlotsCurrent,
+                        spellSaveDC: sheet.spellcasting?.saveDC,
+                        resistances: [],
+                        immunities: [],
+                    };
+                } catch (e) {
+                    console.warn(`[AutoCombat] Failed to parse actorSheet for ${character.name}:`, e);
+                }
+            }
+
             const playerEntity = createPlayerEntity(
                 `player-${character.id}`,
                 character.name,
@@ -70,15 +118,10 @@ export async function handleAutoCombatInitiation(
                 character.hpMax,
                 character.ac,
                 0, // Initiative 0 triggers roll
-                {
-                    initiativeModifier: dexMod,
-                    abilityScores: stats,
-                    spellSlots: resourceState.spellSlotsCurrent,
-                    dbCharacterId: character.id,
-                }
+                extraOptions,
             );
             entities.push(playerEntity);
-            console.log(`[AutoCombat] Prepared player: ${character.name}`);
+            console.log(`[AutoCombat] Prepared player: ${character.name} (${character.actorSheet ? 'with ActorSheet' : 'basic'})`);
         }
 
         // 3. Get Engine and Prepare Combat (may pause for initiative)
@@ -114,6 +157,46 @@ export async function handleAutoCombatInitiation(
             error: error instanceof Error ? error.message : 'Unknown error',
         };
     }
+}
+
+/**
+ * Convert an SRD spell entry to a CombatEntity Spell.
+ */
+function srdSpellToCombatSpell(srd: any): Spell {
+    // Parse range to a number (feet)
+    let range = 30;
+    if (typeof srd.range === 'string') {
+        const match = srd.range.match(/(\d+)/);
+        if (match) range = parseInt(match[1], 10);
+        if (srd.range.toLowerCase().includes('self')) range = 0;
+        if (srd.range.toLowerCase().includes('touch')) range = 5;
+    }
+
+    // Map casting time
+    let castingTime: 'action' | 'bonus_action' | 'reaction' = 'action';
+    if (typeof srd.castingTime === 'string') {
+        if (srd.castingTime.includes('bonus')) castingTime = 'bonus_action';
+        else if (srd.castingTime.includes('reaction')) castingTime = 'reaction';
+    }
+
+    return {
+        name: srd.name,
+        level: srd.level ?? 0,
+        school: srd.school ?? 'evocation',
+        castingTime,
+        range,
+        isAreaEffect: srd.isAreaEffect ?? false,
+        areaType: srd.areaType,
+        areaSize: srd.areaSize,
+        savingThrow: srd.saveStat ? srd.saveStat.toUpperCase() : undefined,
+        halfOnSave: srd.saveEffect === 'half' || (srd.halfOnSave ?? true),
+        damageFormula: srd.damageFormula,
+        damageType: srd.damageType,
+        healingFormula: srd.healingFormula,
+        requiresConcentration: srd.requiresConcentration ?? false,
+        conditions: [],
+        description: srd.description ?? '',
+    };
 }
 
 /**
