@@ -848,63 +848,116 @@ export async function executeMessageSend(
     v2BattleState
   );
 
-  // Get LLM response with JSON mode enabled (streaming when streamHooks provided)
-  const { invokeLLMWithSettingsStream } = await import('./llm-with-settings');
-  const { createNarrativeJsonEmitter } = await import('./narrative-json-stream');
+  // =====================================================================
+  // SRD TOOL CALL LOOP — let the LLM look up spells, monsters, etc.
+  // =====================================================================
 
-  let contentString: string;
+  const { SRD_TOOLS } = await import('./prompts');
+  const { getSrdLoader, lookupByName, filterEntries, summarizeForLLM } = await import('./srd/');
+  type LLMMessage = import('./_core/llm').Message;
 
-  if (streamHooks?.onNarrativeDelta) {
-    let acc = userSettings?.llmProvider === 'anthropic' ? '{' : '';
-    const streamEmitter = createNarrativeJsonEmitter();
-    try {
-      const stream = await invokeLLMWithSettingsStream(ctx.user.id, {
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: enrichedPrompt },
-        ],
-        response_format: { type: 'json_object' },
-      });
-      for await (const chunk of stream) {
-        acc += chunk;
-        const delta = streamEmitter.appendAndExtractDelta(acc);
-        if (delta) streamHooks.onNarrativeDelta(delta);
-      }
-      contentString = acc;
-    } catch (streamErr) {
-      console.warn('[Chat] Stream failed, using non-streaming fallback:', streamErr);
-      const response = await invokeLLMWithSettings(ctx.user.id, {
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: enrichedPrompt },
-        ],
-        response_format: { type: 'json_object' },
-      });
-      if (!response.choices || !response.choices[0] || !response.choices[0].message) {
-        console.error('[Chat] Invalid LLM response structure:', response);
-        throw new Error('Failed to get DM response: Invalid response from LLM');
-      }
-      const rawContent = response.choices[0].message.content;
-      contentString = typeof rawContent === 'string' ? rawContent : JSON.stringify(rawContent);
-      const structuredFallback = parseStructuredResponse(contentString);
-      streamHooks.onNarrativeDelta(structuredFallback.narrative);
-    }
-  } else {
+  const chatMessages: LLMMessage[] = [
+    { role: 'system', content: systemPrompt },
+    { role: 'user', content: enrichedPrompt },
+  ];
+
+  const MAX_TOOL_ROUNDS = 3;
+  let contentString: string | null = null;
+
+  for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const response = await invokeLLMWithSettings(ctx.user.id, {
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: enrichedPrompt },
-      ],
+      messages: chatMessages,
+      tools: SRD_TOOLS,
       response_format: { type: 'json_object' },
     });
 
-    if (!response.choices || !response.choices[0] || !response.choices[0].message) {
+    const choice = response.choices?.[0];
+    if (!choice?.message) {
       console.error('[Chat] Invalid LLM response structure:', response);
       throw new Error('Failed to get DM response: Invalid response from LLM');
     }
 
-    const rawContent = response.choices[0].message.content;
-    contentString = typeof rawContent === 'string' ? rawContent : JSON.stringify(rawContent);
+    const toolCalls = choice.message.tool_calls;
+    if (!toolCalls || toolCalls.length === 0) {
+      // No tool calls — final text response
+      const rawContent = choice.message.content;
+      contentString = typeof rawContent === 'string' ? rawContent : JSON.stringify(rawContent);
+      break;
+    }
+
+    console.log(`[Chat] SRD tool round ${round + 1}: ${toolCalls.map(tc => tc.function.name).join(', ')}`);
+
+    // Append assistant message (with tool_calls) to conversation
+    chatMessages.push({
+      role: 'assistant',
+      content: choice.message.content || '',
+      tool_calls: toolCalls,
+    });
+
+    // Execute each tool call and append results
+    const loader = getSrdLoader();
+    for (const tc of toolCalls) {
+      let toolResult: string;
+      try {
+        const args = JSON.parse(tc.function.arguments);
+        switch (tc.function.name) {
+          case 'lookup_spell': {
+            const entry = lookupByName(loader, 'spells', args.name);
+            toolResult = entry ? summarizeForLLM(entry, 'spells') : `No spell found matching "${args.name}".`;
+            break;
+          }
+          case 'lookup_monster': {
+            const entry = lookupByName(loader, 'monsters', args.name);
+            toolResult = entry ? summarizeForLLM(entry, 'monsters') : `No monster found matching "${args.name}".`;
+            break;
+          }
+          case 'lookup_equipment': {
+            const entry = lookupByName(loader, 'equipment', args.name);
+            toolResult = entry ? summarizeForLLM(entry, 'equipment') : `No equipment found matching "${args.name}".`;
+            break;
+          }
+          case 'search_srd': {
+            const category = args.category || 'spells';
+            const query = (args.query as string).toLowerCase();
+            const entries = loader.getEntries(category);
+            const matches = entries
+              .filter((e: any) => (e.name as string).toLowerCase().includes(query) || JSON.stringify(e).toLowerCase().includes(query))
+              .slice(0, 5);
+            toolResult = matches.length > 0
+              ? matches.map((e: any) => summarizeForLLM(e, category)).join('\n\n')
+              : `No results found for "${args.query}" in ${category}.`;
+            break;
+          }
+          default:
+            toolResult = `Unknown tool: ${tc.function.name}`;
+        }
+      } catch (err) {
+        toolResult = `Tool error: ${err instanceof Error ? err.message : String(err)}`;
+      }
+
+      chatMessages.push({
+        role: 'tool',
+        tool_call_id: tc.id,
+        content: toolResult,
+      });
+    }
+  }
+
+  // If we exhausted tool rounds without a final text response, make one last call without tools
+  if (contentString === null) {
+    console.log('[Chat] Exhausted tool rounds, requesting final response');
+    const finalResponse = await invokeLLMWithSettings(ctx.user.id, {
+      messages: chatMessages,
+      response_format: { type: 'json_object' },
+    });
+    const rawContent = finalResponse.choices?.[0]?.message?.content;
+    contentString = typeof rawContent === 'string' ? rawContent : JSON.stringify(rawContent ?? '');
+  }
+
+  // Emit narrative for streaming hooks
+  if (streamHooks?.onNarrativeDelta) {
+    const previewStructured = parseStructuredResponse(contentString);
+    streamHooks.onNarrativeDelta(previewStructured.narrative);
   }
 
   console.log('[Chat] Raw LLM response (first 500 chars):', contentString.substring(0, 500));

@@ -7,6 +7,65 @@
 import type { UserSettings, Character, Session, CombatState, Combatant, Message } from "../drizzle/schema";
 import { RangeBand, type BattleState, type CombatEntity } from "./combat/combat-types";
 import type { ExtractedContext } from "./context-extraction";
+import type { Tool } from "./_core/llm";
+
+// =============================================================================
+// SRD TOOL DEFINITIONS (OpenAI function-calling format)
+// =============================================================================
+
+export const SRD_TOOLS: Tool[] = [
+  {
+    type: "function",
+    function: {
+      name: "lookup_spell",
+      description: "Look up a D&D 5e spell by name. Returns level, school, damage, range, components, duration, and description.",
+      parameters: {
+        type: "object",
+        properties: { name: { type: "string", description: "The spell name to look up" } },
+        required: ["name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "lookup_monster",
+      description: "Look up a monster or creature. Returns AC, HP, stats, attacks, abilities, and CR.",
+      parameters: {
+        type: "object",
+        properties: { name: { type: "string", description: "The monster name" } },
+        required: ["name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "lookup_equipment",
+      description: "Look up a weapon, armor, or piece of equipment. Returns stats, damage, properties, cost.",
+      parameters: {
+        type: "object",
+        properties: { name: { type: "string", description: "The item name" } },
+        required: ["name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "search_srd",
+      description: "Search the D&D 5e SRD rules database. Use for general queries like 'all 3rd level wizard spells' or 'CR 5 monsters'.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Search query" },
+          category: { type: "string", enum: ["spells", "monsters", "equipment", "classes", "races"] },
+        },
+        required: ["query"],
+      },
+    },
+  },
+];
 
 // Default Prompts (Chaos Weaver Style)
 const DEFAULT_SYSTEM_PROMPT = `You are the CHAOS WEAVER, an expert Dungeon Master for D&D 5e.

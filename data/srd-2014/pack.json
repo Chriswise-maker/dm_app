@@ -1,0 +1,12 @@
+{
+  "name": "D&D 5e SRD (2014)",
+  "version": "1.0.0",
+  "source": "5e-bits/5e-database",
+  "categories": [
+    "spells",
+    "monsters",
+    "equipment",
+    "classes",
+    "races"
+  ]
+}
