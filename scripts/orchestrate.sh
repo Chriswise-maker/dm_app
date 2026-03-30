@@ -21,6 +21,7 @@ LOG_DIR="scripts/logs"
 RATE_LIMIT_WAIT=65        # seconds to sleep on rate limit
 RATE_LIMIT_MAX_RETRIES=5  # max retries per step before giving up
 MAX_BUDGET_PER_STEP=5     # max USD spend per step (safety net)
+MAX_FIX_ATTEMPTS=3        # max times Claude can try to fix a failing step
 
 # ── Parse flags ───────────────────────────────────────────────────────────────
 args=()
@@ -254,14 +255,72 @@ Important:
     break
   fi
 
-  if ! verify "$num"; then
-    log "Step $num: FAILED verification"
+  # ── Verify + auto-fix loop ──────────────────────────────────────────────
+  step_passed=false
+  fix_attempt=0
+
+  while [[ $fix_attempt -le $MAX_FIX_ATTEMPTS ]]; do
+    if verify "$num"; then
+      step_passed=true
+      break
+    fi
+
+    fix_attempt=$((fix_attempt + 1))
+    if [[ $fix_attempt -gt $MAX_FIX_ATTEMPTS ]]; then
+      log "Step $num: FAILED after $MAX_FIX_ATTEMPTS fix attempts"
+      break
+    fi
+
+    log "  [fix] Attempt $fix_attempt/$MAX_FIX_ATTEMPTS — sending errors back to Claude"
+
+    # Read the verification log to get the actual errors
+    local verify_log="$LOG_DIR/verify_step${num}_${RUN_ID}.log"
+    local errors=""
+    if [[ -f "$verify_log" ]]; then
+      errors=$(tail -50 "$verify_log")
+    fi
+
+    # Build a fix prompt with the original task + error output
+    local fix_prompt="You are working on the D&D DM App project. You just attempted Step $num but verification failed.
+
+## Original task: $title
+
+$body
+
+## Verification errors:
+
+\`\`\`
+$errors
+\`\`\`
+
+Fix these errors. The original task instructions above still apply.
+Run \`pnpm check\` and \`pnpm test\` after your fixes to verify they work."
+
+    local fix_output="$LOG_DIR/claude_step${num}_fix${fix_attempt}_${RUN_ID}.md"
+    local fix_exit=0
+    log "  [fix] Sending fix prompt to Claude..."
+    claude -p "$fix_prompt" --print --dangerously-skip-permissions --max-budget-usd "$MAX_BUDGET_PER_STEP" > "$fix_output" 2>&1 || fix_exit=$?
+
+    if [[ $fix_exit -ne 0 ]] && grep -qi "rate.limit\|429\|quota\|too many requests" "$fix_output" 2>/dev/null; then
+      log "  [fix] Rate limited — sleeping ${RATE_LIMIT_WAIT}s"
+      sleep "$RATE_LIMIT_WAIT"
+      fix_attempt=$((fix_attempt - 1))  # don't count rate limit as a fix attempt
+      continue
+    fi
+
+    if [[ $fix_exit -ne 0 ]]; then
+      log "  [fix] Claude fix attempt failed (exit $fix_exit) — see $fix_output"
+    else
+      log "  [fix] Claude fix attempt done — re-verifying..."
+    fi
+  done
+
+  if ! $step_passed; then
     failed=$((failed + 1))
     log ""
-    log "STOPPED — Step $num failed verification."
+    log "STOPPED — Step $num failed verification after $MAX_FIX_ATTEMPTS fix attempts."
     log "  Review: $LOG_DIR/verify_step${num}_${RUN_ID}.log"
-    log "  Claude output: $LOG_DIR/claude_step${num}_${RUN_ID}.md"
-    log "  Fix issues, then re-run with: ./scripts/orchestrate.sh --start-at $num"
+    log "  Fix manually, then re-run with: ./scripts/orchestrate.sh --start-at $num"
     break
   fi
 
