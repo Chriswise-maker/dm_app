@@ -3,10 +3,9 @@ import { trpc } from '@/lib/trpc';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
-import { Loader2, Plus, Trash2, Sparkles, Pencil, RotateCcw } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   AlertDialog,
@@ -95,7 +94,6 @@ export default function SessionManager({ selectedSessionId, onSessionSelect }: S
     onSuccess: (_data, variables) => {
       toast.success('Campaign reset! Chat history cleared, characters restored to full HP.');
       refetch();
-      // Invalidate messages and activity log queries so UI refreshes
       const { sessionId } = variables;
       utils.messages.list.invalidate({ sessionId });
       utils.messages.getActivityLog.invalidate({ sessionId });
@@ -160,164 +158,154 @@ export default function SessionManager({ selectedSessionId, onSessionSelect }: S
   };
 
   return (
-    <Card>
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between gap-2">
-          <CardTitle className="text-lg shrink-0">Campaigns</CardTitle>
-          <div className="flex items-center gap-1">
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <span className="font-sans text-[9px] tracking-[0.3em] uppercase text-ghost">Campaigns</span>
+        <div className="flex items-center gap-3">
           <Dialog open={isCreateOpen} onOpenChange={setIsCreateOpen}>
             <DialogTrigger asChild>
-              <Button size="sm" variant="outline" className="h-8 w-8 p-0">
-                <Plus className="h-4 w-4" />
-              </Button>
+              <button className="font-sans text-[9px] tracking-[0.2em] uppercase text-ghost hover:text-brass transition-colors">
+                New
+              </button>
             </DialogTrigger>
             <DialogContent className="max-w-2xl">
               <DialogHeader>
-                <DialogTitle>New Campaign</DialogTitle>
+                <DialogTitle className="font-serif text-xl">New Campaign</DialogTitle>
               </DialogHeader>
               <div className="space-y-4 pt-4">
                 <div className="space-y-2">
-                  <Label htmlFor="campaign-name">Campaign Name</Label>
+                  <Label htmlFor="campaign-name" className="font-sans text-[9px] tracking-[0.2em] uppercase text-ghost">Campaign Name</Label>
                   <Input
                     id="campaign-name"
                     value={campaignName}
                     onChange={(e) => setCampaignName(e.target.value)}
                     placeholder="Enter campaign name..."
+                    className="bg-transparent border-b border-border focus:border-vellum font-serif"
                     onKeyPress={(e) => e.key === 'Enter' && !e.shiftKey && handleCreate()}
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="narrative-prompt">
-                    Narrative Setting & Tone (Optional)
+                  <Label htmlFor="narrative-prompt" className="font-sans text-[9px] tracking-[0.2em] uppercase text-ghost">
+                    Narrative Setting & Tone
                   </Label>
                   <Textarea
                     id="narrative-prompt"
                     value={narrativePrompt}
                     onChange={(e) => setNarrativePrompt(e.target.value)}
-                    placeholder="e.g., Gothic horror setting with Lovecraftian themes. Dark, adult-oriented content. The world is ruled by nebulous, cosmic forces beyond mortal comprehension..."
+                    placeholder="e.g., Gothic horror setting with Lovecraftian themes. Dark, adult-oriented content..."
                     rows={5}
-                    className="resize-none"
+                    className="resize-none bg-transparent font-serif"
                   />
-                  <p className="text-xs text-muted-foreground">
+                  <p className="font-sans text-[9px] text-ghost/60">
                     Describe the setting, tone, themes, and style for your campaign.
-                    This will guide the AI to maintain consistency throughout your adventure.
                   </p>
                 </div>
-                <Button
+                <button
                   onClick={handleCreate}
                   disabled={createMutation.isPending}
-                  className="w-full"
+                  className="w-full font-sans text-[10px] tracking-[0.2em] uppercase text-vellum hover:text-brass transition-colors py-3 disabled:opacity-50"
                 >
-                  {createMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                  Create Campaign
-                </Button>
+                  {createMutation.isPending ? 'Creating...' : 'Create Campaign'}
+                </button>
               </div>
             </DialogContent>
           </Dialog>
 
           <Dialog>
             <DialogTrigger asChild>
-              <Button size="sm" variant="outline" className="h-8 w-8 p-0" title="Generate Campaign with AI">
-                <Sparkles className="h-4 w-4" />
-              </Button>
+              <button className="font-sans text-[9px] tracking-[0.2em] uppercase text-ghost hover:text-brass transition-colors">
+                Generate
+              </button>
             </DialogTrigger>
             <DialogContent className="max-w-2xl">
               <DialogHeader>
-                <DialogTitle>Generate Campaign with AI</DialogTitle>
+                <DialogTitle className="font-serif text-xl">Generate Campaign</DialogTitle>
               </DialogHeader>
               <div className="space-y-4 pt-4">
                 <div className="space-y-2">
-                  <Label htmlFor="gen-prompt">Campaign Theme / Idea (Optional)</Label>
+                  <Label htmlFor="gen-prompt" className="font-sans text-[9px] tracking-[0.2em] uppercase text-ghost">Campaign Theme</Label>
                   <Textarea
                     id="gen-prompt"
                     value={narrativePrompt}
                     onChange={(e) => setNarrativePrompt(e.target.value)}
-                    placeholder="e.g., A post-apocalyptic world where magic has returned, or a classic high fantasy setting with a twist..."
+                    placeholder="A post-apocalyptic world where magic has returned..."
                     rows={4}
+                    className="bg-transparent font-serif"
                   />
-                  <p className="text-xs text-muted-foreground">
+                  <p className="font-sans text-[9px] text-ghost/60">
                     Leave blank for a completely random campaign.
                   </p>
                 </div>
-                <Button
+                <button
                   onClick={() => {
                     generateMutation.mutate({ prompt: narrativePrompt });
                   }}
                   disabled={generateMutation.isPending}
-                  className="w-full"
+                  className="w-full font-sans text-[10px] tracking-[0.2em] uppercase text-vellum hover:text-brass transition-colors py-3 disabled:opacity-50"
                 >
-                  {generateMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                  Generate Campaign
-                </Button>
+                  {generateMutation.isPending ? 'Generating...' : 'Generate Campaign'}
+                </button>
               </div>
             </DialogContent>
           </Dialog>
-          </div>
         </div>
-      </CardHeader>
-      <CardContent className="space-y-2">
+      </div>
+
+      <div className="space-y-1">
         {isLoading ? (
           <div className="flex justify-center py-4">
-            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+            <Loader2 className="h-5 w-5 animate-spin text-ghost" />
           </div>
         ) : sessions && sessions.length > 0 ? (
           sessions.map((session) => (
             <div
               key={session.id}
-              className={`flex items-center justify-between gap-1 px-3 py-2 rounded-md text-sm transition-colors ${selectedSessionId === session.id
-                ? 'bg-primary text-primary-foreground'
-                : 'hover:bg-accent'
-                }`}
+              className={`group flex items-center justify-between gap-1 py-2 transition-colors cursor-pointer ${
+                selectedSessionId === session.id
+                  ? 'text-vellum'
+                  : 'text-ghost hover:text-foreground'
+              }`}
             >
               <button
                 onClick={() => onSessionSelect(session.id)}
-                className="flex-1 text-left min-w-0 truncate"
+                className="flex-1 text-left min-w-0 font-serif text-sm truncate"
               >
                 {session.campaignName}
               </button>
-              <div className="flex items-center shrink-0">
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="h-6 w-6 p-0 hover:bg-transparent mr-1"
+              <div className="flex items-center shrink-0 opacity-0 group-hover:opacity-100 transition-opacity gap-2">
+                <button
                   onClick={(e) => handleEditNarrativeClick(session, e)}
-                  title="Edit Campaign Narrative"
+                  className="font-sans text-[8px] tracking-[0.2em] uppercase text-ghost hover:text-vellum transition-colors"
                 >
-                  <Pencil className="h-3.5 w-3.5" />
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="h-6 w-6 p-0 hover:bg-transparent mr-1"
+                  Edit
+                </button>
+                <button
                   onClick={(e) => handleResetClick(session.id, e)}
-                  title="Reset Campaign (clear chat, keep characters)"
+                  className="font-sans text-[8px] tracking-[0.2em] uppercase text-ghost hover:text-vellum transition-colors"
                 >
-                  <RotateCcw className="h-3.5 w-3.5" />
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="h-6 w-6 p-0 hover:bg-transparent"
+                  Reset
+                </button>
+                <button
                   onClick={(e) => handleDeleteClick(session.id, e)}
-                  title="Delete campaign"
+                  className="font-sans text-[8px] tracking-[0.2em] uppercase text-destructive/60 hover:text-destructive transition-colors"
                 >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </Button>
+                  Delete
+                </button>
               </div>
             </div>
           ))
         ) : (
-          <p className="text-sm text-muted-foreground text-center py-4">
+          <p className="font-serif text-sm italic text-ghost/60 py-4">
             No campaigns yet
           </p>
         )}
-      </CardContent>
+      </div>
 
       {/* Delete Confirmation Dialog */}
       <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete Campaign?</AlertDialogTitle>
+            <AlertDialogTitle className="font-serif">Delete Campaign?</AlertDialogTitle>
             <AlertDialogDescription>
               This action cannot be undone. This will permanently delete the campaign,
               including all characters, messages, and game context.
@@ -339,17 +327,17 @@ export default function SessionManager({ selectedSessionId, onSessionSelect }: S
       <AlertDialog open={resetDialogOpen} onOpenChange={setResetDialogOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Reset Campaign?</AlertDialogTitle>
+            <AlertDialogTitle className="font-serif">Reset Campaign?</AlertDialogTitle>
             <AlertDialogDescription>
               This will clear all chat history, combat logs, and game context.
-              Characters will be restored to full HP. The campaign name and narrative prompt will be preserved.
+              Characters will be restored to full HP.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               onClick={handleResetConfirm}
-              className="bg-amber-500 text-white hover:bg-amber-600"
+              className="bg-brass text-background hover:bg-brass/90"
             >
               Reset Campaign
             </AlertDialogAction>
@@ -361,12 +349,12 @@ export default function SessionManager({ selectedSessionId, onSessionSelect }: S
       <Dialog open={isEditNarrativeOpen} onOpenChange={setIsEditNarrativeOpen}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Edit Campaign Narrative</DialogTitle>
+            <DialogTitle className="font-serif text-xl">Edit Campaign Narrative</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 pt-4">
             <div className="space-y-2">
-              <Label htmlFor="edit-narrative">
-                Narrative Setting & Tone (World Bible)
+              <Label htmlFor="edit-narrative" className="font-sans text-[9px] tracking-[0.2em] uppercase text-ghost">
+                Narrative Setting & Tone
               </Label>
               <Textarea
                 id="edit-narrative"
@@ -374,23 +362,22 @@ export default function SessionManager({ selectedSessionId, onSessionSelect }: S
                 onChange={(e) => setEditingNarrativePrompt(e.target.value)}
                 placeholder="Describe the setting, tone, themes, and style..."
                 rows={10}
-                className="resize-none"
+                className="resize-none bg-transparent font-serif"
               />
-              <p className="text-xs text-muted-foreground">
+              <p className="font-sans text-[9px] text-ghost/60">
                 This text is sent to the AI with every message to maintain consistency.
               </p>
             </div>
-            <Button
+            <button
               onClick={handleUpdateNarrative}
               disabled={updateNarrativeMutation.isPending}
-              className="w-full"
+              className="w-full font-sans text-[10px] tracking-[0.2em] uppercase text-vellum hover:text-brass transition-colors py-3 disabled:opacity-50"
             >
-              {updateNarrativeMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Save Changes
-            </Button>
+              {updateNarrativeMutation.isPending ? 'Saving...' : 'Save Changes'}
+            </button>
           </div>
         </DialogContent>
       </Dialog>
-    </Card >
+    </div>
   );
 }

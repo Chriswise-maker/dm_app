@@ -1,6 +1,5 @@
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
-import { Progress } from '@/components/ui/progress';
 import {
     AlertDialog,
     AlertDialogAction,
@@ -12,7 +11,6 @@ import {
     AlertDialogTitle,
     AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { Sword, ChevronRight, Undo, Skull, Zap, SkipForward } from 'lucide-react';
 import { trpc } from '@/lib/trpc';
 import { toast } from 'sonner';
 import { DiceRoller } from './DiceRoller';
@@ -24,7 +22,6 @@ interface CombatSidebarProps {
 export default function CombatSidebar({ sessionId }: CombatSidebarProps) {
     const utils = trpc.useUtils();
 
-    // Poll combat state from V2 engine — faster polling when awaiting a player roll
     const { data: combatState, isLoading, refetch } = trpc.combatV2.getState.useQuery(
         { sessionId },
         {
@@ -60,7 +57,6 @@ export default function CombatSidebar({ sessionId }: CombatSidebarProps) {
     });
 
     if (isLoading) return null;
-    // Hide sidebar when no combat or combat has ended
     if (!combatState || combatState.phase === 'IDLE' || combatState.phase === 'RESOLVED') return null;
 
     const handleEndCombat = () => {
@@ -71,10 +67,8 @@ export default function CombatSidebar({ sessionId }: CombatSidebarProps) {
         undoMutation.mutate({ sessionId });
     };
 
-    // Sort by initiative descending for display
     const sortedEntities = [...combatState.entities].sort((a, b) => b.initiative - a.initiative);
 
-    // Current turn state
     const currentEntityId = combatState.turnOrder[combatState.turnIndex];
     const currentEntity = combatState.entities.find(e => e.id === currentEntityId);
     const isPlayerTurn = currentEntity?.type === 'player' && combatState.phase === 'ACTIVE';
@@ -86,39 +80,31 @@ export default function CombatSidebar({ sessionId }: CombatSidebarProps) {
     };
 
     return (
-        <aside className="bg-card flex flex-col h-full w-full overflow-hidden">
-            <div className="p-3 border-b flex items-center gap-2 justify-between bg-destructive/10">
-                <div className="flex items-center gap-2 min-w-0">
-                    <Sword className="h-5 w-5 text-destructive shrink-0" />
-                    <h3 className="font-semibold text-destructive text-sm truncate">Combat V2 - R{combatState.round}</h3>
+        <aside className="bg-background flex flex-col h-full w-full overflow-hidden">
+            {/* Header */}
+            <div className="px-6 py-4 flex items-center justify-between">
+                <div>
+                    <span className="font-sans text-[10px] tracking-[0.3em] uppercase text-ghost">The Sequence</span>
+                    <span className="font-sans text-[9px] text-ghost/40 ml-3">Round {combatState.round}</span>
                 </div>
-                <div className="flex gap-1 shrink-0">
-                    <Button
-                        variant="ghost"
-                        size="icon"
+                <div className="flex gap-3">
+                    <button
                         onClick={handleUndo}
-                        title="Undo last action"
-                        className="h-8 w-8"
+                        className="font-sans text-[9px] tracking-[0.2em] uppercase text-ghost hover:text-vellum transition-colors"
                     >
-                        <Undo className="h-4 w-4" />
-                    </Button>
-
+                        Undo
+                    </button>
                     <AlertDialog>
                         <AlertDialogTrigger asChild>
-                            <Button
-                                variant="outline"
-                                size="sm"
-                                className="text-xs h-8"
-                            >
+                            <button className="font-sans text-[9px] tracking-[0.2em] uppercase text-ghost hover:text-destructive transition-colors">
                                 End
-                            </Button>
+                            </button>
                         </AlertDialogTrigger>
                         <AlertDialogContent>
                             <AlertDialogHeader>
-                                <AlertDialogTitle>End Combat?</AlertDialogTitle>
+                                <AlertDialogTitle className="font-serif">End Combat?</AlertDialogTitle>
                                 <AlertDialogDescription>
                                     This will end the current combat session.
-                                    Are you sure?
                                 </AlertDialogDescription>
                             </AlertDialogHeader>
                             <AlertDialogFooter>
@@ -132,7 +118,7 @@ export default function CombatSidebar({ sessionId }: CombatSidebarProps) {
                 </div>
             </div>
 
-            {/* Visual dice roller — shown whenever the engine needs a player roll */}
+            {/* Visual dice roller */}
             {combatState.pendingRoll && (
                 <DiceRoller
                     pendingRoll={combatState.pendingRoll}
@@ -141,37 +127,33 @@ export default function CombatSidebar({ sessionId }: CombatSidebarProps) {
                 />
             )}
 
-            {/* Action economy — shown on player's turn */}
+            {/* Action economy */}
             {isPlayerTurn && tr && (
-                <div className="px-3 pb-2 border-b">
-                    <div className="flex items-center justify-between mb-1.5">
-                        <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1">
-                            <Zap className="h-3 w-3" />
+                <div className="px-6 pb-4">
+                    <div className="flex items-center justify-between mb-2">
+                        <span className="font-sans text-[9px] tracking-[0.3em] uppercase text-ghost">
                             Action Economy
                         </span>
-                        <Button
-                            variant="outline"
-                            size="sm"
-                            className="h-6 text-[10px] px-2 gap-1"
+                        <button
                             onClick={handleEndTurn}
                             disabled={submitActionMutation.isPending}
+                            className="font-sans text-[9px] tracking-[0.2em] uppercase text-ghost hover:text-brass transition-colors"
                         >
-                            <SkipForward className="h-3 w-3" />
                             End Turn
-                        </Button>
+                        </button>
                     </div>
-                    <div className="flex gap-1.5 flex-wrap">
-                        <span className={`text-[10px] px-1.5 py-0.5 rounded border font-medium ${tr.actionUsed ? 'bg-muted text-muted-foreground line-through border-muted' : 'bg-primary/10 text-primary border-primary/30'}`}>
+                    <div className="flex gap-3 flex-wrap">
+                        <span className={`font-sans text-[9px] tracking-[0.2em] uppercase ${tr.actionUsed ? 'text-ghost/30 line-through' : 'text-brass'}`}>
                             Action
                         </span>
-                        <span className={`text-[10px] px-1.5 py-0.5 rounded border font-medium ${tr.bonusActionUsed ? 'bg-muted text-muted-foreground line-through border-muted' : 'bg-amber-500/10 text-amber-600 border-amber-500/30'}`}>
+                        <span className={`font-sans text-[9px] tracking-[0.2em] uppercase ${tr.bonusActionUsed ? 'text-ghost/30 line-through' : 'text-brass'}`}>
                             Bonus
                         </span>
-                        <span className={`text-[10px] px-1.5 py-0.5 rounded border font-medium ${tr.reactionUsed ? 'bg-muted text-muted-foreground line-through border-muted' : 'bg-blue-500/10 text-blue-600 border-blue-500/30'}`}>
+                        <span className={`font-sans text-[9px] tracking-[0.2em] uppercase ${tr.reactionUsed ? 'text-ghost/30 line-through' : 'text-brass'}`}>
                             Reaction
                         </span>
                         {tr.extraAttacksRemaining > 0 && (
-                            <span className="text-[10px] px-1.5 py-0.5 rounded border font-medium bg-green-500/10 text-green-600 border-green-500/30">
+                            <span className="font-sans text-[9px] tracking-[0.2em] uppercase text-brass">
                                 +{tr.extraAttacksRemaining} Attack
                             </span>
                         )}
@@ -180,80 +162,77 @@ export default function CombatSidebar({ sessionId }: CombatSidebarProps) {
             )}
 
             <ScrollArea className="flex-1 min-h-0 overflow-hidden">
-                <div className="space-y-3 p-4">
-                    {sortedEntities.map((entity, idx) => {
-                        const isTurn = combatState.currentTurnEntity === entity.name; // Note: currentTurnEntity in state might be name or ID? checking CombatState type would be good. 
-                        // Actually engine uses ID for turn order, but state export might have resolved it? 
-                        // In V2, `currentState.currentTurnEntity` isn't explicitly in BattleStateSchema. 
-                        // Logic in `getState()` just returns state. 
-                        // Wait, looking at `combat-types.ts` (not recently read), BattleState doesn't have `currentTurnEntity`.
-                        // But `CombatSidebar.tsx` was using `combatState.currentTurnEntity === entity.name`.
-                        // Using `combatState.turnOrder[combatState.turnIndex] === entity.id` is safer.
+                <div className="space-y-6 px-6 py-4">
+                    {sortedEntities.map((entity) => {
                         const isTurnById = combatState.turnOrder[combatState.turnIndex] === entity.id;
-
                         const isDefeated = entity.status === 'DEAD' || entity.status === 'UNCONSCIOUS';
                         const isPlayer = entity.type === 'player';
-                        const hpPercent = (entity.hp / entity.maxHp) * 100;
+                        const isEnemy = entity.type !== 'player';
                         const isRolling = combatState.pendingRoll?.entityName === entity.name;
 
                         return (
                             <div
                                 key={entity.id}
-                                className={`
-                                    p-3 rounded-lg border-2 transition-colors relative
-                                    ${isTurnById ? 'border-primary bg-primary/5' : 'border-border'}
-                                    ${isDefeated ? 'opacity-50' : ''}
-                                    ${isRolling ? 'ring-2 ring-amber-500 ring-offset-1 ring-offset-background animate-pulse' : ''}
-                                `}
+                                className={`relative transition-all ${isDefeated ? 'opacity-30' : ''} ${isRolling ? 'animate-pulse' : ''}`}
                             >
-                                <div className="relative z-10">
-                                    <div className="flex items-start justify-between gap-2">
-                                        <div className="flex-1 min-w-0">
-                                            <div className="flex items-center gap-2">
-                                                {isTurnById && <ChevronRight className="h-4 w-4 text-primary flex-shrink-0" />}
-                                                <p className={`font-medium text-sm truncate ${isDefeated ? 'line-through' : ''}`}>
-                                                    {entity.name}
-                                                </p>
-                                            </div>
-                                            <p className="text-xs text-muted-foreground mt-1">
-                                                Init: {entity.initiative} | AC: {entity.baseAC}
-                                            </p>
-                                        </div>
-                                        <div className="flex flex-col items-end shrink-0">
-                                            <span className={`text-sm font-mono font-bold whitespace-nowrap ${entity.hp <= (entity.maxHp * 0.5) ? 'text-destructive' : ''}`}>
-                                                {entity.hp}/{entity.maxHp}
-                                            </span>
-                                            <span className="text-[10px] text-muted-foreground">HP</span>
-                                        </div>
-                                    </div>
+                                {/* Active turn indicator — brass left border */}
+                                {isTurnById && (
+                                    <div className="absolute left-0 top-0 bottom-0 w-[1px] bg-brass -ml-3" />
+                                )}
 
-                                    <Progress value={hpPercent} className="h-1.5 mt-2" indicatorClassName={entity.hp <= (entity.maxHp * 0.5) ? 'bg-destructive' : 'bg-primary'} />
-
-                                    {isDefeated && (
-                                        <div className="mt-2 flex items-center gap-1 text-xs text-destructive font-semibold">
-                                            <Skull className="h-3 w-3" />
-                                            {entity.status}
-                                        </div>
-                                    )}
+                                <div className="flex justify-between items-baseline">
+                                    <span className={`font-serif tracking-tight ${isDefeated ? 'line-through' : ''} ${
+                                        isTurnById
+                                            ? 'text-2xl text-brass font-bold'
+                                            : isEnemy
+                                                ? 'text-lg text-destructive'
+                                                : 'text-lg text-foreground'
+                                    }`}>
+                                        {entity.name}
+                                    </span>
+                                    <span className={`font-sans text-[11px] ${isTurnById ? 'text-brass font-bold' : 'text-ghost'}`}>
+                                        {String(entity.initiative).padStart(2, '0')}
+                                    </span>
                                 </div>
+
+                                {isTurnById && (
+                                    <span className="font-sans text-[9px] tracking-[0.2em] text-brass/60 uppercase">Acting Now</span>
+                                )}
+
+                                {/* HP display for entities */}
+                                <div className="flex items-baseline gap-1 mt-1">
+                                    <span className={`font-sans text-[9px] tracking-[0.2em] uppercase text-ghost`}>
+                                        {entity.hp}/{entity.maxHp}
+                                    </span>
+                                    <span className="font-sans text-[8px] text-ghost/40">HP</span>
+                                    <span className="font-sans text-[8px] text-ghost/40 ml-2">AC {entity.baseAC}</span>
+                                </div>
+
+                                {isDefeated && (
+                                    <span className="font-sans text-[9px] tracking-[0.2em] uppercase text-destructive mt-1 block">
+                                        {entity.status}
+                                    </span>
+                                )}
                             </div>
                         );
                     })}
                 </div>
 
-                <div className="mt-6 text-xs text-muted-foreground text-center space-y-1 pb-4 border-t pt-4 px-4">
-                    <p className="font-semibold text-primary">Chat-Driven Combat</p>
-                    <p>Type actions in the chat:</p>
-                    <p className="italic">"I attack the goblin with my sword"</p>
-                    <p className="italic">"I cast Fireball at the group"</p>
+                {/* Combat guidance */}
+                <div className="mt-8 px-6 py-4 space-y-2">
+                    <p className="font-sans text-[9px] tracking-[0.2em] uppercase text-ghost text-center">Chat-Driven Combat</p>
+                    <p className="font-serif text-sm italic text-ghost/60 text-center">
+                        Declare your intent in the chronicle
+                    </p>
                 </div>
 
+                {/* Battle Feed */}
                 {combatState.log.length > 0 && (
-                    <div className="mt-4 mx-4 mb-4 border rounded bg-muted/20 p-2">
-                        <p className="text-xs font-semibold mb-2">Battle Feed</p>
-                        <ul className="text-[10px] space-y-1 font-mono text-muted-foreground">
+                    <div className="mt-4 mx-6 mb-6 pt-4">
+                        <span className="font-sans text-[9px] tracking-[0.3em] uppercase text-ghost block mb-3">Battle Feed</span>
+                        <ul className="space-y-2">
                             {combatState.log.slice(-5).reverse().map(l => (
-                                <li key={l.id} className="break-words">
+                                <li key={l.id} className="font-serif text-xs text-ghost/60 break-words">
                                     {l.description}
                                 </li>
                             ))}

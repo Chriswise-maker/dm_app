@@ -9,7 +9,7 @@ import CharacterEditDialog from '@/components/CharacterEditDialog';
 import CharacterGeneratorDialog from '@/components/CharacterGeneratorDialog';
 import ChatInterface from '@/components/ChatInterface';
 import { trpc } from '@/lib/trpc';
-import { Loader2, Scroll, Settings } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import SettingsDialog from '@/components/SettingsDialog';
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
 
@@ -53,25 +53,22 @@ export default function Home() {
   };
 
   return (
-    <div className="h-screen flex flex-col bg-background">
-      {/* Header */}
-      <header className="border-b bg-card">
-        <div className="container mx-auto px-4 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <Scroll className="h-6 w-6 text-primary" />
-            <h1 className="text-xl font-bold">{APP_TITLE}</h1>
-          </div>
-          <div className="flex items-center gap-3">
-            <span className="text-sm text-muted-foreground">Welcome, {user.name}</span>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => setIsSettingsOpen(true)}
-              title="Settings"
-            >
-              <Settings className="h-5 w-5" />
-            </Button>
-          </div>
+    <div className="h-screen flex flex-col bg-background overflow-hidden">
+      {/* Header — The Archival Anchor */}
+      <header className="bg-background px-8 py-5 flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <h1 className="text-2xl tracking-tighter text-vellum font-serif">{APP_TITLE}</h1>
+        </div>
+        <div className="flex items-center gap-6">
+          <span className="font-sans text-[10px] tracking-[0.2em] uppercase text-ghost">
+            {user.name}
+          </span>
+          <button
+            onClick={() => setIsSettingsOpen(true)}
+            className="font-sans text-[10px] tracking-[0.2em] uppercase text-ghost hover:text-vellum transition-colors"
+          >
+            Settings
+          </button>
         </div>
       </header>
 
@@ -83,14 +80,14 @@ export default function Home() {
           key={selectedSessionId ? 'with-combat' : 'no-combat'}
           autoSaveId={selectedSessionId ? 'dm-layout-combat' : 'dm-layout'}
         >
-          {/* Left Sidebar - Campaigns & Characters */}
+          {/* Left Sidebar — Campaigns & Characters */}
           <ResizablePanel
             defaultSize={20}
             minSize={12}
             maxSize={35}
             className="overflow-hidden"
           >
-            <aside className="h-full w-full bg-card p-4 overflow-y-auto overflow-x-hidden space-y-4">
+            <aside className="h-full w-full bg-background p-6 overflow-y-auto overflow-x-hidden space-y-8">
               <SessionManager
                 selectedSessionId={selectedSessionId}
                 onSessionSelect={handleSessionSelect}
@@ -103,20 +100,19 @@ export default function Home() {
                 onEditCharacter={handleEditCharacter}
               />
 
-              <Button
+              <button
                 onClick={() => setIsGeneratorOpen(true)}
-                variant="outline"
-                className="w-full"
                 disabled={!selectedSessionId}
+                className="w-full font-sans text-[10px] tracking-[0.2em] uppercase text-ghost hover:text-brass transition-colors disabled:opacity-30 py-3"
               >
-                ✨ AI Generate Character
-              </Button>
+                Generate Character
+              </button>
             </aside>
           </ResizablePanel>
 
           <ResizableHandle withHandle />
 
-          {/* Main Chat Area */}
+          {/* Main Chat Area — The Chronicle */}
           <ResizablePanel defaultSize={selectedSessionId ? 58 : 80} minSize={30}>
             <div className="h-full overflow-hidden">
               <ChatInterface
@@ -130,7 +126,7 @@ export default function Home() {
             </div>
           </ResizablePanel>
 
-          {/* Right Sidebar - Combat (V2) */}
+          {/* Right Sidebar — The Sequence (Combat) */}
           {selectedSessionId && (
             <>
               <ResizableHandle withHandle />

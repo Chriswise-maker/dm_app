@@ -1,7 +1,6 @@
 import { trpc } from '@/lib/trpc';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Loader2, Minus, Plus, User, Edit2, Trash2 } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   AlertDialog,
@@ -78,162 +77,135 @@ export default function CharacterPanel({
 
   if (!sessionId) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-lg">Characters</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="text-sm text-muted-foreground text-center py-4">
-            Select a campaign first
-          </p>
-        </CardContent>
-      </Card>
+      <div>
+        <span className="font-sans text-[9px] tracking-[0.3em] uppercase text-ghost block mb-4">Characters</span>
+        <p className="font-serif text-sm italic text-ghost/60">Select a campaign first</p>
+      </div>
     );
   }
 
   return (
-    <Card>
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between">
-          <CardTitle className="text-lg">Characters</CardTitle>
-          <Button size="sm" variant="outline" onClick={onCreateCharacter}>
-            <Plus className="h-4 w-4" />
-          </Button>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-3">
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <span className="font-sans text-[9px] tracking-[0.3em] uppercase text-ghost">Characters</span>
+        <button
+          onClick={onCreateCharacter}
+          className="font-sans text-[9px] tracking-[0.2em] uppercase text-ghost hover:text-brass transition-colors"
+        >
+          New
+        </button>
+      </div>
+
+      <div className="space-y-6">
         {isLoading ? (
           <div className="flex justify-center py-4">
-            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+            <Loader2 className="h-5 w-5 animate-spin text-ghost" />
           </div>
         ) : characters && characters.length > 0 ? (
           characters.map((char) => (
             <div
               key={char.id}
               onClick={() => onCharacterSelect(char.id)}
-              className={`p-3 rounded-lg border cursor-pointer transition-colors ${
+              className={`cursor-pointer transition-colors py-4 px-3 ${
                 selectedCharacterId === char.id
-                  ? 'bg-primary/10 border-primary'
-                  : 'hover:bg-accent border-border'
+                  ? 'bg-surface-high/50'
+                  : 'hover:bg-surface-high/30'
               }`}
             >
-              <div className="flex items-start justify-between gap-1 mb-2">
+              {/* Name & class */}
+              <div className="flex items-start justify-between gap-1 mb-3">
                 <div className="min-w-0 flex-1">
-                  <h3 className="font-semibold truncate">{char.name}</h3>
-                  <p className="text-sm text-muted-foreground truncate">
-                    {char.className} • Level {char.level}
+                  <h3 className={`font-serif text-lg tracking-tight ${
+                    selectedCharacterId === char.id ? 'text-vellum' : 'text-foreground'
+                  }`}>{char.name}</h3>
+                  <p className="font-sans text-[9px] tracking-[0.2em] uppercase text-ghost mt-1">
+                    {char.className} &middot; Level {char.level}
                   </p>
                 </div>
-                <div className="flex gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="h-7 w-7 p-0"
+                <div className="flex gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
+                  <button
                     onClick={(e) => {
                       e.stopPropagation();
                       onEditCharacter(char.id);
                     }}
-                    title="Edit character"
+                    className="font-sans text-[8px] tracking-[0.2em] uppercase text-ghost hover:text-vellum transition-colors"
                   >
-                    <Edit2 className="h-3.5 w-3.5" />
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="h-7 w-7 p-0 text-destructive hover:text-destructive"
+                    Edit
+                  </button>
+                  <button
                     onClick={(e) => handleDeleteClick(char.id, e)}
-                    title="Delete character"
+                    className="font-sans text-[8px] tracking-[0.2em] uppercase text-destructive/60 hover:text-destructive transition-colors"
                   >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
+                    Remove
+                  </button>
                 </div>
               </div>
 
-              {/* HP Bar */}
-              <div className="mb-2">
-                <div className="flex items-center justify-between text-xs mb-1">
-                  <span className="font-medium">HP</span>
-                  <span className="text-muted-foreground">
-                    {char.hpCurrent}/{char.hpMax}
+              {/* Vitality — Typography-driven HP */}
+              <div className="mb-3">
+                <span className="font-sans text-[9px] tracking-[0.3em] uppercase text-ghost block mb-1">Vitality</span>
+                <div className="flex items-baseline gap-1">
+                  <span className="font-serif text-2xl text-foreground leading-none tracking-tighter">
+                    {char.hpCurrent}
                   </span>
+                  <span className="font-serif text-sm text-ghost">/ {char.hpMax}</span>
                 </div>
-                <div className="h-2 bg-secondary rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-red-500 transition-all"
-                    style={{ width: `${(char.hpCurrent / char.hpMax) * 100}%` }}
-                  />
-                </div>
-                <div className="flex items-center gap-1 mt-2" onClick={(e) => e.stopPropagation()}>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-7 w-7 p-0"
-                    onClick={() => handleHPChange(char.id, char.hpCurrent, char.hpMax, -1)}
-                  >
-                    <Minus className="h-3 w-3" />
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-7 w-7 p-0"
-                    onClick={() => handleHPChange(char.id, char.hpCurrent, char.hpMax, 1)}
-                  >
-                    <Plus className="h-3 w-3" />
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-7 flex-1 text-xs"
+                <div className="flex items-center gap-2 mt-2" onClick={(e) => e.stopPropagation()}>
+                  <button
                     onClick={() => handleHPChange(char.id, char.hpCurrent, char.hpMax, -5)}
+                    className="font-sans text-[9px] text-ghost hover:text-vellum transition-colors"
                   >
                     -5
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-7 flex-1 text-xs"
+                  </button>
+                  <button
+                    onClick={() => handleHPChange(char.id, char.hpCurrent, char.hpMax, -1)}
+                    className="font-sans text-[9px] text-ghost hover:text-vellum transition-colors"
+                  >
+                    -1
+                  </button>
+                  <button
+                    onClick={() => handleHPChange(char.id, char.hpCurrent, char.hpMax, 1)}
+                    className="font-sans text-[9px] text-ghost hover:text-vellum transition-colors"
+                  >
+                    +1
+                  </button>
+                  <button
                     onClick={() => handleHPChange(char.id, char.hpCurrent, char.hpMax, 5)}
+                    className="font-sans text-[9px] text-ghost hover:text-vellum transition-colors"
                   >
                     +5
-                  </Button>
+                  </button>
                 </div>
               </div>
 
-              {/* Stats */}
-              <div className="grid grid-cols-3 gap-2 text-xs">
-                <div className="text-center">
-                  <div className="text-muted-foreground">AC</div>
-                  <div className="font-semibold">{char.ac}</div>
-                </div>
-                <div className="text-center">
-                  <div className="text-muted-foreground">STR</div>
-                  <div className="font-semibold">{char.stats.str}</div>
-                </div>
-                <div className="text-center">
-                  <div className="text-muted-foreground">DEX</div>
-                  <div className="font-semibold">{char.stats.dex}</div>
-                </div>
-                <div className="text-center">
-                  <div className="text-muted-foreground">CON</div>
-                  <div className="font-semibold">{char.stats.con}</div>
-                </div>
-                <div className="text-center">
-                  <div className="text-muted-foreground">INT</div>
-                  <div className="font-semibold">{char.stats.int}</div>
-                </div>
-                <div className="text-center">
-                  <div className="text-muted-foreground">WIS</div>
-                  <div className="font-semibold">{char.stats.wis}</div>
-                </div>
+              {/* Defense */}
+              <div className="mb-3">
+                <span className="font-sans text-[9px] tracking-[0.3em] uppercase text-ghost block mb-1">Defense</span>
+                <span className="font-serif text-2xl text-foreground leading-none tracking-tighter">{char.ac}</span>
+              </div>
+
+              {/* Ability Scores — The Spine Layout */}
+              <div className="space-y-1">
+                {[
+                  ['Str', char.stats.str],
+                  ['Dex', char.stats.dex],
+                  ['Con', char.stats.con],
+                  ['Int', char.stats.int],
+                  ['Wis', char.stats.wis],
+                  ['Cha', char.stats.cha],
+                ].map(([label, value]) => (
+                  <div key={label as string} className="flex items-baseline justify-between">
+                    <span className="font-sans text-[9px] tracking-[0.2em] uppercase text-ghost">{label}</span>
+                    <span className="font-serif text-sm text-foreground">{value as number}</span>
+                  </div>
+                ))}
               </div>
             </div>
           ))
         ) : (
-          <p className="text-sm text-muted-foreground text-center py-4">
-            No characters yet
-          </p>
+          <p className="font-serif text-sm italic text-ghost/60">No characters yet</p>
         )}
-      </CardContent>
+      </div>
 
       {/* Delete Confirmation Dialog */}
       <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
@@ -255,6 +227,6 @@ export default function CharacterPanel({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </Card>
+    </div>
   );
 }

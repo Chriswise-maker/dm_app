@@ -1,9 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { trpc } from '@/lib/trpc';
 import { Button } from '@/components/ui/button';
-import { Textarea } from '@/components/ui/textarea';
 import { Card } from '@/components/ui/card';
-import { Loader2, Send, Volume2, VolumeX, Swords, Dices } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Streamdown } from 'streamdown';
 import { useCombatState } from '@/hooks/combat/useCombatState';
@@ -63,23 +62,16 @@ export default function ChatInterface({
 
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  /** When true, new content keeps the thread pinned to the bottom. Cleared when user scrolls up. */
   const stickToBottomRef = useRef(true);
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  /** Holds the full streamed text received so far. */
   const streamTargetTextRef = useRef('');
-  /** Tracks how much of the streamed text we have revealed to the user. */
   const streamDisplayedLengthRef = useRef(0);
-  /** Drives a steady visual drain from buffered stream text to the UI. */
   const streamDrainRafRef = useRef<number | null>(null);
   const streamLastFrameRef = useRef<number | null>(null);
   const streamDrainResolveRef = useRef<(() => void) | null>(null);
   const streamDrainCarryRef = useRef(0);
-  /** Track which message IDs we've already fully revealed (instant render on re-render). */
   const seenMessageIdsRef = useRef<Set<number>>(new Set());
-  /** Ordered queue of message IDs waiting to be revealed one-by-one. */
   const [revealQueue, setRevealQueue] = useState<number[]>([]);
-  /** The message ID currently being revealed (head of queue). */
   const currentRevealId = revealQueue[0] ?? null;
   const utils = trpc.useUtils();
 
@@ -150,15 +142,9 @@ export default function ChatInterface({
     });
   }, [ensureStreamDrain]);
 
-  // const { combatState, refetchCombatState } = useCombatState(sessionId); // Removed internal hook
-
   // Combat state
   const [showEnemyDialog, setShowEnemyDialog] = useState(false);
-  // The following line is commented out as combatState and refetchCombatState are now passed via props
-  // const { combatState, initiateCombat, addPlayer, sortInitiative, refetchCombatState } = useCombatState(sessionId);
 
-  // Check V2 combat engine state for message polling (V1 combatState.inCombat is
-  // false during V2 engine combat, so we need to check both)
   const { data: combatV2State } = trpc.combatV2.getState.useQuery(
     { sessionId: sessionId! },
     { enabled: !!sessionId, refetchInterval: 3000 }
@@ -171,10 +157,8 @@ export default function ChatInterface({
     { enabled: !!sessionId, refetchInterval: isInCombat ? 2000 : false }
   );
 
-  // Seed seenMessageIds with existing messages on first load / session change
   const seenSeededRef = useRef(false);
   useEffect(() => {
-    // Reset when session changes
     seenMessageIdsRef.current = new Set();
     seenSeededRef.current = false;
     setRevealQueue([]);
@@ -187,14 +171,12 @@ export default function ChatInterface({
       seenSeededRef.current = true;
       return;
     }
-    // After seeding, detect new DM messages and enqueue them
     if (seenSeededRef.current && messages) {
       const newIds: number[] = [];
       for (const m of messages) {
         if (m.isDm && !seenMessageIdsRef.current.has(m.id)) {
           newIds.push(m.id);
         }
-        // Non-DM messages (player) → mark seen immediately (no reveal animation)
         if (!m.isDm && !seenMessageIdsRef.current.has(m.id)) {
           seenMessageIdsRef.current.add(m.id);
         }
@@ -280,7 +262,7 @@ export default function ChatInterface({
                   ensureStreamDrain();
                   if (ev.combatTriggered) {
                     toast.success(
-                      `⚔️ Combat initiated! ${ev.enemiesAdded ?? 0} ${(ev.enemiesAdded ?? 0) === 1 ? 'enemy' : 'enemies'} appeared!`
+                      `Combat initiated! ${ev.enemiesAdded ?? 0} ${(ev.enemiesAdded ?? 0) === 1 ? 'enemy' : 'enemies'} appeared!`
                     );
                     refetchCombatState?.();
                   }
@@ -353,20 +335,19 @@ export default function ChatInterface({
 
       if (result.isHit) {
         if (result.isDead) {
-          toast.success(`💀 ${result.targetName} defeated!`);
+          toast.success(`${result.targetName} defeated!`);
           setPendingAttack(null);
           void postChatStream(result.mechanicalOutcome, { showPendingUser: true });
         } else if (result.damage !== undefined) {
-          toast.success(`🎯 Hit! ${result.damage} damage dealt.`);
+          toast.success(`Hit! ${result.damage} damage dealt.`);
           setPendingAttack(null);
           void postChatStream(result.mechanicalOutcome, { showPendingUser: true });
         } else {
-          // Hit but awaiting damage
-          toast.info(`🎯 Hit! Roll damage.`);
+          toast.info(`Hit! Roll damage.`);
           setPendingAttack(prev => prev ? { ...prev, awaitingDamage: true, attackRoll: result.attackRoll } : null);
         }
       } else {
-        toast.info(`❌ Miss! (${result.attackRoll} vs AC ${result.targetAC})`);
+        toast.info(`Miss! (${result.attackRoll} vs AC ${result.targetAC})`);
         setPendingAttack(null);
         void postChatStream(result.mechanicalOutcome, { showPendingUser: true });
       }
@@ -384,10 +365,8 @@ export default function ChatInterface({
       const messageId = (variables as any).messageId;
       const audioUrl = `data:audio/mp3;base64,${data.audio}`;
 
-      // Cache the audio
       setAudioCache(prev => new Map(prev).set(messageId, audioUrl));
 
-      // Play the audio
       if (audioRef.current) {
         audioRef.current.pause();
       }
@@ -426,7 +405,6 @@ export default function ChatInterface({
     stickToBottomRef.current = distanceFromBottom <= SCROLL_STICK_BOTTOM_PX;
   }, []);
 
-  // Scroll to bottom on new messages only while the user is following the tail
   useEffect(() => {
     if (!stickToBottomRef.current || !messagesContainerRef.current) return;
     const el = messagesContainerRef.current;
@@ -442,9 +420,6 @@ export default function ChatInterface({
       stopStreamDrain({ reset: true });
     };
   }, [stopStreamDrain]);
-
-  // Poll for combat state updates if we don't have the hook doing it
-  // Actually, the hook in Home.tsx handles polling, so we just receive updates via props
 
   const playAudio = (url: string, messageId: number) => {
     if (audioRef.current) {
@@ -493,13 +468,11 @@ export default function ChatInterface({
   };
 
   const handlePlayTTS = (messageId: number, text: string) => {
-    // If already playing this message, stop it
     if (playingMessageId === messageId) {
       handleStopTTS();
       return;
     }
 
-    // Check if we have cached audio
     const existingAudio = document.querySelector(`audio[data-message-id="${messageId}"]`) as HTMLAudioElement;
     if (existingAudio) {
       if (audioRef.current) {
@@ -517,7 +490,6 @@ export default function ChatInterface({
         audioRef.current = null;
       });
     } else {
-      // Generate new audio
       ttsMutation.mutate({ text, messageId } as any);
     }
   };
@@ -535,18 +507,14 @@ export default function ChatInterface({
     if (!sessionId) return;
 
     try {
-      // Initiate combat
       await initiateCombat.mutateAsync({ sessionId });
 
-      toast.info('Generating enemies for this encounter...', { duration: 2000 });
+      toast.info('Generating enemies for this encounter...');
 
-      // Automatically generate enemies based on context
       const result = await generateEnemiesMutation.mutateAsync({ sessionId });
 
       if (result.success && result.count > 0) {
         toast.success(`${result.count} ${result.count === 1 ? 'enemy' : 'enemies'} appeared!`);
-
-        // Now prompt for player initiative
         await handleEnemiesAdded();
         refetchCombatState?.();
       } else {
@@ -561,10 +529,7 @@ export default function ChatInterface({
     if (!sessionId || !characterId) return;
 
     try {
-      // Get characters to add to combat
       const characters = await utils.characters.list.fetch({ sessionId });
-
-      // Prompt for initiative for all characters
       const characterNames = characters.map(c => c.name);
       setAwaitingInitiativeFrom(characterNames);
 
@@ -578,7 +543,6 @@ export default function ChatInterface({
     if (!sessionId) return;
 
     try {
-      // Find character
       const characters = await utils.characters.list.fetch({ sessionId });
       const character = characters.find(c => c.name.toLowerCase() === characterName.toLowerCase());
 
@@ -587,31 +551,27 @@ export default function ChatInterface({
         return;
       }
 
-      // Add player to combat
       await addPlayer.mutateAsync({
         sessionId,
         characterId: character.id,
         initiative,
       });
 
-      // Remove from awaiting list
       setAwaitingInitiativeFrom(prev => prev.filter(n => n !== characterName));
 
       toast.success(`${characterName} added to combat with initiative ${initiative}`);
 
-      // If all initiatives collected, sort and start combat
       const updatedAwaiting = awaitingInitiativeFrom.filter(n => n !== characterName);
       if (updatedAwaiting.length === 0) {
         await sortInitiative.mutateAsync({ sessionId });
         refetchCombatState?.();
-        toast.success('Combat begins!', { duration: 3000 });
+        toast.success('Combat begins!');
       }
     } catch (error: any) {
       toast.error('Failed to add character to combat: ' + error.message);
     }
   };
 
-  // Cleanup audio on unmount
   useEffect(() => {
     return () => {
       if (audioRef.current) {
@@ -624,7 +584,7 @@ export default function ChatInterface({
   if (!sessionId) {
     return (
       <div className="flex items-center justify-center h-full">
-        <p className="text-muted-foreground">Select a campaign to start playing</p>
+        <p className="font-serif text-xl italic text-ghost">Select a campaign to begin your chronicle</p>
       </div>
     );
   }
@@ -634,7 +594,6 @@ export default function ChatInterface({
     ...(messages || []),
   ];
 
-  // Show pending user message
   if (pendingUserMessage) {
     allMessages.push({
       id: 'pending-user',
@@ -646,7 +605,6 @@ export default function ChatInterface({
     });
   }
 
-  // Show thinking indicator while waiting for response
   if (isSendingChat && !streamingText) {
     allMessages.push({
       id: 'thinking',
@@ -658,7 +616,6 @@ export default function ChatInterface({
     });
   }
 
-  // Show streaming DM response
   if (streamingText) {
     allMessages.push({
       id: 'streaming',
@@ -671,18 +628,16 @@ export default function ChatInterface({
   }
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Messages Area */}
+    <div className="flex flex-col h-full relative">
+      {/* Messages Area — The Narrative Scroll */}
       <div
         ref={messagesContainerRef}
         onScroll={handleMessagesScroll}
-        className="flex-1 overflow-y-auto p-4 space-y-4"
+        className="flex-1 overflow-y-auto px-8 py-6 space-y-12"
       >
-        {/* Combat Initiative Display - REMOVED (Moved to Sidebar) */}
-
         {isLoading ? (
           <div className="flex justify-center items-center h-full">
-            <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+            <Loader2 className="h-6 w-6 animate-spin text-ghost" />
           </div>
         ) : allMessages.length > 0 ? (
           allMessages.map((msg) => {
@@ -692,133 +647,130 @@ export default function ChatInterface({
             const isTTSLoading = ttsMutation.isPending && (ttsMutation.variables as any)?.messageId === messageId;
 
             return (
-              <Card
+              <div
                 key={messageId || ('id' in msg ? msg.id : 'unknown')}
-                className={`p-4 ${msg.isDm ? 'bg-primary/5 border-primary/20' : 'bg-accent/50'
-                  } ${'isPending' in msg && msg.isPending ? 'opacity-70' : ''}`}
+                className={`max-w-3xl ${msg.isDm ? '' : 'ml-auto'} ${'isPending' in msg && msg.isPending ? 'opacity-60' : ''}`}
               >
-                <div className="flex items-start gap-3">
-                  <div className="flex-shrink-0 w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center font-bold text-sm">
-                    {msg.isDm ? 'DM' : (msg.characterName?.[0] || 'P')}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="font-semibold text-sm">{msg.characterName}</span>
-                      <span className="text-xs text-muted-foreground">
-                        {typeof msg.timestamp === 'string'
-                          ? new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-                          : msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                      </span>
-                      {isTTSEnabled && messageId && !('isThinking' in msg) && msg.content && (
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-6 w-6 ml-auto"
-                          onClick={() => handlePlayTTS(messageId, msg.content)}
-                          disabled={isTTSLoading}
-                          title={isCurrentlyPlaying ? 'Stop' : 'Play audio'}
-                        >
-                          {isTTSLoading ? (
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                          ) : isCurrentlyPlaying ? (
-                            <VolumeX className="h-4 w-4" />
-                          ) : (
-                            <Volume2 className="h-4 w-4" />
-                          )}
-                        </Button>
-                      )}
-                    </div>
-                    {'isThinking' in msg && msg.isThinking ? (
-                      <div className="flex items-center gap-2 text-muted-foreground italic">
-                        <span>DM is thinking</span>
-                        <span className="inline-flex gap-1">
-                          <span className="animate-bounce" style={{ animationDelay: '0ms' }}>.</span>
-                          <span className="animate-bounce" style={{ animationDelay: '150ms' }}>.</span>
-                          <span className="animate-bounce" style={{ animationDelay: '300ms' }}>.</span>
-                        </span>
-                      </div>
-                    ) : (
-                      <div className="prose prose-sm dark:prose-invert max-w-none">
-                        {'isStreaming' in msg && msg.isStreaming ? (
-                          <div className="whitespace-pre-wrap break-words leading-relaxed [text-rendering:optimizeLegibility]">
-                            {msg.content}
-                          </div>
-                        ) : (() => {
-                          const numId = typeof msg.id === 'number' ? msg.id : null;
-                          // Currently revealing this message
-                          if (numId != null && numId === currentRevealId) {
-                            return (
-                              <RevealText
-                                content={msg.content}
-                                onRevealComplete={() => {
-                                  seenMessageIdsRef.current.add(numId);
-                                  setRevealQueue(prev => prev.slice(1));
-                                }}
-                              />
-                            );
-                          }
-                          // Queued but not yet revealing — show empty placeholder
-                          if (numId != null && revealQueue.includes(numId)) {
-                            return null;
-                          }
-                          // Already seen or not a DM message — render instantly
-                          return <Streamdown>{msg.content}</Streamdown>;
-                        })()}
-                      </div>
-                    )}
-                  </div>
+                {/* Speaker attribution */}
+                <div className="flex items-center gap-3 mb-3">
+                  {msg.isDm ? (
+                    <span className="font-sans text-[9px] tracking-[0.3em] uppercase text-brass">
+                      The Archivist
+                    </span>
+                  ) : (
+                    <span className="font-sans text-[9px] tracking-[0.3em] uppercase text-ghost">
+                      {msg.characterName}
+                    </span>
+                  )}
+                  <span className="font-sans text-[9px] text-ghost/40">
+                    {typeof msg.timestamp === 'string'
+                      ? new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                      : msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                  {isTTSEnabled && messageId && !('isThinking' in msg) && msg.content && (
+                    <button
+                      onClick={() => handlePlayTTS(messageId, msg.content)}
+                      disabled={isTTSLoading}
+                      className="font-sans text-[9px] tracking-[0.2em] uppercase text-ghost hover:text-vellum transition-colors ml-auto"
+                    >
+                      {isTTSLoading ? 'Generating...' : isCurrentlyPlaying ? 'Silence' : 'Listen'}
+                    </button>
+                  )}
                 </div>
-              </Card>
+
+                {/* Message content */}
+                {'isThinking' in msg && msg.isThinking ? (
+                  <div className="font-serif italic text-ghost">
+                    <span>The Archivist contemplates</span>
+                    <span className="inline-flex gap-1 ml-1">
+                      <span className="animate-bounce" style={{ animationDelay: '0ms' }}>.</span>
+                      <span className="animate-bounce" style={{ animationDelay: '150ms' }}>.</span>
+                      <span className="animate-bounce" style={{ animationDelay: '300ms' }}>.</span>
+                    </span>
+                  </div>
+                ) : msg.isDm ? (
+                  <div className="prose prose-invert max-w-none font-serif text-lg leading-[2] text-foreground/90">
+                    {'isStreaming' in msg && msg.isStreaming ? (
+                      <div className="whitespace-pre-wrap break-words [text-rendering:optimizeLegibility]">
+                        {msg.content}
+                      </div>
+                    ) : (() => {
+                      const numId = typeof msg.id === 'number' ? msg.id : null;
+                      if (numId != null && numId === currentRevealId) {
+                        return (
+                          <RevealText
+                            content={msg.content}
+                            onRevealComplete={() => {
+                              seenMessageIdsRef.current.add(numId);
+                              setRevealQueue(prev => prev.slice(1));
+                            }}
+                          />
+                        );
+                      }
+                      if (numId != null && revealQueue.includes(numId)) {
+                        return null;
+                      }
+                      return <Streamdown>{msg.content}</Streamdown>;
+                    })()}
+                  </div>
+                ) : (
+                  <div className="font-serif text-base italic text-ghost leading-relaxed">
+                    <Streamdown>{msg.content}</Streamdown>
+                  </div>
+                )}
+              </div>
             );
           })
         ) : (
-          <div className="flex justify-center items-center h-full">
-            <p className="text-muted-foreground">No messages yet. Start the adventure!</p>
+          <div className="flex flex-col justify-center items-center h-full gap-4">
+            <p className="font-serif text-3xl tracking-tighter text-vellum">Begin Your Chronicle</p>
+            <p className="font-serif italic text-ghost">The pages await your first words</p>
           </div>
         )}
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input Area */}
-      <div className="border-t p-4">
+      {/* Input Area — Receded Player Intent */}
+      <div className="bg-gradient-to-t from-background via-background to-transparent pt-12 pb-6 px-8">
         {characterId ? (
-          <div className="space-y-2">
-            <div className="flex gap-2">
-              <Textarea
-                value={message}
-                onChange={(e) => setMessage(e.target.value)}
-                onKeyDown={handleKeyPress}
-                placeholder={`What does ${characterName} do?`}
-                className="flex-1 min-h-[60px] max-h-[200px]"
-                disabled={isSendingChat}
+          <div className="space-y-3">
+            <input
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              onKeyDown={handleKeyPress}
+              placeholder="Declare your intent..."
+              disabled={isSendingChat}
+              className="w-full bg-transparent border-b border-border focus:border-vellum focus:outline-none font-serif text-lg py-3 transition-all placeholder:italic placeholder:text-ghost/40"
+            />
+            <div className="flex items-center justify-end gap-6">
+              <ContextViewer
+                sessionId={sessionId}
+                characterId={characterId}
+                currentMessage={message}
               />
-              <div className="flex flex-col gap-2">
-                <Button
-                  onClick={handleSend}
-                  disabled={isSendingChat || !message.trim()}
-                  size="icon"
-                  className="h-[60px] w-[60px]"
+              {!combatState?.inCombat && (
+                <button
+                  onClick={handleCombatInitiation}
+                  disabled={initiateCombat.isPending}
+                  className="font-sans text-[10px] tracking-[0.2em] uppercase text-ghost hover:text-brass transition-colors"
                 >
-                  {isSendingChat ? (
-                    <Loader2 className="h-5 w-5 animate-spin" />
-                  ) : (
-                    <Send className="h-5 w-5" />
-                  )}
-                </Button>
-                <ContextViewer
-                  sessionId={sessionId}
-                  characterId={characterId}
-                  currentMessage={message}
-                />
-              </div>
+                  {initiateCombat.isPending ? 'Initiating...' : 'Begin Combat'}
+                </button>
+              )}
+              <button
+                onClick={handleSend}
+                disabled={isSendingChat || !message.trim()}
+                className="font-sans text-[10px] tracking-[0.2em] uppercase text-ghost hover:text-vellum transition-colors disabled:opacity-30"
+              >
+                {isSendingChat ? 'Inscribing...' : 'Submit'}
+              </button>
             </div>
 
             {/* Attack Roll Input Panel */}
             {combatState?.inCombat && pendingAttack && (
-              <Card className="p-4 bg-destructive/5 border-destructive/30">
+              <div className="p-4 bg-surface-high">
                 <div className="flex items-center gap-2 mb-3">
-                  <Dices className="h-5 w-5 text-destructive" />
-                  <span className="font-semibold">
+                  <span className="font-sans text-[10px] tracking-[0.2em] uppercase text-destructive font-bold">
                     {pendingAttack.awaitingDamage
                       ? `Roll Damage vs ${pendingAttack.targetName}`
                       : `Attack Roll vs ${pendingAttack.targetName}`}
@@ -832,7 +784,7 @@ export default function ChatInterface({
                       placeholder="d20 + modifier"
                       value={attackRollInput}
                       onChange={(e) => setAttackRollInput(e.target.value)}
-                      className="flex-1"
+                      className="flex-1 bg-transparent border-b border-border focus:border-vellum"
                       onKeyDown={(e) => {
                         if (e.key === 'Enter' && attackRollInput) {
                           processAttackMutation.mutate({
@@ -854,12 +806,15 @@ export default function ChatInterface({
                         }
                       }}
                       disabled={!attackRollInput || processAttackMutation.isPending}
+                      variant="ghost"
+                      className="font-sans text-xs uppercase tracking-wider"
                     >
                       {processAttackMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Roll Attack'}
                     </Button>
                     <Button
                       variant="ghost"
                       onClick={() => setPendingAttack(null)}
+                      className="font-sans text-xs uppercase tracking-wider text-ghost"
                     >
                       Cancel
                     </Button>
@@ -871,7 +826,7 @@ export default function ChatInterface({
                       placeholder="Damage roll total"
                       value={damageRollInput}
                       onChange={(e) => setDamageRollInput(e.target.value)}
-                      className="flex-1"
+                      className="flex-1 bg-transparent border-b border-border focus:border-vellum"
                       onKeyDown={(e) => {
                         if (e.key === 'Enter' && damageRollInput) {
                           processAttackMutation.mutate({
@@ -895,56 +850,42 @@ export default function ChatInterface({
                         }
                       }}
                       disabled={!damageRollInput || processAttackMutation.isPending}
+                      variant="ghost"
+                      className="font-sans text-xs uppercase tracking-wider"
                     >
                       {processAttackMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Apply Damage'}
                     </Button>
                   </div>
                 )}
-              </Card>
-            )}
-
-            {/* Quick Attack Button during combat */}
-            {combatState?.inCombat && !pendingAttack && combatState.combatants?.length > 0 && (
-              <div className="flex flex-wrap gap-2">
-                {combatState.combatants
-                  .filter((c: any) => c.type === 'enemy' && c.hpCurrent > 0)
-                  .map((enemy: any) => (
-                    <Button
-                      key={enemy.id}
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setPendingAttack({ targetName: enemy.name, awaitingDamage: false })}
-                      className="gap-1"
-                    >
-                      <Swords className="h-4 w-4" />
-                      Attack {enemy.name}
-                    </Button>
-                  ))}
               </div>
             )}
 
-            {!combatState?.inCombat && (
-              <Button
-                onClick={handleCombatInitiation}
-                variant="outline"
-                className="w-full"
-                disabled={initiateCombat.isPending}
-              >
-                {initiateCombat.isPending ? 'Starting Combat...' : '⚔️ Start Combat'}
-              </Button>
+            {/* Quick Attack Buttons during combat */}
+            {combatState?.inCombat && !pendingAttack && combatState.combatants?.length > 0 && (
+              <div className="flex flex-wrap gap-4">
+                {combatState.combatants
+                  .filter((c: any) => c.type === 'enemy' && c.hpCurrent > 0)
+                  .map((enemy: any) => (
+                    <button
+                      key={enemy.id}
+                      onClick={() => setPendingAttack({ targetName: enemy.name, awaitingDamage: false })}
+                      className="font-sans text-[10px] tracking-[0.2em] uppercase text-destructive hover:text-vellum transition-colors"
+                    >
+                      Attack {enemy.name}
+                    </button>
+                  ))}
+              </div>
             )}
           </div>
         ) : (
-          <Button
+          <button
             onClick={onCreateCharacter}
-            className="w-full h-[60px] text-lg font-semibold"
-            variant="default"
+            className="w-full font-serif text-xl text-vellum hover:text-brass transition-colors py-6"
           >
-            Create Character to Join Adventure
-          </Button>
+            Create a Character to Enter the Chronicle
+          </button>
         )}
       </div>
     </div>
   );
 }
-
