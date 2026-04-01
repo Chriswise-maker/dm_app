@@ -39,7 +39,7 @@ export const ActorSheetSchema = z.object({
     tremorsense: z.number().optional(),
     truesight: z.number().optional(),
   }),
-  hitDie: z.string(),
+  hitDie: z.string().regex(/^d(4|6|8|10|12|20)$/, "hitDie must be d4, d6, d8, d10, d12, or d20"),
   maxHp: z.number().int().min(1),
   ac: z.object({
     base: z.number().int(),
@@ -67,6 +67,9 @@ export const ActorSheetSchema = z.object({
   })),
   background: z.string().nullable(),
   feats: z.array(z.string()),
-});
+}).refine(
+  s => s.proficiencyBonus === Math.floor((s.level - 1) / 4) + 2,
+  { message: "proficiencyBonus must match level-derived value" },
+);
 
 export type ActorSheet = z.infer<typeof ActorSheetSchema>;

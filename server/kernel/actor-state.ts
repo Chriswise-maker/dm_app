@@ -4,7 +4,7 @@ import type { ActorSheet } from './actor-sheet';
 
 export const ActorStateSchema = z.object({
   actorId: z.string(),
-  hpCurrent: z.number().int(),
+  hpCurrent: z.number().int().min(0),
   hpMax: z.number().int(),
   tempHp: z.number().int().default(0),
   conditions: z.array(ActiveConditionSchema),

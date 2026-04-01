@@ -72,9 +72,37 @@ describe('ActorSheetSchema', () => {
     const result = ActorSheetSchema.safeParse(fighter);
     expect(result.success).toBe(true);
   });
+
+  it('rejects mismatched proficiencyBonus for level', () => {
+    const result = ActorSheetSchema.safeParse({ ...silasSheet, proficiencyBonus: 99 });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects invalid hitDie', () => {
+    const result = ActorSheetSchema.safeParse({ ...silasSheet, hitDie: 'd7' });
+    expect(result.success).toBe(false);
+  });
 });
 
 describe('ActorStateSchema', () => {
+  it('rejects negative hpCurrent', () => {
+    const state = {
+      actorId: silasSheet.id,
+      hpCurrent: -1,
+      hpMax: 28,
+      tempHp: 0,
+      conditions: [],
+      spellSlotsCurrent: {},
+      hitDiceCurrent: 5,
+      featureUses: {},
+      concentration: null,
+      deathSaves: { successes: 0, failures: 0 },
+      exhaustion: 0,
+    };
+    const result = ActorStateSchema.safeParse(state);
+    expect(result.success).toBe(false);
+  });
+
   it('validates a valid state', () => {
     const state = {
       actorId: silasSheet.id,

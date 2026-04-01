@@ -9,10 +9,14 @@ import postgres from 'postgres';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
-import { characters } from '../drizzle/schema';
-import { deriveInitialState } from '../server/kernel/actor-state';
-import type { ActorSheet } from '../server/kernel/actor-sheet';
-import type { AbilityStat } from '../server/kernel/actor-sheet';
+import { fileURLToPath } from 'url';
+import { characters } from '../drizzle/schema.js';
+import { deriveInitialState } from '../server/kernel/actor-state.js';
+import type { ActorSheet } from '../server/kernel/actor-sheet.js';
+import type { AbilityStat } from '../server/kernel/actor-sheet.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // ---------------------------------------------------------------------------
 // SRD data
