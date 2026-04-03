@@ -51,6 +51,7 @@ export const CombatPhaseSchema = z.enum([
     "AWAIT_DAMAGE_ROLL",
     "AWAIT_SAVE_ROLL",     // Paused for a player's saving throw against a spell
     "AWAIT_DEATH_SAVE",   // Paused for an unconscious player's death saving throw
+    "AWAIT_SMITE_DECISION", // Paladin hit with melee — choose smite level or decline
     "RESOLVED",
 ]);
 export type CombatPhase = z.infer<typeof CombatPhaseSchema>;
@@ -259,6 +260,9 @@ export const CombatEntitySchema = z.object({
     // Character level (for level-scaling features like Second Wind: 1d10 + level)
     level: z.number().int().min(1).max(20).optional(),
 
+    // Creature type for monsters (e.g. "undead", "fiend", "dragon") — populated from SRD
+    creatureType: z.string().optional(),
+
     // Feature uses remaining (e.g. { "Second Wind": 1, "Action Surge": 1 })
     featureUses: z.record(z.string(), z.number().int()).default({}),
 
@@ -401,6 +405,11 @@ export const ActionTypeSchema = z.enum([
     // Class features
     "SECOND_WIND",          // Fighter: bonus action, heal 1d10+level, 1/short rest
     "ACTION_SURGE",         // Fighter: free, grants additional action, 1/short rest
+    // Divine Smite (Paladin)
+    "SMITE_1",              // Paladin: expend level 1 slot for (1+1)d8 radiant
+    "SMITE_2",              // Paladin: expend level 2 slot for (2+1)d8 radiant
+    "SMITE_3",              // Paladin: expend level 3 slot for (3+1)d8 radiant
+    "DECLINE_SMITE",        // Paladin: skip smite, proceed with normal damage
     // Reactions (consume Reaction)
     "OPPORTUNITY_ATTACK",
     // Meta
@@ -426,6 +435,10 @@ export const ACTION_DEFAULT_COST: Record<ActionType, ResourceCost> = {
     USE_ITEM:           "action",
     SECOND_WIND:        "bonus_action",
     ACTION_SURGE:       "free",
+    SMITE_1:            "free",
+    SMITE_2:            "free",
+    SMITE_3:            "free",
+    DECLINE_SMITE:      "free",
     OPPORTUNITY_ATTACK: "reaction",
     END_TURN:           "none",
 };
@@ -601,6 +614,24 @@ export const ActionSurgePayloadSchema = z.object({
 export type ActionSurgePayload = z.infer<typeof ActionSurgePayloadSchema>;
 
 /**
+ * Divine Smite Payload — Paladin expends a spell slot after a melee hit
+ */
+export const SmitePayloadSchema = z.object({
+    type: z.enum(["SMITE_1", "SMITE_2", "SMITE_3"]),
+    entityId: z.string(),
+});
+export type SmitePayload = z.infer<typeof SmitePayloadSchema>;
+
+/**
+ * Decline Smite Payload — Paladin skips smite, proceeds with normal damage
+ */
+export const DeclineSmitePayloadSchema = z.object({
+    type: z.literal("DECLINE_SMITE"),
+    entityId: z.string(),
+});
+export type DeclineSmitePayload = z.infer<typeof DeclineSmitePayloadSchema>;
+
+/**
  * End Turn Payload — Explicitly end your turn
  */
 export const EndTurnPayloadSchema = z.object({
@@ -658,6 +689,8 @@ export const ActionPayloadSchema = z.discriminatedUnion("type", [
     UseItemPayloadSchema,
     SecondWindPayloadSchema,
     ActionSurgePayloadSchema,
+    SmitePayloadSchema,
+    DeclineSmitePayloadSchema,
     OpportunityAttackPayloadSchema,
     EndTurnPayloadSchema,
     CastSpellPayloadSchema,
@@ -735,6 +768,23 @@ export const PendingAttackRollSchema = z.object({
 export type PendingAttackRoll = z.infer<typeof PendingAttackRollSchema>;
 
 /**
+ * Pending Smite Decision — Stored when a Paladin hits with melee and has spell slots.
+ * The engine enters AWAIT_SMITE_DECISION and stores this context.
+ */
+export const PendingSmiteSchema = z.object({
+    attackerId: z.string(),
+    targetId: z.string(),
+    isCritical: z.boolean(),
+    isRanged: z.boolean().default(false),
+    weaponName: z.string().optional(),
+    damageFormula: z.string(),
+    damageType: z.string().optional(),
+    damageRoll: z.number().int(),  // Already-rolled damage value from player
+    createdAt: z.number(),
+});
+export type PendingSmite = z.infer<typeof PendingSmiteSchema>;
+
+/**
  * Game Settings — Configuration for the combat engine
  * 
  * Can be changed at runtime via UI in the future.
@@ -763,6 +813,7 @@ export const TurnResourcesSchema = z.object({
     movementUsed: z.boolean().default(false),
     reactionUsed: z.boolean().default(false),
     extraAttacksRemaining: z.number().int().default(0), // Fighter Extra Attack, etc.
+    sneakAttackUsedThisTurn: z.boolean().default(false), // Rogue: once per turn
 });
 export type TurnResources = z.infer<typeof TurnResourcesSchema>;
 
@@ -781,6 +832,7 @@ export type BattleState = {
     pendingInitiative?: PendingInitiative; // When waiting for player initiative rolls
     pendingAttackRoll?: PendingAttackRoll; // When waiting for player attack roll from visual dice
     pendingSpellSave?: PendingSpellSave;  // When waiting for player saving throw against a spell
+    pendingSmite?: PendingSmite;          // When waiting for Paladin's smite decision
     history: BattleState[];
     settings: GameSettings;
     createdAt: number;
@@ -821,6 +873,9 @@ export const BattleStateSchema: z.ZodType<BattleState> = z.lazy(() => z.object({
 
     // Pending spell save (waiting for player's saving throw against a spell)
     pendingSpellSave: PendingSpellSaveSchema.optional(),
+
+    // Pending smite decision (Paladin choosing whether to smite after melee hit)
+    pendingSmite: PendingSmiteSchema.optional(),
 
     // History stack
     history: z.array(BattleStateSchema).default([]),
@@ -867,6 +922,7 @@ export interface ActionResult {
     awaitingDamageRoll?: boolean;  // True if waiting for player to roll damage
     awaitingAttackRoll?: boolean;  // True if waiting for player to roll attack (visual dice)
     awaitingSaveRoll?: boolean;    // True if waiting for player's saving throw
+    awaitingSmiteDecision?: boolean; // True if Paladin can choose to smite
 }
 
 // =============================================================================

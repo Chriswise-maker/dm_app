@@ -43,6 +43,9 @@ import {
     type PendingSpellSave,
     type SecondWindPayload,
     type ActionSurgePayload,
+    type SmitePayload,
+    type DeclineSmitePayload,
+    type PendingSmite,
     ACTION_DEFAULT_COST,
     RangeBand,
     TurnResourcesSchema,
@@ -529,6 +532,35 @@ export class CombatEngineV2 {
      * Returns an empty array if it's not this entity's turn or combat isn't active.
      */
     getLegalActions(entityId: string): LegalAction[] {
+        // Special phase: Paladin smite decision
+        if (this.state.phase === 'AWAIT_SMITE_DECISION' && this.state.pendingSmite) {
+            if (this.state.pendingSmite.attackerId !== entityId) return [];
+            const attacker = this.getEntity(entityId);
+            if (!attacker) return [];
+
+            const actions: LegalAction[] = [];
+            for (let lvl = 1; lvl <= 3; lvl++) {
+                if ((attacker.spellSlots[String(lvl)] ?? 0) > 0) {
+                    const target = this.getEntity(this.state.pendingSmite.targetId);
+                    const isUndeadOrFiend = target?.creatureType === 'undead' || target?.creatureType === 'fiend';
+                    let diceCount = lvl + 1 + (isUndeadOrFiend ? 1 : 0);
+                    diceCount = Math.min(diceCount, 5);
+                    const actionType = `SMITE_${lvl}` as "SMITE_1" | "SMITE_2" | "SMITE_3";
+                    actions.push({
+                        type: actionType,
+                        description: `Divine Smite (level ${lvl} slot) — ${diceCount}d8 radiant damage`,
+                        resourceCost: "free",
+                    });
+                }
+            }
+            actions.push({
+                type: "DECLINE_SMITE",
+                description: "Decline — deal normal damage without smite",
+                resourceCost: "free",
+            });
+            return actions;
+        }
+
         if (this.state.phase !== "ACTIVE") return [];
 
         const currentTurnEntityId = this.state.turnOrder[this.state.turnIndex];
@@ -1568,6 +1600,14 @@ export class CombatEngineV2 {
             case "ACTION_SURGE":
                 return this.processActionSurge(payload as ActionSurgePayload);
 
+            case "SMITE_1":
+            case "SMITE_2":
+            case "SMITE_3":
+                return this.processSmite(payload as SmitePayload);
+
+            case "DECLINE_SMITE":
+                return this.processDeclineSmite(payload as DeclineSmitePayload);
+
             case "CAST_SPELL":
                 return this.processCastSpell(payload as CastSpellPayload);
 
@@ -2368,6 +2408,11 @@ export class CombatEngineV2 {
             ? this.doubleDiceFormula(baseDamageFormula)
             : baseDamageFormula;
 
+        // Sneak Attack auto-applies on hit (Rogue, finesse/ranged weapon, advantage or ally in melee)
+        logs.push(...this.checkAndApplySneakAttack(
+            attacker, target.id, isRangedAttack, hasAdvantage, payload.weaponName
+        ));
+
         // For PLAYER attacks: pause and wait for damage roll
         if (attacker.type === 'player') {
             this.state.phase = 'AWAIT_DAMAGE_ROLL';
@@ -2396,6 +2441,7 @@ export class CombatEngineV2 {
         // For ENEMY attacks: auto-roll damage immediately
         const damageRoll = this.rollFn(damageFormula);
         logs.push(...this.applyWeaponDamage(attacker, target, damageRoll.total, damageFormula, isCritical, isRangedAttack, matchedWeapon?.damageType));
+        this.clearSneakAttackModifier(attacker);
 
         this.state.updatedAt = Date.now();
 
@@ -2439,10 +2485,6 @@ export class CombatEngineV2 {
             };
         }
 
-        this.pushHistory();
-        const logs: CombatLogEntry[] = [];
-        // const pending = this.state.pendingAttack; // Already defined above
-
         const attacker = this.getEntity(pending.attackerId);
         const target = this.getEntity(pending.targetId);
 
@@ -2455,6 +2497,37 @@ export class CombatEngineV2 {
             };
         }
 
+        // Paladin Divine Smite: if melee hit + spell slots available, enter AWAIT_SMITE_DECISION
+        if (this.canSmite(attacker, pending.isRanged ?? false)) {
+            this.pushHistory();
+            this.state.phase = 'AWAIT_SMITE_DECISION';
+            this.state.pendingSmite = {
+                attackerId: attacker.id,
+                targetId: target.id,
+                isCritical: pending.isCritical,
+                isRanged: pending.isRanged ?? false,
+                weaponName: pending.weaponName,
+                damageFormula: pending.damageFormula,
+                damageType: pending.damageType,
+                damageRoll,
+                createdAt: Date.now(),
+            };
+            this.state.pendingAttack = undefined;
+            this.state.updatedAt = Date.now();
+
+            activity.system(this.state.sessionId, `${attacker.name} can Divine Smite — awaiting decision`);
+
+            return {
+                success: true,
+                logs: [],
+                newState: this.getState() as BattleState,
+                awaitingSmiteDecision: true,
+            };
+        }
+
+        this.pushHistory();
+        const logs: CombatLogEntry[] = [];
+
         logs.push(...this.applyWeaponDamage(
             attacker,
             target,
@@ -2464,6 +2537,7 @@ export class CombatEngineV2 {
             pending.isRanged ?? false,
             pending.damageType
         ));
+        this.clearSneakAttackModifier(attacker);
 
         // Clear pending attack and resume normal phase
         this.state.pendingAttack = undefined;
@@ -2871,6 +2945,205 @@ export class CombatEngineV2 {
 
         activity.system(this.state.sessionId, `${entity.name} uses Action Surge`);
         this.state.updatedAt = Date.now();
+
+        return { success: true, logs, newState: this.getState() as BattleState };
+    }
+
+    // ===========================================================================
+    // SNEAK ATTACK & DIVINE SMITE (Tier 3)
+    // ===========================================================================
+
+    /**
+     * Check and apply Sneak Attack for a Rogue's successful hit.
+     * Auto-applies if conditions are met — no player prompt needed.
+     * Returns log entries describing the sneak attack (empty if not applicable).
+     */
+    private checkAndApplySneakAttack(
+        attacker: CombatEntity,
+        targetId: string,
+        isRanged: boolean,
+        hasAdvantage: boolean,
+        weaponName?: string,
+    ): CombatLogEntry[] {
+        if (attacker.characterClass !== 'Rogue') return [];
+
+        // Already used this turn
+        if (this.state.turnResources?.sneakAttackUsedThisTurn) return [];
+
+        // Check weapon: must be finesse or ranged
+        const weapon = weaponName && attacker.weapons?.length
+            ? attacker.weapons.find(w => w.name === weaponName)
+            : undefined;
+        const weaponIsFinesse = weapon?.properties?.includes('finesse') ?? false;
+        const weaponIsRanged = weapon?.isRanged ?? isRanged;
+        if (!weaponIsFinesse && !weaponIsRanged) return [];
+
+        // Check conditions: (a) advantage on attack, OR (b) ally within melee of target
+        const allyInMelee = this.state.entities.some(e =>
+            e.id !== attacker.id &&
+            e.status === 'ALIVE' &&
+            ((attacker.type === 'player' && (e.type === 'player' || e.type === 'ally')) ||
+             (attacker.type === 'ally' && (e.type === 'player' || e.type === 'ally')) ||
+             (attacker.type === 'enemy' && e.type === 'enemy')) &&
+            this.getRangeBetween(e.id, targetId) === RangeBand.MELEE
+        );
+
+        if (!hasAdvantage && !allyInMelee) return [];
+
+        // Apply! dice = ceil(level/2)d6
+        const level = attacker.level ?? 1;
+        const diceCount = Math.ceil(level / 2);
+        const formula = `${diceCount}d6`;
+        const damageType = weapon?.damageType ?? attacker.damageType;
+
+        // Add temporary extra_damage modifier (will be processed by applyWeaponDamage)
+        attacker.activeModifiers.push({
+            type: 'extra_damage',
+            formula,
+            damageType,
+            sourceCondition: 'sneak_attack',
+        });
+
+        if (this.state.turnResources) {
+            this.state.turnResources.sneakAttackUsedThisTurn = true;
+        }
+
+        const logs: CombatLogEntry[] = [];
+        const target = this.getEntity(targetId);
+        const reason = hasAdvantage ? 'with advantage' : 'with an ally in melee';
+        logs.push(this.createLogEntry("ACTION", {
+            actorId: attacker.id,
+            targetId,
+            description: `${attacker.name} strikes ${reason} — Sneak Attack! (${formula} extra damage)`,
+        }));
+        activity.system(this.state.sessionId, `${attacker.name} Sneak Attack (${formula})`);
+
+        return logs;
+    }
+
+    /**
+     * Remove temporary sneak attack modifier after damage is applied.
+     */
+    private clearSneakAttackModifier(attacker: CombatEntity): void {
+        attacker.activeModifiers = attacker.activeModifiers.filter(
+            m => !(m.type === 'extra_damage' && m.sourceCondition === 'sneak_attack')
+        );
+    }
+
+    /**
+     * Check if a Paladin qualifies for Divine Smite after a melee hit.
+     */
+    private canSmite(attacker: CombatEntity, isRanged: boolean): boolean {
+        if (attacker.characterClass !== 'Paladin') return false;
+        if (isRanged) return false;
+        // Must have at least one spell slot (levels 1-3)
+        for (let lvl = 1; lvl <= 3; lvl++) {
+            if ((attacker.spellSlots[String(lvl)] ?? 0) > 0) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Process a Divine Smite action from AWAIT_SMITE_DECISION phase.
+     */
+    private processSmite(payload: SmitePayload): ActionResult {
+        if (this.state.phase !== 'AWAIT_SMITE_DECISION' || !this.state.pendingSmite) {
+            return this.actionError('Not in AWAIT_SMITE_DECISION phase');
+        }
+
+        const pending = this.state.pendingSmite;
+        const attacker = this.getEntity(pending.attackerId);
+        const target = this.getEntity(pending.targetId);
+        if (!attacker || !target) return this.actionError('Attacker or target no longer exists');
+
+        const slotLevel = payload.type === 'SMITE_1' ? 1 : payload.type === 'SMITE_2' ? 2 : 3;
+        const slotsAvailable = attacker.spellSlots[String(slotLevel)] ?? 0;
+        if (slotsAvailable <= 0) {
+            return this.actionError(`No level ${slotLevel} spell slots remaining`);
+        }
+
+        this.pushHistory();
+        const logs: CombatLogEntry[] = [];
+
+        // Consume slot
+        attacker.spellSlots[String(slotLevel)] = slotsAvailable - 1;
+
+        // Compute smite dice: (slotLevel + 1)d8 radiant, +1d8 vs undead/fiend, max 5d8
+        let diceCount = slotLevel + 1;
+        const isUndeadOrFiend = target.creatureType === 'undead' || target.creatureType === 'fiend';
+        if (isUndeadOrFiend) diceCount += 1;
+        diceCount = Math.min(diceCount, 5);
+        const smiteFormula = `${diceCount}d8`;
+
+        // Add temporary smite modifier
+        attacker.activeModifiers.push({
+            type: 'extra_damage',
+            formula: smiteFormula,
+            damageType: 'radiant',
+            sourceCondition: 'divine_smite',
+        });
+
+        const bonusNote = isUndeadOrFiend ? ` (+1d8 vs ${target.creatureType})` : '';
+        logs.push(this.createLogEntry("ACTION", {
+            actorId: attacker.id,
+            targetId: target.id,
+            description: `${attacker.name} channels divine energy — Divine Smite! (${smiteFormula} radiant damage${bonusNote})`,
+        }));
+        activity.system(this.state.sessionId, `${attacker.name} Divine Smite (level ${slotLevel} slot, ${smiteFormula})`);
+
+        // Now apply weapon damage (with the smite modifier active)
+        logs.push(...this.applyWeaponDamage(
+            attacker, target,
+            pending.damageRoll, pending.damageFormula,
+            pending.isCritical, pending.isRanged ?? false, pending.damageType
+        ));
+
+        // Clear temporary modifiers (smite + sneak attack)
+        attacker.activeModifiers = attacker.activeModifiers.filter(
+            m => !(m.type === 'extra_damage' &&
+                   (m.sourceCondition === 'divine_smite' || m.sourceCondition === 'sneak_attack'))
+        );
+
+        // Clear pending state
+        this.state.pendingSmite = undefined;
+        this.state.phase = 'ACTIVE';
+        this.state.updatedAt = Date.now();
+
+        const turnLogs = this.autoEndTurnIfExhausted(attacker);
+        logs.push(...turnLogs);
+
+        return { success: true, logs, newState: this.getState() as BattleState };
+    }
+
+    /**
+     * Decline Divine Smite — proceed with normal damage.
+     */
+    private processDeclineSmite(payload: DeclineSmitePayload): ActionResult {
+        if (this.state.phase !== 'AWAIT_SMITE_DECISION' || !this.state.pendingSmite) {
+            return this.actionError('Not in AWAIT_SMITE_DECISION phase');
+        }
+
+        const pending = this.state.pendingSmite;
+        const attacker = this.getEntity(pending.attackerId);
+        const target = this.getEntity(pending.targetId);
+        if (!attacker || !target) return this.actionError('Attacker or target no longer exists');
+
+        this.pushHistory();
+        const logs: CombatLogEntry[] = [];
+
+        logs.push(...this.applyWeaponDamage(
+            attacker, target,
+            pending.damageRoll, pending.damageFormula,
+            pending.isCritical, pending.isRanged ?? false, pending.damageType
+        ));
+        this.clearSneakAttackModifier(attacker);
+
+        this.state.pendingSmite = undefined;
+        this.state.phase = 'ACTIVE';
+        this.state.updatedAt = Date.now();
+
+        const turnLogs = this.autoEndTurnIfExhausted(attacker);
+        logs.push(...turnLogs);
 
         return { success: true, logs, newState: this.getState() as BattleState };
     }

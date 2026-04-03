@@ -272,6 +272,7 @@ export async function handleAutoCombatInitiation(
                     extraOptions = {
                         ...extraOptions,
                         characterClass: sheet.characterClass,
+                        level: sheet.level,
                         abilityScores: sheet.abilityScores,
                         initiativeModifier: dexModSheet,
                         attackModifier: deriveAttackBonus(sheet),
@@ -495,6 +496,11 @@ export function enrichEnemyFromSrd(entity: CombatEntity, loader: ContentPackLoad
     // Copy ability scores if present
     if (srd.abilityScores) {
         entity.abilityScores = srd.abilityScores;
+    }
+
+    // Copy creature type (e.g. "undead", "fiend", "dragon") for Divine Smite bonus
+    if (srd.type) {
+        entity.creatureType = srd.type;
     }
 }
 
