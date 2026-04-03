@@ -95,6 +95,7 @@ export const ActiveConditionSchema = z.object({
         "stunned",
         "unconscious",
         "concentrating",
+        "raging",
     ]),
     sourceId: z.string().optional(),          // who applied it
     duration: z.number().int().optional(),    // rounds remaining (undefined = permanent)
@@ -410,6 +411,8 @@ export const ActionTypeSchema = z.enum([
     "SMITE_2",              // Paladin: expend level 2 slot for (2+1)d8 radiant
     "SMITE_3",              // Paladin: expend level 3 slot for (3+1)d8 radiant
     "DECLINE_SMITE",        // Paladin: skip smite, proceed with normal damage
+    // Barbarian
+    "RAGE",                 // Barbarian: bonus action, grants rage bonuses, uses/long rest
     // Reactions (consume Reaction)
     "OPPORTUNITY_ATTACK",
     // Meta
@@ -439,6 +442,7 @@ export const ACTION_DEFAULT_COST: Record<ActionType, ResourceCost> = {
     SMITE_2:            "free",
     SMITE_3:            "free",
     DECLINE_SMITE:      "free",
+    RAGE:               "bonus_action",
     OPPORTUNITY_ATTACK: "reaction",
     END_TURN:           "none",
 };
@@ -614,6 +618,16 @@ export const ActionSurgePayloadSchema = z.object({
 export type ActionSurgePayload = z.infer<typeof ActionSurgePayloadSchema>;
 
 /**
+ * Rage Payload — Barbarian enters rage as a bonus action
+ */
+export const RagePayloadSchema = z.object({
+    type: z.literal("RAGE"),
+    entityId: z.string(),
+    resourceCost: ResourceCostSchema.optional(),
+});
+export type RagePayload = z.infer<typeof RagePayloadSchema>;
+
+/**
  * Divine Smite Payload — Paladin expends a spell slot after a melee hit
  */
 export const SmitePayloadSchema = z.object({
@@ -689,6 +703,7 @@ export const ActionPayloadSchema = z.discriminatedUnion("type", [
     UseItemPayloadSchema,
     SecondWindPayloadSchema,
     ActionSurgePayloadSchema,
+    RagePayloadSchema,
     SmitePayloadSchema,
     DeclineSmitePayloadSchema,
     OpportunityAttackPayloadSchema,

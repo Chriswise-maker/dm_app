@@ -14,7 +14,7 @@ export const ModifierSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("condition_immunity"), condition: z.string(), ..._src }),
   z.object({ type: z.literal("advantage"), on: z.enum(["attack", "save", "ability_check"]), stat: AbilityStat.optional(), ..._src }),
   z.object({ type: z.literal("disadvantage"), on: z.enum(["attack", "save", "ability_check"]), stat: AbilityStat.optional(), ..._src }),
-  z.object({ type: z.literal("extra_damage"), formula: z.string(), damageType: z.string(), ..._src }),
+  z.object({ type: z.literal("extra_damage"), formula: z.string(), damageType: z.string(), condition: z.string().optional(), ..._src }),
   z.object({ type: z.literal("speed_bonus"), value: z.number(), ..._src }),
   z.object({ type: z.literal("temp_hp"), value: z.number(), ..._src }),
 ]);

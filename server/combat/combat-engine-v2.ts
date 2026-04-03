@@ -45,6 +45,7 @@ import {
     type ActionSurgePayload,
     type SmitePayload,
     type DeclineSmitePayload,
+    type RagePayload,
     type PendingSmite,
     ACTION_DEFAULT_COST,
     RangeBand,
@@ -826,6 +827,18 @@ export class CombatEngineV2 {
             });
         }
 
+        // Rage (Barbarian): bonus action, grants rage bonuses
+        if (entity.characterClass === 'Barbarian' &&
+            hasBonusAction &&
+            (entity.featureUses["Rage"] ?? 0) > 0 &&
+            !this.hasActiveCondition(entity.id, "raging")) {
+            actions.push({
+                type: "RAGE",
+                description: "Rage — gain damage resistance, STR advantage, and bonus melee damage (bonus action)",
+                resourceCost: "bonus_action",
+            });
+        }
+
         // Always include END_TURN
         actions.push({
             type: "END_TURN",
@@ -1294,6 +1307,10 @@ export class CombatEngineV2 {
         // Extra damage from activeModifiers (Sneak Attack, Divine Smite, Rage, etc.)
         for (const mod of attacker.activeModifiers ?? []) {
             if (mod.type !== 'extra_damage') continue;
+            // Conditional extra damage: str_melee_only applies only to non-ranged (STR-based melee) attacks
+            if (mod.condition && mod.condition !== 'always') {
+                if (mod.condition === 'str_melee_only' && isRanged) continue;
+            }
             const extraRoll = this.rollFn(mod.formula);
             let extraDmg = extraRoll.total;
             const extraDt = mod.damageType;
@@ -1599,6 +1616,9 @@ export class CombatEngineV2 {
 
             case "ACTION_SURGE":
                 return this.processActionSurge(payload as ActionSurgePayload);
+
+            case "RAGE":
+                return this.processRage(payload as RagePayload);
 
             case "SMITE_1":
             case "SMITE_2":
@@ -2668,9 +2688,12 @@ export class CombatEngineV2 {
                 entity.activeModifiers = (entity.activeModifiers ?? []).filter(
                     m => m.sourceCondition !== cond.name
                 );
+                const desc = cond.name === "raging"
+                    ? `Rage ends on ${entity.name}.`
+                    : `${entity.name} is no longer ${cond.name}.`;
                 logs.push(this.createLogEntry("CONDITION_REMOVED", {
                     targetId: entityId,
-                    description: `${entity.name} is no longer ${cond.name}.`,
+                    description: desc,
                 }));
             } else {
                 remaining.push({ ...cond, duration: newDuration });
@@ -2945,6 +2968,66 @@ export class CombatEngineV2 {
 
         activity.system(this.state.sessionId, `${entity.name} uses Action Surge`);
         this.state.updatedAt = Date.now();
+
+        return { success: true, logs, newState: this.getState() as BattleState };
+    }
+
+    // ===========================================================================
+    // RAGE (Tier 4 — Barbarian)
+    // ===========================================================================
+
+    /**
+     * Rage — Barbarian bonus action: grants damage resistance (bludgeoning,
+     * piercing, slashing), advantage on STR saves and checks, and +2 bonus
+     * melee damage on STR-based attacks.
+     */
+    private processRage(payload: RagePayload): ActionResult {
+        const entity = this.getEntity(payload.entityId);
+        if (!entity) return this.actionError(`Entity not found: ${payload.entityId}`);
+
+        if (entity.characterClass !== 'Barbarian') {
+            return this.actionError(`${entity.name} is not a Barbarian`);
+        }
+        if ((entity.featureUses["Rage"] ?? 0) <= 0) {
+            return this.actionError(`${entity.name} has no Rage uses remaining`);
+        }
+        if (this.hasActiveCondition(entity.id, "raging")) {
+            return this.actionError(`${entity.name} is already raging`);
+        }
+
+        const cost = payload.resourceCost ?? ACTION_DEFAULT_COST.RAGE;
+        if (!this.consumeResource(cost)) {
+            return this.actionError(`No ${cost} available for Rage`);
+        }
+
+        entity.featureUses["Rage"]--;
+
+        // Apply raging condition with duration 10
+        this.applyCondition(entity.id, { name: "raging", duration: 10 });
+
+        // Apply modifiers with sourceCondition: "raging"
+        const mods = entity.activeModifiers ?? [];
+        mods.push(
+            { type: "advantage", on: "save", stat: "str", sourceCondition: "raging" },
+            { type: "advantage", on: "ability_check", stat: "str", sourceCondition: "raging" },
+            { type: "damage_resistance", damageType: "bludgeoning", sourceCondition: "raging" },
+            { type: "damage_resistance", damageType: "piercing", sourceCondition: "raging" },
+            { type: "damage_resistance", damageType: "slashing", sourceCondition: "raging" },
+            { type: "extra_damage", formula: "+2", damageType: entity.damageType, condition: "str_melee_only", sourceCondition: "raging" },
+        );
+        entity.activeModifiers = mods;
+
+        const logs: CombatLogEntry[] = [];
+        logs.push(this.createLogEntry("ACTION", {
+            actorId: entity.id,
+            description: `${entity.name} enters a RAGE! Gains damage resistance, STR advantage, and +2 melee damage.`,
+        }));
+
+        activity.system(this.state.sessionId, `${entity.name} enters a Rage`);
+        this.state.updatedAt = Date.now();
+
+        const turnLogs = this.autoEndTurnIfExhausted(entity);
+        logs.push(...turnLogs);
 
         return { success: true, logs, newState: this.getState() as BattleState };
     }
