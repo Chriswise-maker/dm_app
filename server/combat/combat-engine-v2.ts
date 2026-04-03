@@ -1199,13 +1199,19 @@ export class CombatEngineV2 {
         const logs: CombatLogEntry[] = [];
         const dt = overrideDamageType ?? attacker.damageType;
 
+        const mods = target.activeModifiers ?? [];
+        const hasImmunity = target.immunities.includes(dt) ||
+            mods.some(m => m.type === 'damage_immunity' && m.damageType === dt);
+        const hasResistance = target.resistances.includes(dt) ||
+            mods.some(m => m.type === 'damage_resistance' && m.damageType === dt);
+
         let damage: number;
-        if (target.immunities.includes(dt)) {
+        if (hasImmunity) {
             damage = 0;
         } else {
             damage = Math.max(1, rawDamage);
             if (target.vulnerabilities.includes(dt)) damage *= 2;
-            if (target.resistances.includes(dt)) damage = Math.floor(damage / 2);
+            if (hasResistance) damage = Math.floor(damage / 2);
         }
 
         // Extra damage from activeModifiers (Sneak Attack, Divine Smite, Rage, etc.)
@@ -1214,11 +1220,15 @@ export class CombatEngineV2 {
             const extraRoll = this.rollFn(mod.formula);
             let extraDmg = extraRoll.total;
             const extraDt = mod.damageType;
-            if (target.immunities.includes(extraDt)) {
+            const extraHasImmunity = target.immunities.includes(extraDt) ||
+                mods.some(m => m.type === 'damage_immunity' && m.damageType === extraDt);
+            const extraHasResistance = target.resistances.includes(extraDt) ||
+                mods.some(m => m.type === 'damage_resistance' && m.damageType === extraDt);
+            if (extraHasImmunity) {
                 extraDmg = 0;
             } else {
                 if (target.vulnerabilities.includes(extraDt)) extraDmg *= 2;
-                if (target.resistances.includes(extraDt)) extraDmg = Math.floor(extraDmg / 2);
+                if (extraHasResistance) extraDmg = Math.floor(extraDmg / 2);
             }
             if (extraDmg > 0) {
                 damage += extraDmg;
@@ -1272,7 +1282,7 @@ export class CombatEngineV2 {
 
             activity.damage(this.state.sessionId, `${attacker.name} deals ${damage} ${attacker.damageType} to ${target.name} (${target.hp}/${target.maxHp} HP)`);
             logs.push(...this.checkConcentrationSave(target.id, damage));
-        } else if (target.immunities.includes(dt)) {
+        } else if (hasImmunity) {
             logs.push(this.createLogEntry("CUSTOM", {
                 targetId: target.id,
                 description: `${target.name} is immune to ${dt} damage!`,
@@ -2529,6 +2539,10 @@ export class CombatEngineV2 {
             }
             const newDuration = cond.duration - 1;
             if (newDuration <= 0) {
+                // Remove activeModifiers linked to this condition
+                entity.activeModifiers = (entity.activeModifiers ?? []).filter(
+                    m => m.sourceCondition !== cond.name
+                );
                 logs.push(this.createLogEntry("CONDITION_REMOVED", {
                     targetId: entityId,
                     description: `${entity.name} is no longer ${cond.name}.`,
@@ -2937,7 +2951,13 @@ export class CombatEngineV2 {
             const dt = spell.damageType ?? 'force';
             let damage: number;
 
-            if (target.immunities.includes(dt)) {
+            const spellMods = target.activeModifiers ?? [];
+            const spellHasImmunity = target.immunities.includes(dt) ||
+                spellMods.some(m => m.type === 'damage_immunity' && m.damageType === dt);
+            const spellHasResistance = target.resistances.includes(dt) ||
+                spellMods.some(m => m.type === 'damage_resistance' && m.damageType === dt);
+
+            if (spellHasImmunity) {
                 damage = 0;
                 logs.push(this.createLogEntry("CUSTOM", {
                     targetId,
@@ -2947,7 +2967,7 @@ export class CombatEngineV2 {
                 damage = rawRoll.total;
                 if (saveSuccess && spell.halfOnSave) damage = Math.floor(damage / 2);
                 if (target.vulnerabilities.includes(dt)) damage *= 2;
-                if (target.resistances.includes(dt)) damage = Math.floor(damage / 2);
+                if (spellHasResistance) damage = Math.floor(damage / 2);
 
                 // Absorb through tempHp
                 if (target.tempHp > 0) {

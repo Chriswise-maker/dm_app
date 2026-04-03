@@ -254,6 +254,40 @@ describe('resolveCheck', () => {
     expect(result.effectBonuses).toBe(3);
   });
 
+  // Advantage on STR ability check via modifier
+  it('advantage modifier on ability_check with stat=str applies to STR checks', () => {
+    const mods: Modifier[] = [
+      { type: 'advantage', on: 'ability_check', stat: 'str' },
+    ];
+    const result = resolveCheck(makeInput({
+      type: 'ability_check',
+      stat: 'str',
+      activeModifiers: mods,
+      dc: 15,
+      rollFn: sequentialRolls(8, 14),
+    }));
+    expect(result.d20Roll).toBe(14);
+    expect(result.secondD20).toBe(8);
+    expect(result.usedAdvantage).toBe(true);
+  });
+
+  // Advantage on STR ability check does NOT apply to DEX checks
+  it('advantage modifier on ability_check with stat=str does not apply to DEX checks', () => {
+    const mods: Modifier[] = [
+      { type: 'advantage', on: 'ability_check', stat: 'str' },
+    ];
+    let rollCount = 0;
+    const result = resolveCheck(makeInput({
+      type: 'ability_check',
+      stat: 'dex',
+      activeModifiers: mods,
+      dc: 15,
+      rollFn: () => { rollCount++; return 10; },
+    }));
+    expect(rollCount).toBe(1); // no advantage → single roll
+    expect(result.usedAdvantage).toBe(false);
+  });
+
   // preRolledD20 takes priority
   it('uses preRolledD20 when provided', () => {
     const result = resolveCheck(makeInput({

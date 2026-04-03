@@ -1922,4 +1922,164 @@ describe("CombatEngineV2", () => {
             expect(extraLogs).toHaveLength(0);
         });
     });
+
+    // =========================================================================
+    // MODIFIER-BASED RESISTANCE / IMMUNITY
+    // =========================================================================
+    describe("Modifier-based damage resistance and immunity", () => {
+        it("should halve damage when target has damage_resistance modifier", () => {
+            const fixedRoll = () => ({ total: 15, rolls: [15], isCritical: false, isFumble: false });
+            const localEngine = createCombatEngine(1, {}, fixedRoll);
+
+            const player = createTestPlayer({ initiative: 20, damageFormula: "1d8" });
+            // Goblin has resistance via activeModifiers, NOT via resistances[]
+            const goblin = createEnemyEntity("goblin-1", "Warded Goblin", 30, 5, 0, "1d4", {
+                initiative: 10,
+                activeModifiers: [{ type: "damage_resistance", damageType: "bludgeoning" }],
+            });
+
+            localEngine.initiateCombat([player, goblin]);
+
+            localEngine.submitAction({
+                type: "ATTACK",
+                attackerId: "player-1",
+                targetId: "goblin-1",
+                attackRoll: 20,
+                rawD20: 15,
+                isRanged: false,
+                advantage: false,
+                disadvantage: false,
+            });
+
+            // Apply 8 damage → halved to 4 via modifier resistance
+            localEngine.applyDamage(8);
+            expect(localEngine.getEntity("goblin-1")?.hp).toBe(26); // 30 - 4
+        });
+
+        it("should negate damage when target has damage_immunity modifier", () => {
+            const fixedRoll = () => ({ total: 15, rolls: [15], isCritical: false, isFumble: false });
+            const localEngine = createCombatEngine(1, {}, fixedRoll);
+
+            const player = createTestPlayer({ initiative: 20, damageFormula: "1d8" });
+            const goblin = createEnemyEntity("goblin-1", "Shielded Goblin", 30, 5, 0, "1d4", {
+                initiative: 10,
+                activeModifiers: [{ type: "damage_immunity", damageType: "bludgeoning" }],
+            });
+
+            localEngine.initiateCombat([player, goblin]);
+
+            localEngine.submitAction({
+                type: "ATTACK",
+                attackerId: "player-1",
+                targetId: "goblin-1",
+                attackRoll: 20,
+                rawD20: 15,
+                isRanged: false,
+                advantage: false,
+                disadvantage: false,
+            });
+
+            localEngine.applyDamage(8);
+            expect(localEngine.getEntity("goblin-1")?.hp).toBe(30); // no damage
+        });
+
+        it("should not double-apply resistance from both resistances[] and modifier", () => {
+            const fixedRoll = () => ({ total: 15, rolls: [15], isCritical: false, isFumble: false });
+            const localEngine = createCombatEngine(1, {}, fixedRoll);
+
+            const player = createTestPlayer({ initiative: 20, damageFormula: "1d8" });
+            // Goblin has resistance from BOTH sources
+            const goblin = createEnemyEntity("goblin-1", "Double Resist Goblin", 30, 5, 0, "1d4", {
+                initiative: 10,
+                resistances: ["bludgeoning"],
+                activeModifiers: [{ type: "damage_resistance", damageType: "bludgeoning" }],
+            });
+
+            localEngine.initiateCombat([player, goblin]);
+
+            localEngine.submitAction({
+                type: "ATTACK",
+                attackerId: "player-1",
+                targetId: "goblin-1",
+                attackRoll: 20,
+                rawD20: 15,
+                isRanged: false,
+                advantage: false,
+                disadvantage: false,
+            });
+
+            // Apply 8 damage → halved ONCE to 4 (not quartered)
+            localEngine.applyDamage(8);
+            expect(localEngine.getEntity("goblin-1")?.hp).toBe(26); // 30 - 4
+        });
+    });
+
+    // =========================================================================
+    // CONDITION DURATION DECAY + MODIFIER CLEANUP
+    // =========================================================================
+    describe("Condition duration decay and modifier cleanup", () => {
+        it("should expire a condition with duration:3 after 3 rounds and clean up linked modifiers", () => {
+            const player = createTestPlayer({ initiative: 20 });
+            const goblin = createTestGoblin({ initiative: 10 });
+
+            engine.initiateCombat([player, goblin]);
+
+            // Apply a condition with duration 3 and a linked modifier
+            engine.applyCondition("player-1", { name: "poisoned", duration: 3 });
+            const playerEntity = engine.getEntity("player-1")!;
+            playerEntity.activeModifiers.push({
+                type: "damage_resistance",
+                damageType: "poison",
+                sourceCondition: "poisoned",
+            });
+
+            expect(engine.hasActiveCondition("player-1", "poisoned")).toBe(true);
+
+            // Round 1 → 2: end both turns, player's next turn ticks duration 3→2
+            engine.submitAction({ type: "END_TURN", entityId: "player-1" });
+            engine.submitAction({ type: "END_TURN", entityId: "goblin-1" });
+            expect(engine.hasActiveCondition("player-1", "poisoned")).toBe(true);
+
+            // Round 2 → 3: ticks duration 2→1
+            engine.submitAction({ type: "END_TURN", entityId: "player-1" });
+            engine.submitAction({ type: "END_TURN", entityId: "goblin-1" });
+            expect(engine.hasActiveCondition("player-1", "poisoned")).toBe(true);
+
+            // Round 3 → 4: ticks duration 1→0, should be removed
+            engine.submitAction({ type: "END_TURN", entityId: "player-1" });
+            engine.submitAction({ type: "END_TURN", entityId: "goblin-1" });
+
+            expect(engine.hasActiveCondition("player-1", "poisoned")).toBe(false);
+
+            // Linked modifier should also be removed
+            const finalPlayer = engine.getEntity("player-1")!;
+            const linkedMods = finalPlayer.activeModifiers.filter(
+                m => m.sourceCondition === "poisoned"
+            );
+            expect(linkedMods).toHaveLength(0);
+        });
+
+        it("should keep modifiers without sourceCondition when condition expires", () => {
+            const player = createTestPlayer({ initiative: 20 });
+            const goblin = createTestGoblin({ initiative: 10 });
+
+            engine.initiateCombat([player, goblin]);
+
+            engine.applyCondition("player-1", { name: "poisoned", duration: 1 });
+            const playerEntity = engine.getEntity("player-1")!;
+            // Unlinked modifier (no sourceCondition) should survive
+            playerEntity.activeModifiers.push({
+                type: "damage_resistance",
+                damageType: "fire",
+            });
+
+            engine.submitAction({ type: "END_TURN", entityId: "player-1" });
+            engine.submitAction({ type: "END_TURN", entityId: "goblin-1" });
+
+            expect(engine.hasActiveCondition("player-1", "poisoned")).toBe(false);
+            const finalPlayer = engine.getEntity("player-1")!;
+            expect(finalPlayer.activeModifiers).toHaveLength(1);
+            expect(finalPlayer.activeModifiers[0].type).toBe("damage_resistance");
+        });
+    });
 });
