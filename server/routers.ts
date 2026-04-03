@@ -997,6 +997,8 @@ export const appRouter = router({
                 proficiencyBonus: sheet.proficiencyBonus,
                 resistances: collectResistances(sheet),
                 immunities: collectImmunities(sheet),
+                level: sheet.level,
+                featureUses: actorState.featureUses ?? {},
               };
             } catch (e) {
               console.warn(`[addPlayer] Failed to parse actorSheet for ${character.name}:`, e);

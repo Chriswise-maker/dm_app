@@ -256,6 +256,12 @@ export const CombatEntitySchema = z.object({
     // Extra Attack: number of additional attacks per Attack action (Fighter 5+, etc.)
     extraAttacks: z.number().int().default(0),
 
+    // Character level (for level-scaling features like Second Wind: 1d10 + level)
+    level: z.number().int().min(1).max(20).optional(),
+
+    // Feature uses remaining (e.g. { "Second Wind": 1, "Action Surge": 1 })
+    featureUses: z.record(z.string(), z.number().int()).default({}),
+
     // Link to database (for persistence)
     dbCombatantId: z.number().int().optional(),
     dbCharacterId: z.number().int().optional(),
@@ -392,6 +398,9 @@ export const ActionTypeSchema = z.enum([
     "HIDE",
     "READY",
     "USE_ITEM",
+    // Class features
+    "SECOND_WIND",          // Fighter: bonus action, heal 1d10+level, 1/short rest
+    "ACTION_SURGE",         // Fighter: free, grants additional action, 1/short rest
     // Reactions (consume Reaction)
     "OPPORTUNITY_ATTACK",
     // Meta
@@ -415,6 +424,8 @@ export const ACTION_DEFAULT_COST: Record<ActionType, ResourceCost> = {
     HIDE:               "action",
     READY:              "action",
     USE_ITEM:           "action",
+    SECOND_WIND:        "bonus_action",
+    ACTION_SURGE:       "free",
     OPPORTUNITY_ATTACK: "reaction",
     END_TURN:           "none",
 };
@@ -570,6 +581,26 @@ export const HealPayloadSchema = z.object({
 export type HealPayload = z.infer<typeof HealPayloadSchema>;
 
 /**
+ * Second Wind Payload — Fighter class feature: heal 1d10 + fighter level as a bonus action
+ */
+export const SecondWindPayloadSchema = z.object({
+    type: z.literal("SECOND_WIND"),
+    entityId: z.string(),
+    resourceCost: ResourceCostSchema.optional(),
+});
+export type SecondWindPayload = z.infer<typeof SecondWindPayloadSchema>;
+
+/**
+ * Action Surge Payload — Fighter class feature: gain one additional action this turn
+ */
+export const ActionSurgePayloadSchema = z.object({
+    type: z.literal("ACTION_SURGE"),
+    entityId: z.string(),
+    resourceCost: ResourceCostSchema.optional(),
+});
+export type ActionSurgePayload = z.infer<typeof ActionSurgePayloadSchema>;
+
+/**
  * End Turn Payload — Explicitly end your turn
  */
 export const EndTurnPayloadSchema = z.object({
@@ -625,6 +656,8 @@ export const ActionPayloadSchema = z.discriminatedUnion("type", [
     HidePayloadSchema,
     ReadyPayloadSchema,
     UseItemPayloadSchema,
+    SecondWindPayloadSchema,
+    ActionSurgePayloadSchema,
     OpportunityAttackPayloadSchema,
     EndTurnPayloadSchema,
     CastSpellPayloadSchema,

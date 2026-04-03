@@ -41,6 +41,8 @@ import {
     type CastSpellPayload,
     type Spell,
     type PendingSpellSave,
+    type SecondWindPayload,
+    type ActionSurgePayload,
     ACTION_DEFAULT_COST,
     RangeBand,
     TurnResourcesSchema,
@@ -747,6 +749,49 @@ export class CombatEngineV2 {
                     }
                 }
             }
+        }
+
+        // --- Class Features ---
+        const hasBonusAction = r ? !r.bonusActionUsed : true;
+
+        // Second Wind (Fighter): bonus action, 1/short rest
+        if (entity.characterClass === 'Fighter' &&
+            hasBonusAction &&
+            (entity.featureUses["Second Wind"] ?? 0) > 0) {
+            actions.push({
+                type: "SECOND_WIND",
+                description: `Second Wind — heal 1d10+${entity.level ?? 1} HP (bonus action)`,
+                resourceCost: "bonus_action",
+            });
+        }
+
+        // Action Surge (Fighter): free action, 1/short rest
+        if (entity.characterClass === 'Fighter' &&
+            (entity.featureUses["Action Surge"] ?? 0) > 0) {
+            actions.push({
+                type: "ACTION_SURGE",
+                description: "Action Surge — gain one additional action this turn",
+                resourceCost: "free",
+            });
+        }
+
+        // Cunning Action (Rogue): Dash, Disengage, Hide as bonus action
+        if (entity.characterClass === 'Rogue' && hasBonusAction) {
+            actions.push({
+                type: "DASH",
+                description: "Cunning Action: Dash — double your movement (bonus action)",
+                resourceCost: "bonus_action",
+            });
+            actions.push({
+                type: "DISENGAGE",
+                description: "Cunning Action: Disengage — move without opportunity attacks (bonus action)",
+                resourceCost: "bonus_action",
+            });
+            actions.push({
+                type: "HIDE",
+                description: "Cunning Action: Hide — make a Stealth check (bonus action)",
+                resourceCost: "bonus_action",
+            });
         }
 
         // Always include END_TURN
@@ -1516,6 +1561,12 @@ export class CombatEngineV2 {
 
             case "OPPORTUNITY_ATTACK":
                 return this.processOpportunityAttack(payload as any);
+
+            case "SECOND_WIND":
+                return this.processSecondWind(payload as SecondWindPayload);
+
+            case "ACTION_SURGE":
+                return this.processActionSurge(payload as ActionSurgePayload);
 
             case "CAST_SPELL":
                 return this.processCastSpell(payload as CastSpellPayload);
@@ -2651,6 +2702,43 @@ export class CombatEngineV2 {
     // ===========================================================================
 
     /**
+     * Apply healing to an entity. Increases HP by amount, capped at maxHp.
+     * If entity was at 0 HP with unconscious condition, removes it and revives.
+     * Returns the actual amount healed and any log entries.
+     */
+    applyHealing(entityId: string, amount: number): { actual: number; logs: CombatLogEntry[] } {
+        const entity = this.getEntity(entityId);
+        if (!entity) return { actual: 0, logs: [] };
+
+        const logs: CombatLogEntry[] = [];
+        const oldHp = entity.hp;
+        entity.hp = Math.min(entity.maxHp, entity.hp + amount);
+        const actual = entity.hp - oldHp;
+
+        logs.push(this.createLogEntry("HEALING", {
+            actorId: entityId,
+            targetId: entityId,
+            amount: actual,
+            description: `${entity.name} heals for ${actual} HP. (${entity.hp}/${entity.maxHp})`,
+        }));
+
+        // Revive unconscious essential entity
+        if (entity.status === 'UNCONSCIOUS' && entity.hp > 0 && entity.isEssential) {
+            entity.status = 'ALIVE';
+            entity.deathSaves = { successes: 0, failures: 0 };
+            // Remove the unconscious active condition
+            entity.activeConditions = entity.activeConditions.filter(c => c.name !== 'unconscious');
+            logs.push(this.createLogEntry("CUSTOM", {
+                targetId: entityId,
+                description: `${entity.name} regains consciousness!`,
+            }));
+            activity.system(this.state.sessionId, `${entity.name} revived by healing`);
+        }
+
+        return { actual, logs };
+    }
+
+    /**
      * Apply healing to a target. Restores HP up to maxHp.
      * Revives UNCONSCIOUS essential entities if HP > 0.
      */
@@ -2694,6 +2782,95 @@ export class CombatEngineV2 {
         this.state.updatedAt = Date.now();
         const turnLogs = this.autoEndTurnIfExhausted(healer);
         logs.push(...turnLogs);
+
+        return { success: true, logs, newState: this.getState() as BattleState };
+    }
+
+    // ===========================================================================
+    // CLASS FEATURES (Tier 2)
+    // ===========================================================================
+
+    /**
+     * Second Wind — Fighter bonus action: heal 1d10 + fighter level HP. 1/short rest.
+     */
+    private processSecondWind(payload: SecondWindPayload): ActionResult {
+        const entity = this.getEntity(payload.entityId);
+        if (!entity) return this.actionError(`Entity not found: ${payload.entityId}`);
+
+        if (entity.characterClass !== 'Fighter') {
+            return this.actionError(`${entity.name} is not a Fighter`);
+        }
+        if ((entity.featureUses["Second Wind"] ?? 0) <= 0) {
+            return this.actionError(`${entity.name} has no Second Wind uses remaining`);
+        }
+
+        const cost = payload.resourceCost ?? ACTION_DEFAULT_COST.SECOND_WIND;
+        if (!this.consumeResource(cost)) {
+            return this.actionError(`No ${cost} available for Second Wind`);
+        }
+
+        // Decrement use
+        entity.featureUses["Second Wind"]--;
+
+        // Roll 1d10 + level
+        const level = entity.level ?? 1;
+        const roll = this.rollFn(`1d10+${level}`);
+        const logs: CombatLogEntry[] = [];
+
+        // Apply healing
+        const { actual, logs: healLogs } = this.applyHealing(entity.id, roll.total);
+        logs.push(...healLogs);
+
+        logs.push(this.createLogEntry("ACTION", {
+            actorId: entity.id,
+            roll: {
+                formula: `1d10+${level}`,
+                result: roll.total,
+                isCritical: false,
+                isFumble: false,
+            },
+            description: `${entity.name} uses Second Wind, rolling 1d10+${level} = ${roll.total} and healing ${actual} HP.`,
+        }));
+
+        activity.system(this.state.sessionId, `${entity.name} uses Second Wind — heals ${actual} HP`);
+        this.state.updatedAt = Date.now();
+
+        const turnLogs = this.autoEndTurnIfExhausted(entity);
+        logs.push(...turnLogs);
+
+        return { success: true, logs, newState: this.getState() as BattleState };
+    }
+
+    /**
+     * Action Surge — Fighter free action: re-opens the action slot. 1/short rest.
+     */
+    private processActionSurge(payload: ActionSurgePayload): ActionResult {
+        const entity = this.getEntity(payload.entityId);
+        if (!entity) return this.actionError(`Entity not found: ${payload.entityId}`);
+
+        if (entity.characterClass !== 'Fighter') {
+            return this.actionError(`${entity.name} is not a Fighter`);
+        }
+        if ((entity.featureUses["Action Surge"] ?? 0) <= 0) {
+            return this.actionError(`${entity.name} has no Action Surge uses remaining`);
+        }
+
+        // Free action — no resource consumed
+        entity.featureUses["Action Surge"]--;
+
+        // Re-open the action slot
+        if (this.state.turnResources) {
+            this.state.turnResources.actionUsed = false;
+        }
+
+        const logs: CombatLogEntry[] = [];
+        logs.push(this.createLogEntry("ACTION", {
+            actorId: entity.id,
+            description: `${entity.name} surges — one additional action available.`,
+        }));
+
+        activity.system(this.state.sessionId, `${entity.name} uses Action Surge`);
+        this.state.updatedAt = Date.now();
 
         return { success: true, logs, newState: this.getState() as BattleState };
     }
