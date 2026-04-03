@@ -1208,6 +1208,28 @@ export class CombatEngineV2 {
             if (target.resistances.includes(dt)) damage = Math.floor(damage / 2);
         }
 
+        // Extra damage from activeModifiers (Sneak Attack, Divine Smite, Rage, etc.)
+        for (const mod of attacker.activeModifiers ?? []) {
+            if (mod.type !== 'extra_damage') continue;
+            const extraRoll = this.rollFn(mod.formula);
+            let extraDmg = extraRoll.total;
+            const extraDt = mod.damageType;
+            if (target.immunities.includes(extraDt)) {
+                extraDmg = 0;
+            } else {
+                if (target.vulnerabilities.includes(extraDt)) extraDmg *= 2;
+                if (target.resistances.includes(extraDt)) extraDmg = Math.floor(extraDmg / 2);
+            }
+            if (extraDmg > 0) {
+                damage += extraDmg;
+                logs.push(this.createLogEntry("CUSTOM", {
+                    actorId: attacker.id,
+                    targetId: target.id,
+                    description: `Extra ${extraDt} damage (${mod.formula}) adds ${extraDmg} damage`,
+                }));
+            }
+        }
+
         if (target.status === "UNCONSCIOUS" && target.isEssential && damage > 0) {
             const deathFailures = isRanged ? 1 : 2;
             target.deathSaves.failures += deathFailures;

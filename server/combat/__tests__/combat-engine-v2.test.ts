@@ -1766,4 +1766,160 @@ describe("CombatEngineV2", () => {
             expect(result.error).toContain('spell slots');
         });
     });
+
+    describe("Extra Damage Modifiers", () => {
+        it("should deal increased damage with an extra_damage modifier on weapon hit", () => {
+            // Deterministic: extra_damage "2d6" always rolls 4 (2+2)
+            let rollIndex = 0;
+            const mockRollFn: RollFn = (formula: string) => {
+                rollIndex++;
+                if (formula === "2d6") {
+                    // Extra damage roll
+                    return { total: 7, rolls: [4, 3], isCritical: false, isFumble: false };
+                }
+                // Default damage roll for "1d8+3"
+                return { total: 6, rolls: [3], isCritical: false, isFumble: false };
+            };
+
+            const testEngine = createCombatEngine(1, {}, mockRollFn);
+            const rogue = createTestPlayer({
+                id: "rogue-1",
+                name: "Rogue",
+                initiative: 20,
+                attackModifier: 5,
+                damageFormula: "1d8+3",
+                activeModifiers: [
+                    { type: "extra_damage", formula: "2d6", damageType: "piercing" },
+                ],
+            });
+            const goblin = createTestGoblin({
+                initiative: 10,
+                hp: 50, // High HP so it survives
+                baseAC: 10,
+            });
+
+            testEngine.initiateCombat([rogue, goblin]);
+
+            // Enemy attack: engine auto-rolls attack and damage
+            // Use player with provided roll to control flow
+            const result = testEngine.submitAction({
+                type: "ATTACK",
+                attackerId: "rogue-1",
+                targetId: "goblin-1",
+                attackRoll: 15,
+                rawD20: 10,
+            });
+
+            // Player hit → AWAIT_DAMAGE_ROLL
+            expect(result.awaitingDamageRoll).toBe(true);
+
+            const damageResult = testEngine.applyDamage(6); // base weapon damage
+            expect(damageResult.success).toBe(true);
+
+            // Total damage = 6 (weapon) + 7 (extra 2d6 piercing) = 13
+            const goblinAfter = testEngine.getEntity("goblin-1");
+            expect(goblinAfter!.hp).toBe(50 - 13);
+
+            // Should have a log entry for the extra damage
+            const extraLog = damageResult.logs.find(l =>
+                l.description?.includes("Extra piercing damage")
+            );
+            expect(extraLog).toBeDefined();
+            expect(extraLog!.description).toContain("adds 7 damage");
+        });
+
+        it("should stack multiple extra_damage modifiers additively", () => {
+            const mockRollFn: RollFn = (formula: string) => {
+                if (formula === "2d6") return { total: 7, rolls: [4, 3], isCritical: false, isFumble: false };
+                if (formula === "1d4") return { total: 3, rolls: [3], isCritical: false, isFumble: false };
+                // base weapon damage
+                return { total: 5, rolls: [2], isCritical: false, isFumble: false };
+            };
+
+            const testEngine = createCombatEngine(1, {}, mockRollFn);
+            const paladin = createTestPlayer({
+                id: "paladin-1",
+                name: "Paladin",
+                initiative: 20,
+                attackModifier: 5,
+                damageFormula: "1d8+3",
+                activeModifiers: [
+                    { type: "extra_damage", formula: "2d6", damageType: "radiant" },  // Divine Smite
+                    { type: "extra_damage", formula: "1d4", damageType: "fire" },     // Flaming weapon
+                ],
+            });
+            const goblin = createTestGoblin({
+                initiative: 10,
+                hp: 50,
+                baseAC: 10,
+            });
+
+            testEngine.initiateCombat([paladin, goblin]);
+
+            testEngine.submitAction({
+                type: "ATTACK",
+                attackerId: "paladin-1",
+                targetId: "goblin-1",
+                attackRoll: 15,
+                rawD20: 10,
+            });
+
+            const damageResult = testEngine.applyDamage(5);
+            expect(damageResult.success).toBe(true);
+
+            // Total = 5 (weapon) + 7 (2d6 radiant) + 3 (1d4 fire) = 15
+            const goblinAfter = testEngine.getEntity("goblin-1");
+            expect(goblinAfter!.hp).toBe(50 - 15);
+
+            // Both extra damage sources should be logged
+            const extraLogs = damageResult.logs.filter(l =>
+                l.description?.includes("Extra") && l.description?.includes("damage")
+            );
+            expect(extraLogs).toHaveLength(2);
+        });
+
+        it("should deal normal damage with no extra_damage modifiers (regression)", () => {
+            const mockRollFn: RollFn = () => {
+                return { total: 5, rolls: [2], isCritical: false, isFumble: false };
+            };
+
+            const testEngine = createCombatEngine(1, {}, mockRollFn);
+            const fighter = createTestPlayer({
+                id: "fighter-1",
+                name: "Fighter",
+                initiative: 20,
+                attackModifier: 5,
+                damageFormula: "1d8+3",
+                // No activeModifiers
+            });
+            const goblin = createTestGoblin({
+                initiative: 10,
+                hp: 50,
+                baseAC: 10,
+            });
+
+            testEngine.initiateCombat([fighter, goblin]);
+
+            testEngine.submitAction({
+                type: "ATTACK",
+                attackerId: "fighter-1",
+                targetId: "goblin-1",
+                attackRoll: 15,
+                rawD20: 10,
+            });
+
+            const damageResult = testEngine.applyDamage(5);
+            expect(damageResult.success).toBe(true);
+
+            // Only base weapon damage, no extra
+            const goblinAfter = testEngine.getEntity("goblin-1");
+            expect(goblinAfter!.hp).toBe(50 - 5);
+
+            // No extra damage logs
+            const extraLogs = damageResult.logs.filter(l =>
+                l.description?.includes("Extra") && l.description?.includes("damage")
+            );
+            expect(extraLogs).toHaveLength(0);
+        });
+    });
 });

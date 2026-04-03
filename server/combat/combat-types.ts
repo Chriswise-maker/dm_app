@@ -12,6 +12,7 @@
  */
 
 import { z } from "zod";
+import { ModifierSchema } from "../kernel/effect-types";
 
 // =============================================================================
 // ENUMS & CONSTANTS
@@ -202,6 +203,9 @@ export const CombatEntitySchema = z.object({
 
     // D&D 5e status conditions with mechanical effects (Stage 5)
     activeConditions: z.array(ActiveConditionSchema).default([]),
+
+    // Active modifiers from class features, spells, items, etc. (e.g. Sneak Attack, Rage, Divine Smite)
+    activeModifiers: z.array(ModifierSchema).default([]),
 
     // Death saving throws (only relevant when isEssential entity is UNCONSCIOUS)
     deathSaves: z.object({
