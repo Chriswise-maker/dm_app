@@ -119,10 +119,25 @@ export const SpellSchema = z.object({
     damageType: z.string().optional(),        // "fire", "cold", etc.
     healingFormula: z.string().optional(),    // e.g. "2d4+4" for Cure Wounds
     requiresConcentration: z.boolean().default(false),
+    requiresAttackRoll: z.boolean().default(false),
     conditions: z.array(z.string()).default([]), // conditions to apply on hit
     description: z.string().default(''),
 });
 export type Spell = z.infer<typeof SpellSchema>;
+
+// =============================================================================
+// WEAPON ENTRY — A single weapon available to a combatant
+// =============================================================================
+
+export const WeaponEntrySchema = z.object({
+    name: z.string(),
+    damageFormula: z.string(),
+    damageType: z.string(),
+    isRanged: z.boolean().default(false),
+    attackBonus: z.number().int(),
+    properties: z.array(z.string()).default([]),  // "finesse", "thrown", "versatile", etc.
+});
+export type WeaponEntry = z.infer<typeof WeaponEntrySchema>;
 
 // =============================================================================
 // COMBAT ENTITY — A single combatant (player or monster)
@@ -162,6 +177,7 @@ export const CombatEntitySchema = z.object({
     id: z.string(),
     name: z.string(),
     type: z.enum(["player", "enemy", "ally"]),
+    characterClass: z.string().optional(),
 
     // Core stats (base values)
     hp: z.number().int(),
@@ -206,6 +222,8 @@ export const CombatEntitySchema = z.object({
     spells: z.array(SpellSchema).default([]),
     spellSlots: z.record(z.string(), z.number().int()).default({}), // { "1": 4, "2": 3 }
     spellSaveDC: z.number().int().optional(),
+    spellAttackBonus: z.number().int().optional(),
+    spellcastingAbility: z.enum(['str', 'dex', 'con', 'int', 'wis', 'cha']).optional(),
     abilityScores: z.object({
         str: z.number().int().default(10),
         dex: z.number().int().default(10),
@@ -222,6 +240,14 @@ export const CombatEntitySchema = z.object({
 
     // Position relative to others
     rangeTo: z.record(z.string(), z.nativeEnum(RangeBand)).default({}),
+
+    // Named weapons available for attack actions
+    weapons: z.array(WeaponEntrySchema).default([]),
+
+    // Save proficiencies (e.g. ['str','con'] for Fighter)
+    saveProficiencies: z.array(z.string()).default([]),
+    // Proficiency bonus (derived from level)
+    proficiencyBonus: z.number().int().optional(),
 
     // Extra Attack: number of additional attacks per Attack action (Fighter 5+, etc.)
     extraAttacks: z.number().int().default(0),
@@ -633,6 +659,7 @@ export const PendingAttackSchema = z.object({
     isRanged: z.boolean().default(false),
     weaponName: z.string().optional(),
     damageFormula: z.string(),      // Expected damage formula (e.g., "1d8+3")
+    damageType: z.string().optional(), // e.g., "piercing", "slashing", "bludgeoning"
     createdAt: z.number(),
 });
 export type PendingAttack = z.infer<typeof PendingAttackSchema>;
@@ -664,6 +691,8 @@ export const PendingAttackRollSchema = z.object({
     advantage: z.boolean().default(false),
     disadvantage: z.boolean().default(false),
     weaponName: z.string().optional(),
+    isSpellAttack: z.boolean().default(false),
+    spellName: z.string().optional(),
     createdAt: z.number(),
 });
 export type PendingAttackRoll = z.infer<typeof PendingAttackRollSchema>;

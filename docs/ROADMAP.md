@@ -1,6 +1,6 @@
 # D&D AI DM App — Roadmap
 
-> **Last updated:** 2026-03-29
+> **Last updated:** 2026-04-03
 > **Direction:** 2014 5e, theater-of-mind first, SRD + homebrew, LLM narrates / engine decides
 > **Archived docs:** [`docs/archive/`](archive/) — all prior plans and phase docs preserved there
 
@@ -42,7 +42,7 @@ The app is playable today for local play (one screen, multiple characters). The 
 - **History stack** — full undo support, `pushHistory()` before every mutation
 - **Singleton manager** — one `CombatEngineV2` per session via `CombatEngineManager`
 - **Concurrency lock** — per-session operation serialization prevents race conditions
-- **Test suite** — 107 tests across combat engine, UI behavior, legal actions, narration
+- **Test suite** — 227 tests across 22 files (combat engine, kernel, SRD, skill checks, rest mechanics, narrative boundary, character builder, spell attacks)
 
 **Reference:** [COMBAT_ENGINE.md](combat/COMBAT_ENGINE.md) for full technical details, [manual.md](manual.md) for player-facing reference.
 
@@ -54,118 +54,52 @@ Three phases, each one making the game noticeably better. Each phase is playable
 
 ---
 
-### Phase A: Close Gaps & Add Spatial Awareness
+### ✅ Phase A: Close Gaps & Add Spatial Awareness — COMPLETE (~2026-03-30)
 
 **Goal:** Fix the things that are half-built, and give combat a sense of *where things are* without needing a grid.
 
-**Why first:** These are the smallest changes with the biggest feel improvement. Combat starts respecting positioning and the UI stops promising things the engine can't deliver.
+| Task | What was built | Key files |
+|------|---------------|-----------|
+| **A1. Save rolls end-to-end** | `getState` emits `pendingRoll` for `AWAIT_SAVE_ROLL` phase; dice roller handles `rollType: "save"`; `submitRoll` routes to `submitSavingThrow` | `routers.ts`, `combat-engine-v2.ts`, `DiceRoller.tsx` |
+| **A2. Gated placeholder mechanics** | `READY` trigger fires on movement/turn events; `OPPORTUNITY_ATTACK` wired to leaving melee without `DISENGAGE`; `DASH`/`DISENGAGE` update spatial state | `combat-engine-v2.ts` |
+| **A3. Tests for gaps** | Spell save end-to-end, ready trigger resolution, spatial movement reactions | `server/combat/__tests__/phase-a-mechanics.test.ts` |
+| **A4. Out-of-combat skill checks** | `resolveSkillCheck()` — d20 + modifier + proficiency vs DC, advantage/disadvantage, 18-skill map; `mechanics.skillCheck` tRPC endpoint | `server/skill-check.ts`, `routers.ts` |
+| **A5. Hybrid spatial model** | `RangeBand` enum (MELEE=5ft / NEAR=30ft / FAR=60ft+); per-entity `rangeTo` map on `CombatEntity`; MOVE shifts bands; OA triggers on melee exit | `combat-types.ts`, `combat-engine-v2.ts` |
+| **A6. Basic rest mechanics** | Short rest (hit dice spending, HP recovery, Warlock pact slots); long rest (full HP, all spell slots, hit dice recovery); class-specific hit die + spell slot tables | `server/rest.ts`, `routers.ts` |
 
-#### A1. Wire save rolls end-to-end
-- `getState` must emit save-type pending rolls to the client
-- Client dice roller must handle `rollType: "save"` (currently only attack/damage/deathSave/initiative)
-- `submitRoll` must route save rolls to `submitSavingThrow` in the engine
-
-#### A2. Gate or implement placeholder mechanics
-Currently advertised but not enforced:
-- `READY` trigger resolution — either implement trigger firing when conditions are met, or remove from legal actions until it works
-- `OPPORTUNITY_ATTACK` — wire to movement events (requires A5 spatial model)
-- `DASH` / `DISENGAGE` — need spatial context to mean anything; gate until A5
-
-#### A3. Add tests for the gaps
-- Spell save end-to-end (player targeted by enemy spell, rolls save, damage applied correctly)
-- Ready action: set trigger, trigger fires, action resolves
-- Movement-triggered reactions (once spatial model exists)
-
-#### A4. Out-of-combat skill checks
-- Add a skill check resolver: d20 + ability modifier + proficiency vs DC
-- Wire into the chat flow so the DM can call for checks mechanically (not just narratively)
-- Support advantage/disadvantage
-- Keep it simple — no complex skill challenge framework, just "roll a check"
-
-#### A5. Hybrid spatial model (theater-of-mind)
-Start with just enough structure to make positioning matter:
-
-**Tier 1 (implement now):**
-- **Engagement:** who is in melee with whom
-- **Range bands:** melee / close (30ft) / far (60ft+)
-- Track per-entity, update on movement actions
-
-**Tier 2 (add when Tier 1 is solid):**
-- Reach and melee adjacency (for polearms, etc.)
-- Cover flags (half/three-quarters/full)
-- Zone/area membership (for ongoing AoE effects)
-- Movement speeds and modes (walk, fly, swim)
-
-**Design rule:** Players still speak naturally ("I run to the goblin and attack"). The engine tracks the spatial consequences. The DM narrates positioning. No grid required.
-
-#### A6. Basic rest mechanics
-- Short rest: spend hit dice to heal, recover some class resources
-- Long rest: full HP, recover spell slots, reset daily features
-- Wire into chat flow ("we take a long rest")
-- Persist resource state across rests
+**Implementation plan (historical):** [phase-a-implementation-plan.md](phase-a-implementation-plan.md)
 
 ---
 
-### Phase B: Rules Kernel & SRD Content
+### ✅ Phase B: Rules Kernel & SRD Content — COMPLETE (~2026-03-31)
 
 **Goal:** Build the foundation that makes the game *actually know D&D* instead of the LLM improvising rules.
 
-**Why second:** This is the big architectural lift. It needs Phase A's spatial model and gap fixes as a stable base. Once this exists, every future feature becomes easier to build correctly.
+| Task | What was built | Key files |
+|------|---------------|-----------|
+| **B1. Kernel schemas** | `ActorSheetSchema` (static character definition) + `ActorStateSchema` (runtime state); `deriveInitialState()` helper | `server/kernel/actor-sheet.ts`, `actor-state.ts` |
+| **B2. Effect system** | `EffectDefinition` + `EffectInstance` schemas; `getActiveModifiers()`, `tickEffects()`, `resolveConcentration()` pipeline | `server/kernel/effect-types.ts`, `effect-pipeline.ts` |
+| **B3. CheckResolver** | Single deterministic pipeline for attack rolls, saves, ability checks, contests; advantage/disadvantage; condition modifiers; used by both combat and out-of-combat | `server/kernel/check-resolver.ts`, `combat-adapter.ts` |
+| **B4. SRD data import** | [`5e-database`](https://github.com/5e-bits/5e-database) imported and normalized into `data/srd-2014/` (spells 407KB, monsters 642KB, classes 161KB, equipment 46KB, races 12KB) | `scripts/import-srd.ts`, `data/srd-2014/` |
+| **B5. Content pack loader** | `ContentPackLoader` with `srd-2014` + `custom` pack support; custom overrides SRD; `lookupByName()`, `filterEntries()`, `summarizeForLLM()` | `server/srd/content-pack.ts`, `srd-query.ts`, `index.ts` |
+| **B6. LLM tool calls** | `lookup_spell`, `lookup_monster`, `lookup_equipment`, `search_srd` wired as OpenAI function-calling tools in the DM chat loop | `server/prompts.ts`, `message-send.ts` |
+| **B7. DB migration** | `actorSheet` + `actorState` text columns added to `characters` table | `drizzle/0004_far_unus.sql`, `drizzle/schema.ts` |
+| **B8. Character migration** | Backfill script converts existing character rows to `ActorSheet` + `ActorState` | `scripts/migrate-characters.ts` |
+| **B9. Combat engine wiring** | Combat engine delegates to `kernel/check-resolver.ts` for attack/save resolution; `combat-adapter.ts` bridges `CombatEntity` ↔ kernel types | `combat-engine-v2.ts`, `server/kernel/combat-adapter.ts` |
+| **B10-11. Deterministic state ownership** | `ActorState` is source of truth for HP/slots/conditions; narrative boundary enforced in system prompt + tests | `server/kernel/__tests__/narrative-boundary.test.ts`, `server/prompts.ts` |
 
-#### B1. Shared rules kernel
-A layer that sits *below* combat, not inside it. Combat becomes one consumer, not the owner of all rules.
-
-**Core concepts to build:**
-
-| Concept | What it does |
-|---------|-------------|
-| `ActorSheet` | Full character/creature definition — ancestry, class, level, proficiencies, spells known, equipment, senses, speeds, feature references |
-| `ActorState` | Current runtime state — HP, temp HP, conditions, resource usage (spell slots, hit dice, feature uses), concentration, rest state |
-| `EffectDefinition` | Typed modifier: "while raging: resistance to bludgeoning, +2 melee damage" with duration, trigger, and resource cost |
-| `EffectInstance` | Active instance of an effect on a specific actor, with remaining duration and source tracking |
-| `CheckResolver` | One deterministic pipeline for: attack rolls, saving throws, ability checks, contested checks, passive checks. Applies advantage/disadvantage, modifiers, proficiency, conditions. Used by combat AND out-of-combat |
-| `SpatialState` | The hybrid model from Phase A, formalized as a kernel concept |
-
-**Migration strategy:** Combat engine V2 keeps working as-is. Kernel modules are introduced alongside it. One mechanic at a time, combat delegates to the kernel instead of its internal logic. No big-bang rewrite.
-
-#### B2. SRD as a content pack
-Import the D&D 5e SRD as structured, queryable local data.
-
-- Import [`5e-database`](https://github.com/5e-bits/5e-database) JSON into a normalized `srd-2014` content pack
-- Add a `custom` content pack format from day one (homebrew, missing content, house rules)
-- Build one lookup/query layer:
-  - Look up by name (fuzzy match): "fireball", "goblin", "longsword"
-  - Filter by category: "all 3rd-level wizard spells", "CR 5 or lower monsters"
-  - Return structured data for the engine OR concise summaries for LLM context
-- Wire as LLM tool calls: `lookup_spell`, `lookup_monster`, `lookup_class`, `lookup_equipment`, `search_srd`
-- Keep raw imported JSON for traceability; app runs against normalized internal records
-- Custom pack overrides SRD (homebrew takes precedence)
-
-#### B3. Rich character state
-Move from "name + stats + text inventory" to a real character profile.
-
-- Characters stored as `ActorSheet` (kernel concept from B1)
-- Class features, racial traits, spell lists, equipment with mechanical effects
-- Proficiencies (skills, saves, tools, weapons, armor)
-- Background and feat support
-- Character creation UI updated to support the richer model
-- Migration path for existing characters (backfill from current schema)
-
-#### B4. Deterministic state ownership
-The LLM stops being the source of truth for mechanics.
-
-- HP, inventory, conditions, resources, spell slots, rests, and feature uses live in structured `ActorState`
-- LLM context extraction continues for: world facts, NPC relationships, locations, plot state, quest progress
-- Character persistence becomes one canonical `ActorSheet` JSON + derived UI, not scattered columns + free-text
-- Add "narrative boundary" tests: verify the LLM never determines mechanical outcomes (damage, healing, slot usage, etc.)
+**Implementation plan (historical):** [phase-b-implementation-plan.md](phase-b-implementation-plan.md)
 
 ---
 
-### Phase C: Polish, Speed & Feature Depth
+### 🚧 Phase C: Polish, Speed & Feature Depth — CURRENT PHASE
 
 **Goal:** Make it feel good, run fast, and support the class features that make D&D characters distinctive.
 
 **Why last:** These are all "better" not "necessary." The game is playable and mechanically sound after Phase B. Phase C is about depth and polish.
+
+#### ✅ C0. Real D&D combat foundation — COMPLETE (~2026-04-03)
+Characters now enter combat with real spells, real weapons, correct proficiencies, and class awareness. SRD-driven `buildActorSheet()` wired into both creation endpoints. DM sees character class, spell list, and weapon list in battlefield context. Save proficiencies, proficiency bonus, and spellcasting ability all use real data.
 
 #### C1. Tiered models for speed
 Use fast/cheap models for structured combat tasks, reserve the main model for storytelling.

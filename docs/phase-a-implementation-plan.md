@@ -1,5 +1,7 @@
 # Phase A: Close Gaps & Add Spatial Awareness — Implementation Plan
 
+> **STATUS: ✅ COMPLETE (~2026-03-30)** — All tasks implemented. Preserved as historical reference.
+
 > **Purpose:** Step-by-step implementation spec for a coding agent. Every task includes exact file paths, line numbers (as of 2026-03-29), code changes, and test specs.
 >
 > **Read first:** [COMBAT_ENGINE.md](combat/COMBAT_ENGINE.md), [ROADMAP.md](ROADMAP.md)

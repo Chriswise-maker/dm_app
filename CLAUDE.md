@@ -24,8 +24,11 @@ Full-stack D&D campaign management app with AI-powered narration and determinist
 client/src/     → React frontend (pages, components, hooks, lib)
 server/_core/   → Server infra (Express, tRPC setup, auth, LLM clients)
 server/combat/  → Combat engine V2 (state machine, enemy AI, dice)
-server/         → Game logic (routers.ts, db.ts, prompts.ts, message-send.ts)
+server/kernel/  → Rules kernel (ActorSheet, ActorState, CheckResolver, effects)
+server/srd/     → SRD content loader + query API (lookup_spell, lookup_monster, etc.)
+server/         → Game logic (routers.ts, db.ts, prompts.ts, message-send.ts, skill-check.ts, rest.ts)
 shared/         → Shared types + constants (client ↔ server)
+data/srd-2014/  → Normalized SRD JSON (spells 407KB, monsters 642KB, classes, equipment, races)
 drizzle/        → DB schema (schema.ts) + migrations
 docs/           → Design docs, plans, fix logs
 ```
@@ -36,7 +39,8 @@ docs/           → Design docs, plans, fix logs
 - **UI components** — shadcn/ui in `client/src/components/ui/`. Don't modify these directly.
 - **LLM abstraction** — `server/_core/llm-with-settings.ts` picks provider from user settings. All LLM calls go through this.
 - **Combat is a state machine** — see `docs/combat/COMBAT_ENGINE.md`. Deterministic engine, undo support, LLM only for enemy AI decisions.
-- **Main router** — `server/routers.ts` (~1640 lines) contains all tRPC endpoints. Sub-routers: auth, sessions, characters, messages, settings, combatV2, tts.
+- **Main router** — `server/routers.ts` (~2000 lines) contains all tRPC endpoints. Sub-routers: auth, sessions, characters, mechanics, messages, settings, combat, tts.
+- **SRD tools** — `lookup_spell`, `lookup_monster`, `lookup_equipment`, `search_srd` wired as LLM tool calls in the DM chat loop (`server/prompts.ts`, `server/message-send.ts`).
 
 ## Conventions
 - Zod for all runtime validation (combat types, tRPC inputs)
@@ -48,5 +52,13 @@ docs/           → Design docs, plans, fix logs
 ## Database
 PostgreSQL with Drizzle ORM. Tables: users, sessions, characters, messages, userSettings, sessionContext, combatState, combatants. Schema at `drizzle/schema.ts`.
 
+Characters now have `actorSheet` (text/JSON) and `actorState` (text/JSON) columns storing `ActorSheet` and `ActorState` kernel types.
+
 ## Testing
-Combat engine has the primary test suite at `server/combat/__tests__/`. Tests use Vitest. Mock dice when testing combat logic.
+227 tests across 22 files. Run with Vitest. Mock dice when testing combat logic.
+
+Key test areas:
+- `server/combat/__tests__/` — combat engine (76 tests), phase-a mechanics, legal actions, enemy AI, actor-sheet-combat
+- `server/kernel/__tests__/` — schemas, check-resolver, effects, narrative-boundary (50 tests)
+- `server/srd/__tests__/` — SRD lookup and filtering
+- `server/skill-check.test.ts`, `server/rest.test.ts` — out-of-combat mechanics

@@ -236,8 +236,9 @@ When you narrate damage, use only the numbers provided by the engine in the comb
 
 **COMBAT INITIATION - CRITICAL:**
 You MUST set "combatInitiated": true when ANY of these occur:
-- Player says "attack", "fight", "strike", "cast [offensive spell]", "shoot"
+- Player says "attack", "fight", "strike", "cast [offensive spell]", "shoot", "combat", "battle", "enemies", "start combat"
 - Player declares violent intent toward any creature or NPC
+- Player explicitly asks for a combat encounter
 - Hostile creatures attack or threaten immediate violence
 - A confrontation turns deadly
 
@@ -424,8 +425,9 @@ Create a complete, rules-compliant D&D 5e character. Follow these rules:
 1. **Ability Scores**: Use standard array (15, 14, 13, 12, 10, 8) distributed appropriately for the class
 2. **Hit Points**: Calculate based on class hit dice (e.g., Fighter d10, Wizard d6) + CON modifier × level
 3. **Armor Class**: Based on starting equipment and DEX modifier
-4. **Starting Equipment**: Use Player's Handbook starting equipment for the class and background
-5. **Personality**: Create a brief but engaging personality description
+4. **Personality**: Create a brief but engaging personality description
+
+Note: Equipment, proficiencies, spells, and features are handled automatically from SRD data — you only need to provide the stats and narrative details below.
 
 Return ONLY a JSON object with this exact structure:
 {
@@ -503,7 +505,10 @@ export function buildBattlefieldSnapshot(
     orderedEntities.forEach((entity, idx) => {
         const isCurrent = entity.id === currentTurnEntity?.id;
         const status = entity.status === "ALIVE" ? "" : ` [${entity.status}]`;
-        snapshot += `${idx + 1}. ${entity.name} (${entity.type}) - Init: ${entity.initiative}, HP: ${entity.hp}/${entity.maxHp}, AC: ${entity.baseAC}${status}${isCurrent ? " <- CURRENT TURN" : ""}\n`;
+        const charClass = entity.characterClass ? ` [${entity.characterClass}]` : '';
+        const weapons = entity.weapons?.length ? ` | weapons: ${entity.weapons.map((w: any) => w.name).join(', ')}` : '';
+        const spells = entity.spells?.length ? ` | spells: ${entity.spells.map((s: any) => s.name).join(', ')}` : '';
+        snapshot += `${idx + 1}. ${entity.name} (${entity.type})${charClass} - Init: ${entity.initiative}, HP: ${entity.hp}/${entity.maxHp}, AC: ${entity.baseAC}${status}${weapons}${spells}${isCurrent ? " <- CURRENT TURN" : ""}\n`;
     });
 
     const focusEntity = getBattleEntityById(state, focusEntityId);
@@ -531,6 +536,7 @@ export function buildCombatQueryPrompt(params: {
     playerHp?: number;
     playerMaxHp?: number;
     playerAc?: number;
+    abilityScores?: { str: number; dex: number; con: number; int: number; wis: number; cha: number };
     resourceStatus: string;
     actionList: string;
     question: string;
@@ -542,17 +548,22 @@ export function buildCombatQueryPrompt(params: {
         playerHp,
         playerMaxHp,
         playerAc,
+        abilityScores,
         resourceStatus,
         actionList,
         question,
     } = params;
+
+    const statsLine = abilityScores
+        ? `STR ${abilityScores.str} (+${Math.floor((abilityScores.str - 10) / 2)}), DEX ${abilityScores.dex} (+${Math.floor((abilityScores.dex - 10) / 2)}), CON ${abilityScores.con} (+${Math.floor((abilityScores.con - 10) / 2)}), INT ${abilityScores.int} (+${Math.floor((abilityScores.int - 10) / 2)}), WIS ${abilityScores.wis} (+${Math.floor((abilityScores.wis - 10) / 2)}), CHA ${abilityScores.cha} (+${Math.floor((abilityScores.cha - 10) / 2)})`
+        : null;
 
     return `You are a D&D 5e Dungeon Master helping a player understand their combat state and options.
 
 The combat engine is using theater-of-mind range bands instead of a tactical grid.
 The battlefield snapshot below is authoritative. Do NOT say you need a tactical map or enemy positions.
 
-PLAYER CHARACTER: ${playerName} (HP: ${playerHp ?? "?"}/${playerMaxHp ?? "?"}, AC: ${playerAc ?? "?"})
+PLAYER CHARACTER: ${playerName} (HP: ${playerHp ?? "?"}/${playerMaxHp ?? "?"}, AC: ${playerAc ?? "?"})${statsLine ? `\nABILITY SCORES: ${statsLine}` : ''}
 TURN RESOURCES: ${resourceStatus}
 
 BATTLEFIELD SNAPSHOT:
@@ -690,7 +701,7 @@ Resources: ${resourceText}
 [CURRENT ACTION]
 ${character.name}: ${userMessage}
 
-Respond as the Dungeon Master. Maintain consistency with established NPCs, locations, and plot points. If combat occurs, clearly state damage dealt and HP changes.`;
+Respond as the Dungeon Master. Maintain consistency with established NPCs, locations, and plot points.`;
 }
 
 /**

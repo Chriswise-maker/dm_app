@@ -165,7 +165,7 @@ export const appRouter = router({
       .mutation(async ({ input }) => {
         const db = await import('./db');
         const { deriveInitialState } = await import('./kernel');
-        const crypto = await import('crypto');
+        const { buildActorSheet, getSrdLoader } = await import('./srd');
 
         const result = await db.createCharacter({
           ...input,
@@ -173,34 +173,17 @@ export const appRouter = router({
           inventory: JSON.stringify(input.inventory),
         });
 
-        // Build ActorSheet from input data
-        const hitDieMap: Record<string, string> = {
-          barbarian: 'd12', fighter: 'd10', paladin: 'd10', ranger: 'd10',
-          bard: 'd8', cleric: 'd8', druid: 'd8', monk: 'd8', rogue: 'd8', warlock: 'd8',
-          sorcerer: 'd6', wizard: 'd6',
-        };
-        const sheet = {
-          id: crypto.randomUUID(),
+        // Build fully-populated ActorSheet from SRD data
+        const sheet = buildActorSheet({
           name: input.name,
-          ancestry: '',
           characterClass: input.className,
-          subclass: null,
+          ancestry: '', // Manual creation doesn't specify ancestry
           level: input.level,
           abilityScores: input.stats,
-          proficiencyBonus: Math.floor((input.level - 1) / 4) + 2,
-          proficiencies: { saves: [], skills: [], weapons: [], armor: [], tools: [] },
-          speeds: { walk: 30 },
-          senses: {},
-          hitDie: hitDieMap[input.className.toLowerCase()] ?? 'd8',
-          maxHp: input.hpMax,
-          ac: { base: input.ac, source: 'flat' },
-          spellcasting: null,
-          equipment: [],
-          features: [],
-          background: null,
-          feats: [],
-        };
-        const state = deriveInitialState(sheet as any);
+          hpMax: input.hpMax,
+          ac: input.ac,
+        }, getSrdLoader());
+        const state = deriveInitialState(sheet);
 
         await db.updateCharacter(result.id, {
           actorSheet: JSON.stringify(sheet),
@@ -365,36 +348,20 @@ export const appRouter = router({
           notes: characterData.notes,
         });
 
-        // Build ActorSheet for generated character
+        // Build fully-populated ActorSheet from SRD data
         const { deriveInitialState: deriveState } = await import('./kernel');
-        const crypto2 = await import('crypto');
-        const hitDieMap2: Record<string, string> = {
-          barbarian: 'd12', fighter: 'd10', paladin: 'd10', ranger: 'd10',
-          bard: 'd8', cleric: 'd8', druid: 'd8', monk: 'd8', rogue: 'd8', warlock: 'd8',
-          sorcerer: 'd6', wizard: 'd6',
-        };
-        const genSheet = {
-          id: crypto2.randomUUID(),
+        const { buildActorSheet: buildSheet, getSrdLoader: getLoader } = await import('./srd');
+        const genSheet = buildSheet({
           name: characterData.name,
-          ancestry: characterData.race ?? '',
           characterClass: characterData.className,
-          subclass: null,
+          ancestry: characterData.race ?? '',
           level: characterData.level,
           abilityScores: characterData.stats,
-          proficiencyBonus: Math.floor((characterData.level - 1) / 4) + 2,
-          proficiencies: { saves: [], skills: [], weapons: [], armor: [], tools: [] },
-          speeds: { walk: 30 },
-          senses: {},
-          hitDie: hitDieMap2[characterData.className.toLowerCase()] ?? 'd8',
-          maxHp: characterData.hpMax,
-          ac: { base: characterData.ac, source: 'flat' },
-          spellcasting: null,
-          equipment: [],
-          features: [],
+          hpMax: characterData.hpMax,
+          ac: characterData.ac,
           background: characterData.background ?? null,
-          feats: [],
-        };
-        const genState = deriveState(genSheet as any);
+        }, getLoader());
+        const genState = deriveState(genSheet);
         // Set hpCurrent to match the generated value (may differ from max)
         genState.hpCurrent = characterData.hpCurrent;
 
@@ -966,7 +933,7 @@ export const appRouter = router({
         const state = await db.getCombatState(input.sessionId);
         if (!state) throw new Error('Combat state not found. Call combat.initiate first.');
 
-        // Add player to combat
+        // Add player to legacy combatant table
         const combatant = await db.addCombatant({
           sessionId: input.sessionId,
           combatStateId: state.id,
@@ -983,6 +950,66 @@ export const appRouter = router({
           specialAbilities: null,
           position: input.position || null,
         });
+
+        // Also add a rich CombatEntity to the V2 engine if one is active
+        const { CombatEngineManager } = await import('./combat/combat-engine-manager');
+        const engine = CombatEngineManager.get(input.sessionId);
+        if (engine) {
+          const { createPlayerEntity } = await import('./combat/combat-types');
+          const { buildCombatSpells, buildCombatWeapons, deriveAttackBonus, deriveDamageFormula, collectResistances, collectImmunities } = await import('./combat/combat-helpers');
+          const stats = JSON.parse(character.stats || '{}');
+          const dexMod = Math.floor(((stats.dex || 10) - 10) / 2);
+          let extraOptions: Record<string, any> = {
+            characterClass: character.className || undefined,
+            initiativeModifier: dexMod,
+            abilityScores: stats,
+            dbCharacterId: character.id,
+          };
+
+          if (character.actorSheet) {
+            try {
+              const { deriveInitialState } = await import('./kernel');
+              const { getSrdLoader } = await import('./srd');
+              const sheet = JSON.parse(character.actorSheet);
+              const actorState = character.actorState
+                ? JSON.parse(character.actorState)
+                : deriveInitialState(sheet);
+              const loader = getSrdLoader();
+
+              extraOptions = {
+                ...extraOptions,
+                characterClass: sheet.characterClass,
+                abilityScores: sheet.abilityScores,
+                initiativeModifier: Math.floor((sheet.abilityScores.dex - 10) / 2),
+                attackModifier: deriveAttackBonus(sheet),
+                damageFormula: deriveDamageFormula(sheet, loader),
+                spells: buildCombatSpells(sheet, loader),
+                spellSlots: actorState.spellSlotsCurrent,
+                spellSaveDC: sheet.spellcasting?.saveDC,
+                spellAttackBonus: sheet.spellcasting?.attackBonus,
+                spellcastingAbility: sheet.spellcasting?.ability,
+                weapons: buildCombatWeapons(sheet, loader),
+                saveProficiencies: sheet.proficiencies.saves,
+                proficiencyBonus: sheet.proficiencyBonus,
+                resistances: collectResistances(sheet),
+                immunities: collectImmunities(sheet),
+              };
+            } catch (e) {
+              console.warn(`[addPlayer] Failed to parse actorSheet for ${character.name}:`, e);
+            }
+          }
+
+          const playerEntity = createPlayerEntity(
+            `player-${character.id}`,
+            character.name,
+            character.hpCurrent,
+            character.hpMax,
+            character.ac,
+            input.initiative,
+            extraOptions,
+          );
+          engine.addEntity(playerEntity);
+        }
 
         return { success: true, combatant };
       }),
@@ -1528,6 +1555,7 @@ export const appRouter = router({
             attackModifier: e.attackModifier,
             damageFormula: e.damageFormula,
             damageType: e.damageType,
+            spellSlots: e.spellSlots,
           })),
           currentTurnEntity: engine.getCurrentTurnEntity()?.name ?? null,
           log: state.log.slice(-20), // Last 20 log entries

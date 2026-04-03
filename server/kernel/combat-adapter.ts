@@ -61,10 +61,11 @@ export function getEntityModifiers(entity: CombatEntity): Modifier[] {
 }
 
 /**
- * Derive proficiency bonus from entity. Defaults to +2 if not determinable.
+ * Derive proficiency bonus from entity. Uses entity's proficiencyBonus if set,
+ * otherwise defaults to +2.
  */
-export function getProficiencyBonus(_entity: CombatEntity): number {
-  return 2;
+export function getProficiencyBonus(entity: CombatEntity): number {
+  return entity.proficiencyBonus ?? 2;
 }
 
 /**
@@ -78,18 +79,18 @@ export function getAttackStat(entity: CombatEntity): AbilityStat {
 
 /**
  * Determine which ability stat applies for a spell attack.
- * Without class info on CombatEntity, defaults to 'int'.
+ * Uses entity's spellcastingAbility if set, otherwise defaults to 'int'.
  */
-export function getSpellAttackStat(_entity: CombatEntity): AbilityStat {
-  return 'int';
+export function getSpellAttackStat(entity: CombatEntity): AbilityStat {
+  return entity.spellcastingAbility ?? 'int';
 }
 
 /**
  * Check if entity is proficient in a saving throw.
- * CombatEntity doesn't currently track save proficiencies, so returns false.
+ * Uses entity's saveProficiencies array if populated.
  */
-export function isProficientInSave(_entity: CombatEntity, _stat: AbilityStat): boolean {
-  return false;
+export function isProficientInSave(entity: CombatEntity, stat: AbilityStat): boolean {
+  return entity.saveProficiencies?.includes(stat) ?? false;
 }
 
 /**

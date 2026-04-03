@@ -564,23 +564,44 @@ export class CombatEngineV2 {
         // --- Actions requiring the Action resource ---
 
         if (hasAction) {
-            // ATTACK — only advertise targets that are currently reachable
-            for (const target of validTargets) {
-                const range = this.getRangeBetween(entity.id, target.id);
-                const canReachMelee = range === RangeBand.MELEE || (range === RangeBand.NEAR && canMove);
-                const isAttackLegal = entity.isRanged ? true : canReachMelee;
-                if (!isAttackLegal) continue;
+            // ATTACK — emit one action per weapon if entity has named weapons,
+            // otherwise fall back to single generic attack (backward compat for enemies).
+            if (entity.weapons && entity.weapons.length > 0) {
+                for (const weapon of entity.weapons) {
+                    for (const target of validTargets) {
+                        const range = this.getRangeBetween(entity.id, target.id);
+                        const canReachMelee = range === RangeBand.MELEE || (range === RangeBand.NEAR && canMove);
+                        const isAttackLegal = weapon.isRanged ? true : canReachMelee;
+                        if (!isAttackLegal) continue;
 
-                actions.push({
-                    type: "ATTACK",
-                    targetId: target.id,
-                    targetName: target.name,
-                    weaponName: entity.damageFormula,
-                    description: range === RangeBand.MELEE
-                        ? `Attack ${target.name}`
-                        : `Move into melee and attack ${target.name}`,
-                    resourceCost: "action",
-                });
+                        actions.push({
+                            type: "ATTACK",
+                            targetId: target.id,
+                            targetName: target.name,
+                            weaponName: weapon.name,
+                            description: `Attack ${target.name} — ${weapon.name}`,
+                            resourceCost: "action",
+                        });
+                    }
+                }
+            } else {
+                for (const target of validTargets) {
+                    const range = this.getRangeBetween(entity.id, target.id);
+                    const canReachMelee = range === RangeBand.MELEE || (range === RangeBand.NEAR && canMove);
+                    const isAttackLegal = entity.isRanged ? true : canReachMelee;
+                    if (!isAttackLegal) continue;
+
+                    actions.push({
+                        type: "ATTACK",
+                        targetId: target.id,
+                        targetName: target.name,
+                        weaponName: entity.damageFormula,
+                        description: range === RangeBand.MELEE
+                            ? `Attack ${target.name}`
+                            : `Move into melee and attack ${target.name}`,
+                        resourceCost: "action",
+                    });
+                }
             }
         }
 
@@ -1172,10 +1193,11 @@ export class CombatEngineV2 {
         rawDamage: number,
         damageFormula: string,
         isCritical: boolean,
-        isRanged: boolean
+        isRanged: boolean,
+        overrideDamageType?: string
     ): CombatLogEntry[] {
         const logs: CombatLogEntry[] = [];
-        const dt = attacker.damageType;
+        const dt = overrideDamageType ?? attacker.damageType;
 
         let damage: number;
         if (target.immunities.includes(dt)) {
@@ -1903,14 +1925,21 @@ export class CombatEngineV2 {
         const effectiveDisadvantage = (payload.disadvantage || false) || targetIsDodging || attackerCondDisadv || rangedInMeleeDisadvantage;
         const effectiveAdvantage = (payload.advantage || false) || this.hasActiveCondition(attacker.id, 'invisible') || targetCondAdv;
 
+        // Use weapon-specific attack bonus if available
+        const matchedWeapon = payload.weaponName && attacker.weapons?.length
+            ? attacker.weapons.find(w => w.name === payload.weaponName)
+            : undefined;
+        const attackMod = matchedWeapon?.attackBonus ?? attacker.attackModifier;
+
         this.state.phase = 'AWAIT_ATTACK_ROLL';
         this.state.pendingAttackRoll = {
             attackerId: attacker.id,
             targetId: target.id,
-            attackModifier: attacker.attackModifier,
+            attackModifier: attackMod,
             advantage: effectiveAdvantage,
             disadvantage: effectiveDisadvantage,
             weaponName: payload.weaponName,
+            isSpellAttack: false,
             createdAt: Date.now(),
         };
         this.state.updatedAt = Date.now();
@@ -1972,6 +2001,39 @@ export class CombatEngineV2 {
         // Clear pending state and resume combat
         this.state.pendingAttackRoll = undefined;
         this.state.phase = 'ACTIVE';
+
+        // Spell attack roll: resolve via applySpellEffect instead of weapon damage
+        if (pending.isSpellAttack && pending.spellName) {
+            const caster = this.getEntity(pending.attackerId);
+            const target = this.getEntity(pending.targetId);
+            if (!caster || !target) return this.actionError('Caster or target not found');
+
+            const spell = caster.spells.find(s => s.name === pending.spellName);
+            if (!spell) return this.actionError(`Spell not found: ${pending.spellName}`);
+
+            const targetAC = target.baseAC;
+            const isHit = totalAttack >= targetAC || rawD20Roll === 20;
+            const isCrit = rawD20Roll === 20;
+            const isFumble = rawD20Roll === 1;
+
+            const logs: CombatLogEntry[] = [];
+            logs.push(this.createLogEntry("ATTACK_ROLL", {
+                actorId: caster.id,
+                targetId: target.id,
+                description: `${caster.name} rolls spell attack: ${rawD20Roll}+${pending.attackModifier}=${totalAttack} vs AC ${targetAC} — ${
+                    isFumble ? 'FUMBLE!' : isCrit ? 'CRITICAL HIT!' : isHit ? 'HIT!' : 'MISS!'
+                }`,
+            }));
+
+            if (isHit && !isFumble) {
+                logs.push(...this.applySpellEffect(caster, spell, pending.targetId, false));
+            }
+
+            this.state.updatedAt = Date.now();
+            const turnLogs = this.autoEndTurnIfExhausted(caster);
+            logs.push(...turnLogs);
+            return { success: true, logs, newState: this.getState() as BattleState };
+        }
 
         // Build an AttackPayload with the total pre-computed
         // (processAttack treats attackRoll as the TOTAL including modifier)
@@ -2214,10 +2276,14 @@ export class CombatEngineV2 {
             };
         }
 
-        // HIT! Now determine damage handling based on attacker type
+        // HIT! Resolve weapon-specific damage formula if available
+        const matchedWeapon = payload.weaponName && attacker.weapons?.length
+            ? attacker.weapons.find(w => w.name === payload.weaponName)
+            : undefined;
+        const baseDamageFormula = matchedWeapon?.damageFormula ?? attacker.damageFormula;
         const damageFormula = isCritical
-            ? this.doubleDiceFormula(attacker.damageFormula)
-            : attacker.damageFormula;
+            ? this.doubleDiceFormula(baseDamageFormula)
+            : baseDamageFormula;
 
         // For PLAYER attacks: pause and wait for damage roll
         if (attacker.type === 'player') {
@@ -2229,6 +2295,7 @@ export class CombatEngineV2 {
                 weaponName: payload.weaponName,
                 isRanged: isRangedAttack,
                 damageFormula,
+                damageType: matchedWeapon?.damageType ?? attacker.damageType,
                 createdAt: Date.now(),
             };
             this.state.updatedAt = Date.now();
@@ -2245,7 +2312,7 @@ export class CombatEngineV2 {
 
         // For ENEMY attacks: auto-roll damage immediately
         const damageRoll = this.rollFn(damageFormula);
-        logs.push(...this.applyWeaponDamage(attacker, target, damageRoll.total, damageFormula, isCritical, isRangedAttack));
+        logs.push(...this.applyWeaponDamage(attacker, target, damageRoll.total, damageFormula, isCritical, isRangedAttack, matchedWeapon?.damageType));
 
         this.state.updatedAt = Date.now();
 
@@ -2311,7 +2378,8 @@ export class CombatEngineV2 {
             damageRoll,
             pending.damageFormula,
             pending.isCritical,
-            pending.isRanged ?? false
+            pending.isRanged ?? false,
+            pending.damageType
         ));
 
         // Clear pending attack and resume normal phase
@@ -2660,12 +2728,70 @@ export class CombatEngineV2 {
             }
         }
 
-        // If spell has no effect (no damage, no healing, no conditions), just log and end
-        if (!spell.damageFormula && !spell.healingFormula && spell.conditions.length === 0) {
+        // If spell has no effect (no damage, no healing, no conditions, no attack roll), just log and end
+        if (!spell.damageFormula && !spell.healingFormula && spell.conditions.length === 0 && !spell.requiresAttackRoll) {
             this.state.updatedAt = Date.now();
             const turnLogs = this.autoEndTurnIfExhausted(caster);
             logs.push(...turnLogs);
             return { success: true, logs, newState: this.getState() as BattleState };
+        }
+
+        // Attack-roll spells (Fire Bolt, Guiding Bolt, etc.) — resolve via attack roll vs AC
+        if (spell.requiresAttackRoll) {
+            const attackBonus = caster.spellAttackBonus ?? caster.spellSaveDC ? (caster.spellSaveDC! - 8) : 0;
+            const targetId = targetIds[0];
+            const target = this.getEntity(targetId);
+            if (!target) return this.actionError('No target for spell attack');
+
+            if (caster.type === 'player') {
+                // Player: pause for visual dice
+                this.state.phase = 'AWAIT_ATTACK_ROLL';
+                this.state.pendingAttackRoll = {
+                    attackerId: caster.id,
+                    targetId: target.id,
+                    attackModifier: attackBonus,
+                    advantage: false,
+                    disadvantage: false,
+                    isSpellAttack: true,
+                    spellName: spell.name,
+                    createdAt: Date.now(),
+                };
+                this.state.updatedAt = Date.now();
+
+                activity.system(
+                    this.state.sessionId,
+                    `${caster.name} casts ${spell.name} at ${target.name}! Awaiting spell attack roll (1d20+${attackBonus})`
+                );
+
+                return {
+                    success: true,
+                    logs,
+                    newState: this.getState() as BattleState,
+                    awaitingAttackRoll: true,
+                };
+            } else {
+                // Enemy: auto-resolve spell attack
+                const attackRoll = this.rollFn('1d20');
+                const total = attackRoll.total + attackBonus;
+                const targetAC = target.baseAC;
+                const isHit = total >= targetAC;
+                const isCrit = attackRoll.total === 20;
+
+                logs.push(this.createLogEntry("ATTACK_ROLL", {
+                    actorId: caster.id,
+                    targetId: target.id,
+                    description: `${caster.name} rolls spell attack: ${attackRoll.total}+${attackBonus}=${total} vs AC ${targetAC} — ${isHit ? (isCrit ? 'CRITICAL HIT!' : 'HIT!') : 'MISS!'}`,
+                }));
+
+                if (isHit) {
+                    logs.push(...this.applySpellEffect(caster, spell, targetId, false));
+                }
+
+                this.state.updatedAt = Date.now();
+                const turnLogs = this.autoEndTurnIfExhausted(caster);
+                logs.push(...turnLogs);
+                return { success: true, logs, newState: this.getState() as BattleState };
+            }
         }
 
         // Healing spell: apply immediately (no saves)

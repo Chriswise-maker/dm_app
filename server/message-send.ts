@@ -31,6 +31,14 @@ async function streamToString(
   return full;
 }
 
+/** Quick check: does a message look like a question rather than a dice roll? */
+function looksLikeQuestion(message: string): boolean {
+  const trimmed = message.trim().toLowerCase();
+  if (!trimmed) return false;
+  return trimmed.includes('?')
+    || /^(can i|could i|do i|am i|may i|should i|what|how|where|who|when|why|which)\b/.test(trimmed);
+}
+
 function formatCombatParserError(error: string): string {
   if (error.startsWith('Could not find target:')) {
     return `I couldn't identify that target. Try naming the creature directly.`;
@@ -114,6 +122,39 @@ export async function executeMessageSend(
   if (engine && enginePhase === 'AWAIT_DAMAGE_ROLL') {
     console.log('[CombatV2] In damage roll phase, extracting damage value');
 
+    // Check if the player is asking a question instead of providing a roll
+    if (looksLikeQuestion(input.message)) {
+      const state = engine.getState();
+      const currentEntityId = state.pendingAttack?.attackerId;
+      const currentEntity = currentEntityId ? state.entities.find(e => e.id === currentEntityId) : null;
+      const queryPrompt = buildCombatQueryPrompt({
+        battleState: state,
+        focusEntityId: currentEntityId,
+        playerName: currentEntity?.name || character.name,
+        playerHp: currentEntity?.hp,
+        playerMaxHp: currentEntity?.maxHp,
+        playerAc: currentEntity?.baseAC,
+        abilityScores: currentEntity?.abilityScores,
+        resourceStatus: 'Awaiting damage roll',
+        actionList: `Currently waiting for damage roll (${state.pendingAttack?.damageFormula})`,
+        question: input.message,
+      });
+      const { invokeLLMWithSettings } = await import('./llm-with-settings');
+      const queryResult = await invokeLLMWithSettings(ctx.user.id, {
+        messages: [
+          { role: 'system', content: 'You are a D&D 5e Dungeon Master. Answer combat questions concisely. After answering, remind the player to roll their damage.' },
+          { role: 'user', content: queryPrompt },
+        ],
+        max_tokens: 500,
+      });
+      const rawContent = queryResult.choices?.[0]?.message?.content;
+      const queryResponse = (typeof rawContent === 'string' ? rawContent : null)
+        || `I'm not sure how to answer that. You still need to roll damage (${state.pendingAttack?.damageFormula}).`;
+      await db.saveMessage({ sessionId: input.sessionId, characterName: character.name, content: input.message, isDm: 0 });
+      await db.saveMessage({ sessionId: input.sessionId, characterName: 'DM', content: queryResponse, isDm: 1 });
+      return { response: queryResponse, combatTriggered: false, enemiesAdded: 0 };
+    }
+
     // Extract damage number from message
     const damageMatch = input.message.match(/(\d+)/);
     if (!damageMatch) {
@@ -140,7 +181,9 @@ export async function executeMessageSend(
     const damageRoll = parseInt(damageMatch[1], 10);
     console.log(`[CombatV2] Extracted damage roll: ${damageRoll}`);
 
-    const attackerId = engine.getState().pendingAttack?.attackerId;
+    // Capture pending attack context before applyDamage clears it
+    const pendingCtx = engine.getState().pendingAttack;
+    const attackerId = pendingCtx?.attackerId;
 
     // Apply damage through engine
     const result = engine.applyDamage(damageRoll);
@@ -155,8 +198,14 @@ export async function executeMessageSend(
     const { syncCombatStateToDb } = await import('./combat/combat-helpers');
     await syncCombatStateToDb(input.sessionId);
 
-    // Generate narrative
+    // Generate narrative — this is the single narration covering the entire attack (hit + damage)
     const currentState = engine.getState();
+    const stillPlayersTurn = currentState.phase === 'ACTIVE'
+        && engine.getCurrentTurnEntity()?.type === 'player';
+    const hasRemainingResources = stillPlayersTurn && currentState.turnResources
+        ? (!currentState.turnResources.actionUsed || !currentState.turnResources.bonusActionUsed)
+        : false;
+
     const narrative = await streamToString(
       await generateCombatNarrativeStream(
         input.sessionId,
@@ -166,7 +215,13 @@ export async function executeMessageSend(
         character.name,
         currentState.entities,
         false,
-        attackerId
+        attackerId,
+        {
+          weaponName: pendingCtx?.weaponName,
+          damageType: pendingCtx?.damageType,
+          isCriticalHit: pendingCtx?.isCritical,
+          playerHasRemainingResources: hasRemainingResources || undefined,
+        }
       ),
       streamHooks?.onNarrativeDelta
     );
@@ -208,9 +263,20 @@ export async function executeMessageSend(
     };
   }
 
-  // Handle AWAIT_ATTACK_ROLL phase - player provides their d20 via chat (fallback for visual dice)
+  // Handle AWAIT_SAVE_ROLL phase - player provides their saving throw via chat
   if (engine && enginePhase === 'AWAIT_SAVE_ROLL') {
     console.log('[CombatV2] In save roll phase, extracting roll value from chat');
+
+    if (looksLikeQuestion(input.message)) {
+      const pending = engine.getState().pendingSpellSave;
+      const saveDC = pending?.spellSaveDC ?? '?';
+      const saveStat = pending?.saveStat ?? '?';
+      const spellName = pending?.spellName ?? 'a spell';
+      await db.saveMessage({ sessionId: input.sessionId, characterName: character.name, content: input.message, isDm: 0 });
+      const answer = `You need to make a **${saveStat} saving throw** (DC ${saveDC}) against ${spellName}. Roll a d20 and tell me the result.`;
+      await db.saveMessage({ sessionId: input.sessionId, characterName: 'DM', content: answer, isDm: 1 });
+      return { response: answer, combatTriggered: false, enemiesAdded: 0 };
+    }
 
     const pending = engine.getState().pendingSpellSave;
     const targetEntityId = pending?.pendingTargetIds[0];
@@ -364,6 +430,14 @@ export async function executeMessageSend(
   if (engine && enginePhase === 'AWAIT_ATTACK_ROLL') {
     console.log('[CombatV2] In attack roll phase, extracting roll value from chat');
 
+    if (looksLikeQuestion(input.message)) {
+      const pending = engine.getState().pendingAttackRoll;
+      await db.saveMessage({ sessionId: input.sessionId, characterName: character.name, content: input.message, isDm: 0 });
+      const answer = `You need to roll a **d20** for your attack roll. Use the dice roller in the sidebar or type the number (e.g. "15").`;
+      await db.saveMessage({ sessionId: input.sessionId, characterName: 'DM', content: answer, isDm: 1 });
+      return { response: answer, combatTriggered: false, enemiesAdded: 0 };
+    }
+
     const rollMatch = input.message.match(/\b(\d{1,2})\b/);
     if (!rollMatch) {
       // No number found - remind the player to use the dice roller or type a number
@@ -405,34 +479,29 @@ export async function executeMessageSend(
     const currentState = engine.getState();
     const isAwaitingDamage = currentState.phase === 'AWAIT_DAMAGE_ROLL' && !!currentState.pendingAttack;
 
-    const narrative = await streamToString(
-      await generateCombatNarrativeStream(
-        input.sessionId,
-        ctx.user.id,
-        result.logs,
-        input.message,
-        character.name,
-        currentState.entities,
-        false,
-        currentState.pendingAttackRoll?.attackerId,
-        {
-          awaitingDamageRoll: isAwaitingDamage,
-          pendingDamageFormula: currentState.pendingAttack?.damageFormula,
-          isCriticalHit: currentState.pendingAttack?.isCritical,
-          weaponName: currentState.pendingAttack?.weaponName,
-        }
-      ),
-      streamHooks?.onNarrativeDelta
-    );
-
     await db.saveMessage({ sessionId: input.sessionId, characterName: character.name, content: input.message, isDm: 0 });
 
-    // If the attack hit, prompt for damage roll
-    let dmContent = narrative;
+    let dmContent: string;
     if (isAwaitingDamage && currentState.pendingAttack) {
-      const dmgSuf = `\n\n**Roll your damage!** (${currentState.pendingAttack.damageFormula}${currentState.pendingAttack.isCritical ? ' — DOUBLE DICE for crit!' : ''})`;
-      dmContent += dmgSuf;
-      streamHooks?.onNarrativeDelta?.(dmgSuf);
+      // HIT — skip narration here; one combined narration will be generated after damage roll
+      const critNote = currentState.pendingAttack.isCritical ? ' **Critical hit!** DOUBLE DICE!' : '';
+      dmContent = `**Hit!**${critNote} Roll your damage (${currentState.pendingAttack.damageFormula}).`;
+      streamHooks?.onNarrativeDelta?.(dmContent);
+    } else {
+      // MISS or other outcome — generate narration now since there's no damage roll to follow
+      dmContent = await streamToString(
+        await generateCombatNarrativeStream(
+          input.sessionId,
+          ctx.user.id,
+          result.logs,
+          input.message,
+          character.name,
+          currentState.entities,
+          false,
+          currentState.pendingAttackRoll?.attackerId,
+        ),
+        streamHooks?.onNarrativeDelta
+      );
     }
 
     await db.saveMessage({ sessionId: input.sessionId, characterName: 'DM', content: dmContent, isDm: 1 });
@@ -663,7 +732,7 @@ export async function executeMessageSend(
     console.log('[CombatV2] Intercepting chat for player turn');
 
     // 1. Parse player action from chat
-    const parsed = await parsePlayerAction(input.sessionId, ctx.user.id, input.message);
+    const parsed = await parsePlayerAction(input.sessionId, ctx.user.id, input.message, recentMessages);
 
     // QUERY: player is asking about options/rules — respond with legal actions, don't consume turn
     if (parsed.error === 'QUERY') {
@@ -694,6 +763,7 @@ export async function executeMessageSend(
         playerHp: currentEntity?.hp,
         playerMaxHp: currentEntity?.maxHp,
         playerAc: currentEntity?.baseAC,
+        abilityScores: currentEntity?.abilityScores,
         resourceStatus,
         actionList,
         question: input.message,
@@ -761,35 +831,15 @@ export async function executeMessageSend(
       return { response: attackPrompt, combatTriggered: false, enemiesAdded: 0 };
     }
 
-    // 4b. Check if waiting for damage roll
+    // 4b. Check if waiting for damage roll — hit! Skip narration, prompt for damage.
+    // One combined narration will be generated after the damage roll resolves.
     if (result.awaitingDamageRoll) {
       const pendingAttack = engine!.getState().pendingAttack;
       const targetName = engine!.getState().entities.find(e => e.id === pendingAttack?.targetId)?.name || 'the enemy';
 
-      // Generate hit narrative and prompt for damage
-      const hitNarrative = await streamToString(
-        await generateCombatNarrativeStream(
-          input.sessionId,
-          ctx.user.id,
-          result.logs,
-          parsed.flavorText,
-          character.name,
-          engine!.getState().entities,
-          false,
-          pendingAttack?.attackerId,
-          {
-            awaitingDamageRoll: true,
-            pendingDamageFormula: pendingAttack?.damageFormula,
-            isCriticalHit: pendingAttack?.isCritical,
-            weaponName: pendingAttack?.weaponName,
-          }
-        ),
-        streamHooks?.onNarrativeDelta
-      );
-
-      const damageSuffix = `\n\n**Roll your damage!** (${pendingAttack?.damageFormula}${pendingAttack?.isCritical ? ' - DOUBLE DICE for crit!' : ''})`;
-      const damagePrompt = `${hitNarrative}${damageSuffix}`;
-      streamHooks?.onNarrativeDelta?.(damageSuffix);
+      const critNote = pendingAttack?.isCritical ? ' **Critical hit!** DOUBLE DICE!' : '';
+      const damagePrompt = `**Hit!**${critNote} Roll your damage (${pendingAttack?.damageFormula}) against ${targetName}.`;
+      streamHooks?.onNarrativeDelta?.(damagePrompt);
 
       await db.saveMessage({
         sessionId: input.sessionId,
@@ -891,7 +941,7 @@ export async function executeMessageSend(
   // Get V2 Battle State if engine is active (to pass to DM)
   const v2BattleState = engine?.getState() ?? null;
 
-  const enrichedPrompt = buildChatUserPrompt(
+  let enrichedPrompt = buildChatUserPrompt(
     character,
     stats,
     inventory,
@@ -903,6 +953,19 @@ export async function executeMessageSend(
     input.message,
     v2BattleState
   );
+
+  // If the player's message explicitly requests combat and no combat is active, inject
+  // a strong reminder so the DM reliably sets combatInitiated: true in its JSON output.
+  // This is needed because response_format: json_object is OpenAI-specific and Claude/Gemini
+  // rely entirely on prompt instructions for structured output compliance.
+  if (!existingCombatState?.inCombat && !(engine && enginePhase && enginePhase !== 'IDLE' && enginePhase !== 'RESOLVED')) {
+    const lowerMsg = input.message.toLowerCase();
+    const combatRequestTerms = ['combat', 'fight', 'attack', 'battle', 'enemies', 'start combat', 'initiate'];
+    const isExplicitCombatRequest = combatRequestTerms.some(t => lowerMsg.includes(t));
+    if (isExplicitCombatRequest) {
+      enrichedPrompt += '\n\n[SYSTEM REMINDER: The player has explicitly requested combat. Your JSON response MUST include "combatInitiated": true in gameStateChanges, with an "enemies" array containing full stat blocks (name, ac, hpMax, attackBonus, damageFormula, damageType, initiative). This is mandatory — do not omit it.]';
+    }
+  }
 
   // =====================================================================
   // SRD TOOL CALL LOOP — let the LLM look up spells, monsters, etc.

@@ -5,7 +5,7 @@
 
 import type { EnemyData } from '../response-parser';
 import { CombatEngineManager } from './combat-engine-manager';
-import { createPlayerEntity, createEnemyEntity, type CombatEntity, type Spell } from './combat-types';
+import { createPlayerEntity, createEnemyEntity, type CombatEntity, type Spell, type WeaponEntry } from './combat-types';
 import { runAILoop, shouldExecuteAI } from './enemy-ai-controller';
 import type { ActorSheet } from '../kernel/actor-sheet';
 import type { ActorState } from '../kernel/actor-state';
@@ -35,7 +35,7 @@ export function buildCombatSpells(
     for (const name of allNames) {
         const srd = lookupByName(srdLoader, 'spells', name);
         if (srd) {
-            spells.push(srdSpellToCombatSpell(srd));
+            spells.push(srdSpellToCombatSpell(srd, sheet.level));
         }
     }
     return spells;
@@ -116,7 +116,7 @@ export function deriveAttackBonus(sheet: ActorSheet): number {
  * Derive primary damage formula from equipped weapon.
  * Falls back to "1d4" (unarmed) if no weapon found.
  */
-export function deriveDamageFormula(sheet: ActorSheet): string {
+export function deriveDamageFormula(sheet: ActorSheet, loader?: ContentPackLoader): string {
     const strMod = Math.floor((sheet.abilityScores.str - 10) / 2);
     const dexMod = Math.floor((sheet.abilityScores.dex - 10) / 2);
 
@@ -128,10 +128,65 @@ export function deriveDamageFormula(sheet: ActorSheet): string {
         ? weapon.properties.damage
         : '1d8';
 
-    const hasFinesse = weapon.properties.finesse === true;
-    const abilityMod = hasFinesse ? Math.max(strMod, dexMod) : strMod;
+    const srd = loader ? lookupByName(loader, 'equipment', weapon.name) : null;
+    const srdProps: string[] = srd?.properties ?? [];
+    const hasFinesse = srdProps.includes('finesse') || weapon.properties.finesse === true;
+    const isRanged = srd?.subcategory?.includes('ranged') || weapon.properties.ranged === true;
+
+    let abilityMod: number;
+    if (hasFinesse) {
+        abilityMod = Math.max(strMod, dexMod);
+    } else if (isRanged) {
+        abilityMod = dexMod;
+    } else {
+        abilityMod = strMod;
+    }
 
     return abilityMod >= 0 ? `${baseDie}+${abilityMod}` : `${baseDie}${abilityMod}`;
+}
+
+/**
+ * Build WeaponEntry[] from ActorSheet equipment using SRD data.
+ */
+export function buildCombatWeapons(sheet: ActorSheet, loader: ContentPackLoader): WeaponEntry[] {
+    const weapons: WeaponEntry[] = [];
+    const strMod = Math.floor((sheet.abilityScores.str - 10) / 2);
+    const dexMod = Math.floor((sheet.abilityScores.dex - 10) / 2);
+
+    for (const item of sheet.equipment) {
+        if (item.type !== 'weapon') continue;
+
+        const srd = lookupByName(loader, 'equipment', item.name);
+        const formula = srd?.damage?.formula ?? (item.properties?.damage as string) ?? '1d4';
+        const damageType = srd?.damage?.type ?? (item.properties?.damageType as string) ?? 'bludgeoning';
+        const srdProps: string[] = srd?.properties ?? [];
+        const isFinesse = srdProps.includes('finesse') || item.properties?.finesse === true;
+        const isRanged = srd?.subcategory?.includes('ranged') || item.properties?.ranged === true;
+
+        let abilityMod: number;
+        if (isFinesse) {
+            abilityMod = Math.max(strMod, dexMod);
+        } else if (isRanged) {
+            abilityMod = dexMod;
+        } else {
+            abilityMod = strMod;
+        }
+
+        const attackBonus = abilityMod + sheet.proficiencyBonus;
+        const dmgMod = abilityMod >= 0 ? `+${abilityMod}` : `${abilityMod}`;
+        const damageFormula = `${formula}${dmgMod}`;
+
+        weapons.push({
+            name: item.name,
+            damageFormula,
+            damageType,
+            isRanged: isRanged || false,
+            attackBonus,
+            properties: srdProps,
+        });
+    }
+
+    return weapons;
 }
 
 /**
@@ -171,6 +226,9 @@ export async function handleAutoCombatInitiation(
                     initiative: enemy.initiative || 0, // 0 triggers auto-roll in engine
                 }
             );
+            // Enrich with SRD data (real damage stats, multi-attack, etc.)
+            enrichEnemyFromSrd(entity, getSrdLoader());
+
             entities.push(entity);
             enemiesAdded++;
             console.log(`[AutoCombat] Prepared enemy: ${enemy.name}`);
@@ -191,6 +249,7 @@ export async function handleAutoCombatInitiation(
 
             // Build richer entity from ActorSheet if available
             let extraOptions: Partial<CombatEntity> = {
+                characterClass: character.className || undefined,
                 initiativeModifier: dexMod,
                 abilityScores: stats,
                 spellSlots: resourceState.spellSlotsCurrent,
@@ -208,15 +267,23 @@ export async function handleAutoCombatInitiation(
                     const combatSpells = buildCombatSpells(sheet, loader);
                     const dexModSheet = Math.floor((sheet.abilityScores.dex - 10) / 2);
 
+                    const combatWeapons = buildCombatWeapons(sheet, loader);
+
                     extraOptions = {
                         ...extraOptions,
+                        characterClass: sheet.characterClass,
                         abilityScores: sheet.abilityScores,
                         initiativeModifier: dexModSheet,
                         attackModifier: deriveAttackBonus(sheet),
-                        damageFormula: deriveDamageFormula(sheet),
+                        damageFormula: deriveDamageFormula(sheet, loader),
                         spells: combatSpells,
                         spellSlots: state.spellSlotsCurrent,
                         spellSaveDC: sheet.spellcasting?.saveDC,
+                        spellAttackBonus: sheet.spellcasting?.attackBonus,
+                        spellcastingAbility: sheet.spellcasting?.ability,
+                        weapons: combatWeapons,
+                        saveProficiencies: sheet.proficiencies.saves,
+                        proficiencyBonus: sheet.proficiencyBonus,
                         resistances: collectResistances(sheet),
                         immunities: collectImmunities(sheet),
                     };
@@ -291,9 +358,43 @@ export async function handleAutoCombatInitiation(
 }
 
 /**
- * Convert an SRD spell entry to a CombatEntity Spell.
+ * Spells that require a spell attack roll (vs. AC) instead of a saving throw.
  */
-function srdSpellToCombatSpell(srd: any): Spell {
+const SPELL_ATTACK_ROLL_NAMES = new Set([
+    'Acid Arrow', 'Chill Touch', 'Eldritch Blast', 'Fire Bolt',
+    'Flame Blade', 'Guiding Bolt', 'Inflict Wounds', 'Produce Flame',
+    'Ray of Frost', 'Scorching Ray', 'Shocking Grasp', 'Spiritual Weapon',
+    'Vampiric Touch',
+]);
+
+/**
+ * Cantrip damage scales with caster level.
+ * Tiers: 1-4 = base, 5-10 = 2x dice, 11-16 = 3x dice, 17+ = 4x dice.
+ */
+const CANTRIP_DAMAGE: Record<string, string[]> = {
+    'Fire Bolt':       ['1d10', '2d10', '3d10', '4d10'],
+    'Eldritch Blast':  ['1d10', '1d10', '1d10', '1d10'], // extra beams, not dice
+    'Ray of Frost':    ['1d8',  '2d8',  '3d8',  '4d8'],
+    'Sacred Flame':    ['1d8',  '2d8',  '3d8',  '4d8'],
+    'Chill Touch':     ['1d8',  '2d8',  '3d8',  '4d8'],
+    'Shocking Grasp':  ['1d8',  '2d8',  '3d8',  '4d8'],
+    'Produce Flame':   ['1d8',  '2d8',  '3d8',  '4d8'],
+    'Vicious Mockery': ['1d4',  '2d4',  '3d4',  '4d4'],
+    'Acid Splash':     ['1d6',  '2d6',  '3d6',  '4d6'],
+};
+
+function getCantripDamageTier(casterLevel: number): number {
+    if (casterLevel >= 17) return 3;
+    if (casterLevel >= 11) return 2;
+    if (casterLevel >= 5) return 1;
+    return 0;
+}
+
+/**
+ * Convert an SRD spell entry to a CombatEntity Spell.
+ * @param casterLevel — Used for cantrip damage scaling. Defaults to 1.
+ */
+function srdSpellToCombatSpell(srd: any, casterLevel: number = 1): Spell {
     // Parse range to a number (feet)
     let range = 30;
     if (typeof srd.range === 'string') {
@@ -310,6 +411,15 @@ function srdSpellToCombatSpell(srd: any): Spell {
         else if (srd.castingTime.includes('reaction')) castingTime = 'reaction';
     }
 
+    const requiresAttackRoll = SPELL_ATTACK_ROLL_NAMES.has(srd.name);
+
+    // Scale cantrip damage by caster level
+    let damageFormula = srd.damageFormula;
+    if (srd.level === 0 && CANTRIP_DAMAGE[srd.name]) {
+        const tier = getCantripDamageTier(casterLevel);
+        damageFormula = CANTRIP_DAMAGE[srd.name][tier];
+    }
+
     return {
         name: srd.name,
         level: srd.level ?? 0,
@@ -321,13 +431,71 @@ function srdSpellToCombatSpell(srd: any): Spell {
         areaSize: srd.areaSize,
         savingThrow: srd.saveStat ? srd.saveStat.toUpperCase() : undefined,
         halfOnSave: srd.saveEffect === 'half' || (srd.halfOnSave ?? true),
-        damageFormula: srd.damageFormula,
+        damageFormula,
         damageType: srd.damageType,
         healingFormula: srd.healingFormula,
         requiresConcentration: srd.requiresConcentration ?? false,
+        requiresAttackRoll,
         conditions: [],
         description: srd.description ?? '',
     };
+}
+
+/**
+ * Enrich an enemy CombatEntity with SRD monster data.
+ * Imports multi-attack counts, real damage stats, and save proficiencies.
+ * No-op if monster not found in SRD.
+ */
+export function enrichEnemyFromSrd(entity: CombatEntity, loader: ContentPackLoader): void {
+    const srd = lookupByName(loader, 'monsters', entity.name);
+    if (!srd) return;
+
+    // Parse Multiattack for attack count
+    const multiattack = srd.actions?.find((a: any) => a.name === 'Multiattack');
+    if (multiattack?.description) {
+        const countWords: Record<string, number> = {
+            one: 1, two: 2, three: 3, four: 4, five: 5, six: 6,
+        };
+        const desc = multiattack.description.toLowerCase();
+        for (const [word, count] of Object.entries(countWords)) {
+            if (desc.includes(word)) {
+                entity.extraAttacks = count - 1;
+                break;
+            }
+        }
+    }
+
+    // Collect non-Multiattack attack actions as WeaponEntries
+    const attackActions = (srd.actions ?? []).filter(
+        (a: any) => a.name !== 'Multiattack' && a.attackBonus != null
+    );
+
+    if (attackActions.length > 0) {
+        entity.weapons = attackActions.map((a: any) => ({
+            name: a.name,
+            damageFormula: a.damageFormula ?? entity.damageFormula,
+            damageType: a.damageType ?? entity.damageType,
+            isRanged: a.description?.toLowerCase().includes('ranged') ?? false,
+            attackBonus: a.attackBonus,
+            properties: [],
+        }));
+
+        // First action's stats override entity defaults
+        const primary = attackActions[0];
+        if (primary.damageFormula) entity.damageFormula = primary.damageFormula;
+        if (primary.attackBonus != null) entity.attackModifier = primary.attackBonus;
+        if (primary.damageType) entity.damageType = primary.damageType;
+    }
+
+    // Copy save proficiencies if present
+    if (srd.saveProficiencies?.length) {
+        entity.saveProficiencies = srd.saveProficiencies;
+    }
+
+    // Copy ability scores if present
+    if (srd.abilityScores) {
+        entity.abilityScores = srd.abilityScores;
+    }
 }
 
 /**

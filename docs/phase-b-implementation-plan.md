@@ -1,5 +1,7 @@
 # Phase B: Rules Kernel & SRD Content — Implementation Plan
 
+> **STATUS: ✅ COMPLETE (~2026-03-31)** — All 11 steps implemented. Preserved as historical reference.
+
 > **Purpose:** Architecture overview and dependency graph for Phase B. The step-by-step task list for a coding agent lives in [`scripts/TASKS.md`](../scripts/TASKS.md).
 >
 > **Prerequisites:** Phase A complete (save rolls, spatial model, skill checks, rest mechanics). See [ROADMAP.md](ROADMAP.md) for full context.

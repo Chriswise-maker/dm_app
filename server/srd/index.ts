@@ -3,6 +3,7 @@ import { ContentPackLoader } from './content-pack';
 
 export { ContentPackLoader } from './content-pack';
 export { lookupByName, filterEntries, summarizeForLLM } from './srd-query';
+export { buildActorSheet, type CharacterBuildInput } from './character-builder';
 
 let _loader: ContentPackLoader | null = null;
 

@@ -3,13 +3,15 @@
 Deterministic state machine for D&D 5e combat. See `docs/combat/COMBAT_ENGINE.md` for full spec.
 
 ## Status
-**Stages 1–6 complete.** Stage 7 (Open5e Integration) is next.
+**Stages 1–6 complete.** Phase A spatial/gap work complete. Phase B kernel wiring complete. Currently on Phase C.
 
 ## Architecture
 ```
-CombatSidebar (React) → combatV2 tRPC router → CombatEngineManager → CombatEngineV2
-                                                        ↓
-                                                EnemyAIController (LLM)
+CombatSidebar (React) → combat tRPC router → CombatEngineManager → CombatEngineV2
+                                                      ↓                    ↓
+                                              EnemyAIController    server/kernel/
+                                                  (LLM)            check-resolver.ts
+                                                                    combat-adapter.ts
 ```
 
 ## Key Rules
@@ -69,10 +71,33 @@ IDLE → AWAIT_INITIATIVE → ACTIVE
 - **Concentration**: casting drops previous concentration, applies `concentrating` condition. Taking damage triggers an auto-rolled CON save (DC = max(10, damage/2)).
 - Cantrips (level 0) don't use spell slots.
 
+## Spatial Model (Phase A)
+Range bands replace grid coordinates. Tracked per-entity via `CombatEntity.rangeTo: Record<string, RangeBand>`.
+
+| Band | Distance | Notes |
+|------|----------|-------|
+| `MELEE` | 5 ft | Close enough for melee weapon |
+| `NEAR` | 30 ft | Short dash or ranged shot |
+| `FAR` | 60+ ft | Across the room |
+
+- `MOVE` shifts one band toward/away from a target
+- `DASH` grants a second movement band change in the same turn
+- `DISENGAGE` prevents opportunity attacks when leaving MELEE
+- `OPPORTUNITY_ATTACK` (reaction) triggers when an entity leaves MELEE without DISENGAGE
+- `READY` stores a trigger condition; fires when movement/turn conditions are met
+- Enemies use `preferredRange` to guide AI target scoring
+
+## Kernel Integration (Phase B)
+The engine delegates to `server/kernel/` for deterministic resolution:
+- `server/kernel/check-resolver.ts` — `resolveCheck()` handles attack rolls, saves, ability checks
+- `server/kernel/combat-adapter.ts` — converts `CombatEntity` conditions → `Modifier[]` for the resolver
+- `server/kernel/actor-sheet.ts` / `actor-state.ts` — canonical character definition and runtime state; loaded via `combat-helpers.ts` from DB
+
 ## Testing
 ```bash
-pnpm test -- server/combat/__tests__/combat-engine-v2.test.ts
-pnpm test -- server/combat/  # all combat tests
+pnpm test -- server/combat/__tests__/combat-engine-v2.test.ts   # 76 tests
+pnpm test -- server/combat/__tests__/phase-a-mechanics.test.ts  # spatial + save rolls
+pnpm test -- server/combat/  # all combat tests (130+)
 ```
 Always mock dice rolls in tests. Use the existing test patterns in `__tests__/`.
 

@@ -1,23 +1,283 @@
-# Tasks — Phase B: Rules Kernel & SRD Content
+# Tasks — Phase C: Polish, Speed & Feature Depth
+
+> **Phase B (Rules Kernel & SRD Content) is complete** — all 11 steps done as of ~2026-03-31.
+> Phase B task history is preserved below for reference.
+
+---
+
+## Phase C Tasks
+
+### ✅ C0. Real D&D combat foundation — COMPLETE (~2026-04-03)
+
+**Goal:** Characters enter combat with real spells, real weapons, correct proficiencies, and class features.
+
+**What was built:**
+
+1. ✅ **`server/srd/character-builder.ts`** — `buildActorSheet(input, loader)` produces fully-populated ActorSheet from SRD class/race/equipment data. Spell selection heuristics per class, Unarmored Defense, proficiency derivation. 14 tests.
+2. ✅ **Wire into character creation** — Both `characters.create` and `characters.generate` call the builder. Spell slot tracker in combat sidebar. Named weapon/spell actions in legal action list. Battlefield snapshot shows class + weapons + spells.
+3. ✅ **Spell attack rolls** — Fire Bolt, Eldritch Blast, etc. route through `AWAIT_ATTACK_ROLL` with `isSpellAttack` flag. Enemy spell attacks auto-resolve. Cantrip damage scales with caster level.
+4. ✅ **Weapons as first-class array** — `CombatEntity.weapons[]` + `WeaponEntrySchema` populated from ActorSheet equipment via `buildCombatWeapons()`. Named attack actions per weapon. Weapon-specific damage type and attack bonus. Fallback for enemies without SRD data.
+5. ✅ **Save proficiencies + proficiency bonus** — `isProficientInSave()` reads `saveProficiencies[]`, `getProficiencyBonus()` reads entity data, `getSpellAttackStat()` uses `spellcastingAbility` from ActorSheet (not hardcoded INT).
+6. ✅ **Enemy SRD enrichment** — `enrichEnemyFromSrd()` imports multi-attack counts, named weapon actions, real damage stats, ability scores, and save proficiencies from `monsters.json`.
+
+**Also completed:**
+- `characterClass` field on `CombatEntity` — DM sees "[Wizard]" in battlefield snapshot
+- `spellcastingAbility` field on `CombatEntity` — spell attacks use correct ability (WIS for Cleric, INT for Wizard, etc.)
+- `addPlayer` endpoint now builds full CombatEntity from ActorSheet (was legacy-only)
+- Combat narrator: weapon-aware descriptions, critical hit intensity scaling
+- Player action parser: context-aware (recent messages resolve "I'll do that" / "yes")
+- Question detection in all await-roll phases (damage, save, attack)
+- Combat initiation reliability (explicit combat request detection)
+- Narration flow: single combined hit+damage narration instead of two separate ones
+- axios → native fetch (removed dependency)
+
+**227 tests pass. Zero TypeScript errors.**
+
+> **C2 note:** Steps 5 and part of Step 2 complete C2.0d and all of C2.1 (save proficiencies, Extra Attack from sheet, Unarmored Defense, proficiency bonus). Those items are struck from C2 below.
+
+---
+
+### C1. Tiered models for speed
+Use fast/cheap models for structured combat tasks, reserve the main model for storytelling.
+
+| LLM call | Current | Target |
+|----------|---------|--------|
+| Enemy AI decisions | Main model (~3s) | Fast model (~0.4s) |
+| Combat narration | Main model (~3s) | Fast model (~0.7s) |
+| Player action parsing | Main model (~2s) | Fast model (~0.3s) |
+| DM chat/roleplay | Main model | Keep main model |
+
+- Add a `fastModel` setting in `userSettings` (defaults to provider's fast tier)
+- Route enemy AI, combat narration, and action parsing through `fastModel`
+- Keep DM narrative and roleplay on the main model
+- Target: 3-enemy round drops from ~12-24s to ~3-5s
+
+### C2. PC class features
+
+> **Prerequisite:** C0 must be complete. C0 already delivers C2.0d and all of C2.1 — those are struck below. C2 starts at C2.0a.
+
+With the kernel in place, add features that make characters distinctive. The goal is for class features to flow from `ActorSheet.features` into the combat engine automatically — not hardcoded per class.
+
+#### Scope
+
+Implement these features for the current party composition. Skip Wild Shape, Metamagic, and Channel Divinity — too complex for this phase.
+
+~~**Tier 1 (passive/auto):** Extra Attack (from sheet), proficiency-aware saves, Unarmored Defense~~ ✅ done in C0  
+**Tier 2 (simple activated):** Second Wind, Action Surge, Cunning Action  
+**Tier 3 (conditional damage):** Sneak Attack, Divine Smite  
+**Tier 4 (sustained effects):** Rage  
+**Tier 5 (ally-targeted):** Bardic Inspiration, Lay on Hands
+
+---
+
+#### C2.0 — Engine prerequisites
+
+These engine changes are required before any features land. Do these in a single pass.
+
+**a) Wire `extra_damage` modifier into damage application**
+
+`extra_damage` is defined in `ModifierSchema` but never consumed. In `combat-engine-v2.ts`, in `applyWeaponDamage()` (and the spell damage equivalent), after computing base damage: collect all `extra_damage` modifiers from the attacker's `activeModifiers[]`, roll each formula, sum, add to total. This is the foundation for Sneak Attack, Divine Smite, and Rage damage bonus.
+
+**b) Wire `damage_resistance` / `damage_immunity` into damage application**
+
+Currently resistances/immunities come from `CombatEntity.resistances[]` (a string array). Add a second pass: also check `activeModifiers` for `damage_resistance` and `damage_immunity` entries. This is the foundation for Rage's damage reduction.
+
+**c) Condition duration decay at round end**
+
+`ActiveCondition` has a `duration?: number` field but `advanceRound()` never decrements it. At round end, for each entity, decrement `duration` on all `activeConditions` that have one set. Remove conditions where `duration` reaches 0. Emit a log entry per condition removed. This is the foundation for Rage's 10-round limit and any timed buff.
+
+~~**d) Fix `isProficientInSave()` in `combat-adapter.ts`**~~ ✅ done in C0 Step 5
+
+**e) Add `ability_check_advantage` modifier type**
+
+`advantage` modifier currently applies to `"attack" | "save" | "ability_check"`. Rage needs advantage specifically on STR ability checks and STR saves. The existing `advantage` modifier type already supports this — verify `resolveCheck()` correctly applies it when `type === "ability_check"` and `stat === "str"`. Add a test case. No schema change needed if it already works; just confirm and test.
+
+**Done when:** `pnpm test` passes with new test coverage for (a)–(c) and (e). No feature behavior changes, just foundations.
+
+---
+
+#### C2.1 — ✅ Delivered in C0
+
+~~Extra Attack from ActorSheet, Unarmored Defense, Proficiency bonus accuracy~~ — all done in C0 Steps 1, 2, and 5.
+
+**Done when:** Fighter 5 test shows correct extra attacks; Barbarian Unarmored Defense computes correct AC from stats.
+
+---
+
+#### C2.2 — Tier 2: Simple activated features
+
+All three features here are **player-initiated actions** — they surface as legal actions the player can choose. No LLM involvement.
+
+**Second Wind (Fighter)**
+
+- Bonus action. Heal `1d10 + fighter level` HP. Recharges on short rest.
+- `ActorSheet.features[]` will have `{ name: "Second Wind", usesMax: 1, rechargeOn: "short_rest" }`.
+- Add `"SECOND_WIND"` to the legal action list for fighters when: `bonusActionUsed === false` AND `featureUses["Second Wind"] > 0`.
+- On use: consume bonus action, decrement `featureUses["Second Wind"]` in `ActorState`, roll `1d10 + level`, apply healing (capped at `maxHp`), log result.
+- Healing mechanic: `applyHealing(entityId, amount)` — add this helper to the combat engine if it doesn't exist (it likely doesn't). HP increases by `amount`, capped at `maxHp`, removes `unconscious` condition if at 0.
+
+**Action Surge (Fighter)**
+
+- Free action (costs nothing, doesn't use action/bonus/reaction). Grants one additional action this turn. Once per short rest.
+- `ActorSheet.features[]`: `{ name: "Action Surge", usesMax: 1, rechargeOn: "short_rest" }`.
+- Add a `actionSurgeAvailable: boolean` to `TurnResources` (or derive it from `featureUses`).
+- Add `"ACTION_SURGE"` to legal actions when: `featureUses["Action Surge"] > 0` AND turn is active.
+- On use: decrement `featureUses["Action Surge"]`, set `actionUsed = false` (re-opens the action slot for this turn), log "Fighter surges — one additional action available."
+- After surge, next attack/spell/dash etc. consumes the re-opened action normally.
+
+**Cunning Action (Rogue)**
+
+- Lets the rogue use Dash, Disengage, or Hide as a bonus action (instead of an action).
+- No new "use" to track — it's a permanent class ability once you have it.
+- When building legal actions for a rogue (detected via `characterClass === "Rogue"` on `ActorSheet`), add DASH, DISENGAGE, HIDE to the **bonus action** legal list if `bonusActionUsed === false`, regardless of `actionUsed`.
+- These actions already exist as DASH/DISENGAGE — just route them through bonus action cost instead of action cost when the entity has Cunning Action.
+- Add `hasCunningAction: boolean` to `CombatEntity` (derived from `ActorSheet` at entity creation).
+
+**Done when:** Each feature appears in the legal action list for the right class, consumes the right resource, and produces the right outcome. Tests for each.
+
+---
+
+#### C2.3 — Tier 3: Conditional damage
+
+Both features trigger *after* a successful attack hit is confirmed, before or during damage application.
+
+**Sneak Attack (Rogue)**
+
+Rules: Once per turn, add `⌈level/2⌉d6` damage to one attack if the rogue has advantage OR an ally is within melee range of the target. Applies to finesse/ranged weapons only.
+
+- Track `sneakAttackUsedThisTurn: boolean` on `TurnResources` (reset at turn start).
+- After a hit is confirmed in `resolveAttackRoll()`, check if Sneak Attack applies:
+  1. Entity has `characterClass === "Rogue"` (from `ActorSheet` via new field on `CombatEntity`)
+  2. Weapon is finesse or ranged (check `attackType` on the pending attack)
+  3. `sneakAttackUsedThisTurn === false`
+  4. Either: attack had advantage, OR any ally is in MELEE range of the target (check `state.entities`)
+- If conditions met: add an `extra_damage` modifier to the pending attack's damage resolution for `⌈level/2⌉d6` piercing. Set `sneakAttackUsedThisTurn = true`.
+- Don't prompt the player — apply automatically and narrate it.
+- Add level to `CombatEntity` (currently missing; derive from `ActorSheet`).
+
+**Divine Smite (Paladin)**
+
+Rules: After hitting with a melee attack, may expend a spell slot to deal `(1 + slot_level)d8` radiant damage (+1d8 extra vs undead/fiends, max 5d8 total).
+
+- After a hit is confirmed (melee only), if the attacker is a Paladin with spell slots remaining: enter a new phase `AWAIT_SMITE_DECISION`.
+- In this phase, the player chooses: smite with slot level 1/2/3 (or decline).
+- On smite: consume slot from `ActorState.spellSlotsCurrent`, compute `(slot_level + 1)d8` radiant (check target creature type for +1d8), add as `extra_damage` to the current attack.
+- On decline: proceed to damage roll normally.
+- `AWAIT_SMITE_DECISION` must be added to `CombatPhase` enum and handled in the legal-actions list.
+- The target creature type ("undead", "fiend") needs to come from SRD monster data — add a `creatureType?: string` field to `CombatEntity`, populate from SRD on enemy creation.
+
+**Done when:** Sneak Attack auto-applies with correct dice for rogue level. Divine Smite prompts appear correctly for paladins, consume slots, deal correct damage. Tests for both.
+
+---
+
+#### C2.4 — Tier 4: Sustained effects
+
+**Rage (Barbarian)**
+
+Rules: Bonus action to activate. Lasts 10 rounds (or until can't attack and didn't take damage since last turn — simplified: just use 10-round duration). Grants:
+- Advantage on STR checks and STR saves
+- Resistance to bludgeoning, piercing, slashing damage
+- +2/3/4 bonus to STR-based melee damage (levels 1–8 / 9–15 / 16–20)
+- `usesMax` per long rest (2/3/4/unlimited based on level)
+
+Implementation:
+- Add `"RAGE"` to legal bonus actions for Barbarians when `bonusActionUsed === false` AND `featureUses["Rage"] > 0` AND not already raging.
+- On activation: consume bonus action, decrement `featureUses["Rage"]` in `ActorState`, apply an `ActiveCondition` named `"raging"` with `duration: 10`.
+- Apply these modifiers to the entity's `activeModifiers[]` while raging:
+  - `{ type: "advantage", appliesTo: "save", stat: "str" }`
+  - `{ type: "advantage", appliesTo: "ability_check", stat: "str" }`
+  - `{ type: "damage_resistance", damageType: "bludgeoning" }`
+  - `{ type: "damage_resistance", damageType: "piercing" }`
+  - `{ type: "damage_resistance", damageType: "slashing" }`
+  - `{ type: "extra_damage", formula: "+2", damageType: "rage_bonus", condition: "str_melee_only" }` — but this needs a `condition` gate
+- The damage bonus is the tricky part: it only applies to STR-based melee attacks. Add an optional `condition` field to the `extra_damage` modifier: `"str_melee_only"` | `"always"`. In `applyWeaponDamage()`, only apply extra_damage modifiers where `condition === "always"` OR (`condition === "str_melee_only"` AND the attack uses STR AND is melee). Add "+2" as a flat bonus (not a dice roll).
+- When the `"raging"` condition expires (duration hits 0 via C2.0c): remove the three resistance modifiers and two advantage modifiers from `activeModifiers[]`. Log "Rage ends."
+
+**Done when:** Rage activates, grants correct bonuses, auto-expires after 10 rounds. Resistance halves the right damage types. Tests covering activation, damage application, and expiry.
+
+---
+
+#### C2.5 — Tier 5: Ally-targeted features
+
+**Bardic Inspiration (Bard)**
+
+Rules: Bonus action. Target one ally within 60 feet. They receive a Bardic Inspiration die (d6/d8/d10/d12 based on level). They can use it within 10 minutes (simplified: until end of combat) to add to one attack roll, ability check, or saving throw — declared *after* the roll.
+
+This is the most complex feature because it creates state on another entity.
+
+- Add `bardicInspirationDie?: string` to `CombatEntity` (e.g., `"d8"`). Null means no die held.
+- Add `"BARDIC_INSPIRATION"` to legal bonus actions for Bards when `bonusActionUsed === false` AND `featureUses["Bardic Inspiration"] > 0`.
+- On use: prompt player to select target ally (new sub-phase `AWAIT_INSPIRATION_TARGET` or just pass target in payload). Consume bonus action, decrement use, set `target.bardicInspirationDie = "d8"` (based on bard level). Log "Bard inspires [name] — they hold a d8."
+- When the inspired entity makes an attack roll, save, or ability check: if they have `bardicInspirationDie` set, add `"USE_BARDIC_INSPIRATION"` as a legal action during their turn (or as a reaction/modifier option). On use: roll the die, add to the roll result, clear `bardicInspirationDie`. Log result.
+- For simplicity in phase 1: only let them use it on attacks (not saves/checks). Saves/checks can come later.
+
+**Lay on Hands (Paladin)**
+
+Rules: Action. Touch an ally (MELEE range). Heal up to X HP from a pool (Paladin level × 5, replenishes on long rest). Can also cure disease/poison for 5 HP per condition.
+
+- Store pool as `featureUses["Lay on Hands"]` — initialized to `level * 5` in `deriveInitialState()`.
+- Add `"LAY_ON_HANDS"` to legal actions for Paladins when `actionUsed === false` AND `featureUses["Lay on Hands"] > 0` AND a valid ally is in MELEE range.
+- On use: prompt for heal amount (1 to remaining pool). Consume action, reduce `featureUses` by amount, apply `applyHealing(target, amount)`.
+- No need for disease/cure mechanic in phase 1.
+
+**Done when:** Bardic Inspiration transfers die to ally and can be consumed on their next attack. Lay on Hands depletes pool correctly and heals target.
+
+---
+
+#### C2 Dependency order
+
+```
+C2.0 (engine prereqs)
+  └─ C2.1 (passive)
+       └─ C2.2 (simple activated)
+            ├─ C2.3 (conditional damage)   ← needs extra_damage from C2.0a
+            ├─ C2.4 (Rage)                 ← needs condition decay from C2.0c + extra_damage condition gate
+            └─ C2.5 (ally-targeted)        ← needs applyHealing from C2.2
+```
+
+#### What's explicitly out of scope for C2
+
+- **Wild Shape** — replaces entity stats entirely; needs a full entity-swap mechanic
+- **Metamagic** (Sorcerer) — modifies spell resolution at cast time; complex intercept points
+- **Channel Divinity** — highly varied per subclass; defer until subclass system exists
+- **Shield / Counterspell** (reactions) — needs an interrupt/reaction phase in the combat loop; defer to C2 follow-up or its own task
+- **Monk** features (Flurry of Blows, Stunning Strike, Ki) — deferred; Monk not in current party
+- **Warlock** (Eldritch Blast invocations, Hex persistence) — deferred
+
+### C3. Combat sidebar & UI polish
+- HP bars with gradient styling and animations
+- Turn indicator animations
+- Confirm dialog before ending combat
+- Responsive/mobile-friendly layout
+- Character sheet panel (expandable, shows full `ActorSheet`)
+- Spell list reference during combat
+
+### C4. Smarter enemy tactics
+Leverage spatial data + kernel state for better AI:
+- Ranged enemies maintain FAR/NEAR distance; melee enemies close in
+- Enemies target based on threat assessment + spatial opportunity
+- Boss monsters use legendary actions and lair actions
+
+### C5. Out-of-combat systems (on the kernel)
+- Skill challenges (multi-check structured encounters)
+- Travel and exploration mechanics
+- Social encounter framework
+- Shopping with SRD equipment data
+
+---
+
+## Phase B History (✅ Complete ~2026-03-31)
+
 <!--
-  11 steps. Each step is one agent session.
+  Phase B: 11 steps. All complete.
   Dependency order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 → 10 → 11
-
-  Usage (manual in Cursor):
-    Open this file, give the agent one step at a time.
-    After each step: pnpm check && pnpm test must pass.
-
-  Usage (orchestrator, if set up):
-    ./scripts/orchestrate.sh scripts/TASKS.md
-    ./scripts/orchestrate.sh scripts/TASKS.md --dry-run
-    ./scripts/orchestrate.sh scripts/TASKS.md --start-at 5
 
   Chat scenarios:
     scripts/scenarios/step-6.json  — SRD tool call test
     scripts/scenarios/step-8.json  — combat with real spells
 -->
 
-## 1. Kernel schemas: ActorSheet + ActorState
+## ✅ 1. Kernel schemas: ActorSheet + ActorState
 
 Create a new directory `server/kernel/`. This is the rules layer that sits *below* combat — combat becomes a consumer, not the owner of all rules.
 
@@ -102,7 +362,7 @@ Use Vitest. Tests:
 
 **Done when:** `pnpm check` passes, `pnpm test` passes including the new schema tests. No existing files modified.
 
-## 2. Effect system: EffectDefinition + EffectInstance + pipeline
+## ✅ 2. Effect system: EffectDefinition + EffectInstance + pipeline
 
 Build the effect/modifier system in the kernel. This models buffs, debuffs, spell effects, and class features as typed data.
 
@@ -179,7 +439,7 @@ function resolveConcentration(
 
 **Done when:** `pnpm check` passes, `pnpm test` passes. No existing files modified.
 
-## 3. CheckResolver: unified d20 pipeline
+## ✅ 3. CheckResolver: unified d20 pipeline
 
 Build a single pure function that resolves any d20-based check in D&D 5e. This will replace the scattered modifier math in the combat engine and skill check resolver.
 
@@ -268,7 +528,7 @@ All tests use an injectable `rollFn` — no randomness.
 
 **Done when:** `pnpm check` passes, `pnpm test` passes. CheckResolver handles all standard D&D 5e roll mechanics. No existing files modified — wiring into combat comes in Step 10.
 
-## 4. SRD data import: download and normalize all categories
+## ✅ 4. SRD data import: download and normalize all categories
 
 Get the 5e SRD data into the project as structured, queryable JSON files.
 
@@ -427,7 +687,7 @@ Run `npx tsx scripts/import-srd.ts` and verify:
 
 **Done when:** Import script runs clean. Normalized JSON files are in `data/srd-2014/`, valid and queryable. `data/raw/` is gitignored. `data/srd-2014/` is committed. `pnpm check` passes.
 
-## 5. Content pack loader + SRD query layer
+## ✅ 5. Content pack loader + SRD query layer
 
 Build the runtime layer that loads content packs and lets the app query SRD data.
 
@@ -528,7 +788,7 @@ These tests run against the real normalized SRD data committed in Step 4.
 
 **Done when:** `pnpm check` passes, `pnpm test` passes. SRD data is queryable at runtime. No existing files modified.
 
-## 6. Wire SRD lookups as LLM tool calls
+## ✅ 6. Wire SRD lookups as LLM tool calls
 
 The DM can now reference real SRD data during chat instead of hallucinating spell stats or monster abilities.
 
@@ -619,7 +879,7 @@ These combat paths need to stay fast and focused.
 
 <!-- Chat success criteria for this step: scripts/scenarios/step-6.json -->
 
-## 7. DB migration: add actorSheet + actorState columns
+## ✅ 7. DB migration: add actorSheet + actorState columns
 
 Add new columns to store rich character data alongside the existing flat columns.
 
@@ -662,7 +922,7 @@ When updating a character, also update the corresponding `actorSheet` fields if 
 
 **Done when:** `pnpm check` passes, `pnpm test` passes, `pnpm db:push` applies without error. Creating a new character stores both flat columns AND actorSheet/actorState JSON. Existing characters still work (null actorSheet).
 
-## 8. Migrate existing characters + populate spells from SRD
+## ✅ 8. Migrate existing characters + populate spells from SRD
 
 Backfill existing characters with ActorSheet data and give spellcasters real spell lists.
 
@@ -727,7 +987,7 @@ This closes the biggest gap from the Phase A audit: players entering combat with
 
 <!-- Chat success criteria for this step: scripts/scenarios/step-8.json -->
 
-## 9. Wire combat entity creation to ActorSheet
+## ✅ 9. Wire combat entity creation to ActorSheet
 
 Deepen the ActorSheet integration in combat. Characters with ActorSheets should get the full benefit of their proficiencies, features, and equipment.
 
@@ -799,7 +1059,7 @@ After combat ends, sync state changes back to `actorState`:
 
 **Done when:** `pnpm check` passes, `pnpm test` passes. Characters with ActorSheets enter combat with full spell lists, correct ability scores, and proper proficiency-derived bonuses. State syncs back after combat.
 
-## 10. Combat engine delegates to CheckResolver
+## ✅ 10. Combat engine delegates to CheckResolver
 
 Replace the combat engine's internal modifier calculations with the kernel's CheckResolver. This is a surgical change — the engine's API and observable behavior must not change.
 
@@ -901,7 +1161,7 @@ const saveResult = resolveCheck({
 
 **Done when:** `pnpm check` passes, ALL existing combat tests pass (107+). Attack rolls and saving throws flow through CheckResolver. No change in observable behavior.
 
-## 11. Deterministic state ownership + narrative boundary tests
+## ✅ 11. Deterministic state ownership + narrative boundary tests
 
 Final integration: make `ActorState` the single source of truth for all mechanical state. The LLM narrates but never determines HP, damage, conditions, slot usage, or resource changes.
 

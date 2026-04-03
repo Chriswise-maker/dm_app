@@ -57,7 +57,8 @@ interface LLMParseResult {
 function buildActionParserPrompt(
     playerMessage: string,
     state: BattleState,
-    currentPlayerId: string
+    currentPlayerId: string,
+    recentContext?: string[]
 ): string {
     const enemies = state.entities.filter(
         (e: CombatEntity) => e.type === 'enemy' && e.status === 'ALIVE'
@@ -96,6 +97,13 @@ function buildActionParserPrompt(
         }
     }
 
+    if (recentContext && recentContext.length > 0) {
+        prompt += `\nRECENT CONVERSATION (for resolving references like "I'll do that", "yes", "ok"):\n`;
+        recentContext.forEach(line => {
+            prompt += `${line}\n`;
+        });
+    }
+
     prompt += `\n---\n\n`;
     prompt += `PLAYER MESSAGE:\n"${playerMessage}"\n\n`;
 
@@ -121,6 +129,7 @@ function buildActionParserPrompt(
     prompt += `- END_TURN: "done", "end turn", "pass", "I wait", "no", "nah", "that's it", "move on", "I'm good", "nothing else", "next", "no thanks"\n`;
     prompt += `- QUERY: "what can I do?", "what are my options?", "how does dodge work?", "can I attack twice?", "what's my AC?", any question about rules, abilities, or combat state\n\n`;
     prompt += `IMPORTANT: If the message is phrased as a question ("can I...", "could I...", "do I...", "what if..."), classify it as QUERY even if it mentions an action like attack, ready, dodge, or cast.\n\n`;
+    prompt += `CONTEXTUAL REFERENCES: If the player says something like "I'll do that", "yes", "ok", "let's do it", "sounds good", use RECENT CONVERSATION to determine what action they're agreeing to. If the DM just suggested attacking with a bow, treat agreement as an ATTACK with that weapon.\n\n`;
 
     prompt += `Analyze the message and determine:\n`;
     prompt += `1. actionType: ATTACK, MOVE, DODGE, DASH, DISENGAGE, HELP, HIDE, READY, USE_ITEM, END_TURN, QUERY, or UNKNOWN\n`;
@@ -256,7 +265,8 @@ function isDirectCombatQuestion(message: string): boolean {
 export async function parsePlayerAction(
     sessionId: number,
     userId: number,
-    playerMessage: string
+    playerMessage: string,
+    recentMessages?: Array<{ content: string; isDm: number; characterName: string | null }>
 ): Promise<ParsedPlayerAction> {
     const engine = CombatEngineManager.get(sessionId);
     if (!engine) {
@@ -301,8 +311,15 @@ export async function parsePlayerAction(
         };
     }
 
+    // Build recent context lines for resolving references like "I'll do that"
+    // recentMessages are in chronological order (oldest first) — take the last few
+    const recentContext = recentMessages
+        ?.slice(-6)
+        .map(m => m.isDm ? `DM: ${m.content.substring(0, 300)}` : `${m.characterName || 'Player'}: ${m.content.substring(0, 200)}`)
+        ;
+
     // Build prompt for LLM
-    const prompt = buildActionParserPrompt(playerMessage, state, currentEntity.id);
+    const prompt = buildActionParserPrompt(playerMessage, state, currentEntity.id, recentContext);
 
     // Fetch user settings for customizable parser prompt
     const db = await import('../db');

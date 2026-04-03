@@ -74,6 +74,9 @@ async function computeCombatNarrativePrompts(
     if (narrativeContext?.weaponName || actingEntity?.damageFormula) {
         contextLines.push(`WEAPON: ${narrativeContext?.weaponName || 'unknown'} (${narrativeContext?.damageType || actingEntity?.damageType || 'unknown'} damage)`);
     }
+    if (narrativeContext?.isCriticalHit) {
+        contextLines.push(`CRITICAL HIT: Yes — describe a devastating, precise strike`);
+    }
     if (narrativeContext?.tacticalRole || actingEntity?.tacticalRole) {
         contextLines.push(`TACTICAL ROLE: ${narrativeContext?.tacticalRole || actingEntity?.tacticalRole}`);
     }
@@ -83,10 +86,7 @@ async function computeCombatNarrativePrompts(
 
     // Determine how to end the narrative based on combat state
     let endingInstruction: string;
-    if (narrativeContext?.awaitingDamageRoll) {
-        // Player's attack hit — they still need to roll damage. Do NOT announce the enemy's turn.
-        endingInstruction = 'End with the impact of the hit landing — do NOT announce whose turn is next or mention the enemy\'s turn. The player still needs to roll damage.';
-    } else if (narrativeContext?.playerHasRemainingResources) {
+    if (narrativeContext?.playerHasRemainingResources) {
         // Player used their action but still has bonus action / other resources.
         // Prompt naturally like a real DM would: "anything else?"
         endingInstruction = 'End by naturally asking the player if they want to do anything else with their turn — like a real DM would. Examples: "Anything else?", "What else would you like to do?", "Do you want to do anything else before we move on?". Keep it natural and brief, not mechanical. Do NOT announce whose turn is next — it\'s still their turn.';
@@ -127,6 +127,8 @@ ${logSummary}
 Write a vivid, immersive 2-3 sentence narrative of what just happened.
 - Address the player in SECOND PERSON ("you") - vary between "you", "your blade", or their name for variety
 - Include the player's flavor where it fits naturally
+- Use the WEAPON and damage type from ENTITY DETAILS — describe the attack in a way consistent with the weapon (e.g. arrows pierce, swords slash, maces crush)
+- Scale the narrative intensity to the damage: a low roll barely grazes, a high roll strikes true, a critical hit is devastating
 - ${endingInstruction}`;
     }
 

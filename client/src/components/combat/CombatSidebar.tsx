@@ -161,6 +161,32 @@ export default function CombatSidebar({ sessionId }: CombatSidebarProps) {
                 </div>
             )}
 
+            {/* Spell slot tracker */}
+            {isPlayerTurn && currentEntity && Object.keys(currentEntity.spellSlots ?? {}).length > 0 && (
+                <div className="px-6 pb-4">
+                    <span className="font-sans text-[9px] tracking-[0.3em] uppercase text-ghost block mb-2">
+                        Spell Slots
+                    </span>
+                    <div className="flex gap-3 flex-wrap">
+                        {Object.entries(currentEntity.spellSlots)
+                            .sort(([a], [b]) => Number(a) - Number(b))
+                            .map(([level, remaining]) => {
+                                const total = remaining as number;
+                                return (
+                                    <div key={level} className="flex items-center gap-1">
+                                        <span className="font-sans text-[9px] text-ghost/60">
+                                            {level === '1' ? '1st' : level === '2' ? '2nd' : level === '3' ? '3rd' : `${level}th`}
+                                        </span>
+                                        <span className="font-sans text-[10px] text-brass">
+                                            {total > 0 ? '●'.repeat(total) : '—'}
+                                        </span>
+                                    </div>
+                                );
+                            })}
+                    </div>
+                </div>
+            )}
+
             <ScrollArea className="flex-1 min-h-0 overflow-hidden">
                 <div className="space-y-6 px-6 py-4">
                     {sortedEntities.map((entity) => {
