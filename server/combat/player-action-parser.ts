@@ -11,7 +11,7 @@
  */
 
 import { CombatEngineManager } from './combat-engine-manager';
-import { invokeLLMWithSettings } from '../llm-with-settings';
+import { invokeFastLLMWithSettings } from '../llm-with-settings';
 import { activity } from '../activity-log';
 import { getActionParserPrompt } from '../prompts';
 import type { CombatEntity, BattleState, ActionPayload } from './combat-types';
@@ -329,7 +329,7 @@ export async function parsePlayerAction(
     // Call LLM to parse intent
     let llmResult: LLMParseResult;
     try {
-        const llmResponse = await invokeLLMWithSettings(userId, {
+        const llmResponse = await invokeFastLLMWithSettings(userId, {
             messages: [
                 {
                     role: 'system',

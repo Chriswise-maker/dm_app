@@ -88,6 +88,7 @@ export const userSettings = pgTable("userSettings", {
   // LLM Configuration
   llmProvider: llmProviderEnum("llmProvider").notNull().default("manus"),
   llmModel: varchar("llmModel", { length: 100 }),
+  fastModel: varchar("fastModel", { length: 100 }),
   llmApiKey: text("llmApiKey"), // Encrypted API key
   // Text-to-Speech Configuration
   ttsEnabled: integer("ttsEnabled").notNull().default(0),

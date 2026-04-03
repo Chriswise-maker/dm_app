@@ -284,6 +284,110 @@ function getDefaultModel(provider: string): string {
   return defaults[provider] || 'gpt-4o';
 }
 
+function getDefaultFastModel(provider: string): string {
+  const defaults: Record<string, string> = {
+    openai: 'gpt-4o-mini',
+    anthropic: 'claude-haiku-4-5-20251001',
+    google: 'gemini-2.0-flash-lite',
+  };
+  return defaults[provider] || 'gpt-4o-mini';
+}
+
+/**
+ * Invoke LLM with user-specific settings, using the fast model.
+ * Used for combat subsystems (enemy AI, narration, action parsing).
+ * Falls back to provider's fast default if fastModel is not set.
+ */
+export async function invokeFastLLMWithSettings(
+  userId: number,
+  params: InvokeParams
+): Promise<InvokeResult> {
+  try {
+    const settings = await getUserSettings(userId);
+
+    if (!settings || settings.llmProvider === 'manus') {
+      return invokeLLM(params);
+    }
+
+    const apiUrls: Record<string, string> = {
+      openai: 'https://api.openai.com/v1/chat/completions',
+      anthropic: 'https://api.anthropic.com/v1/messages',
+      google: 'https://generativelanguage.googleapis.com/v1beta/models',
+    };
+
+    const apiUrl = apiUrls[settings.llmProvider];
+    if (!apiUrl) {
+      throw new Error(`Unsupported LLM provider: ${settings.llmProvider}`);
+    }
+
+    if (!settings.llmApiKey) {
+      throw new Error(`API key not configured for provider: ${settings.llmProvider}`);
+    }
+
+    const model = settings.fastModel || getDefaultFastModel(settings.llmProvider);
+
+    console.log(`[LLM Fast] Using provider: ${settings.llmProvider}, model: ${model}`);
+
+    if (settings.llmProvider === 'anthropic') {
+      return await invokeAnthropic(apiUrl, settings.llmApiKey, model, params);
+    } else if (settings.llmProvider === 'google') {
+      return await invokeGoogle(apiUrl, settings.llmApiKey, model, params);
+    } else {
+      return await invokeOpenAI(apiUrl, settings.llmApiKey, model, params);
+    }
+  } catch (error) {
+    console.error('[LLM Fast Error]', error);
+    throw error;
+  }
+}
+
+/**
+ * Stream LLM with user-specific settings, using the fast model.
+ * Used for combat narration streaming.
+ */
+export async function invokeFastLLMWithSettingsStream(
+  userId: number,
+  params: InvokeParams
+): Promise<AsyncIterable<string>> {
+  try {
+    const settings = await getUserSettings(userId);
+
+    if (!settings || settings.llmProvider === 'manus') {
+      return invokeLLMStream(params);
+    }
+
+    const apiUrls: Record<string, string> = {
+      openai: 'https://api.openai.com/v1/chat/completions',
+      anthropic: 'https://api.anthropic.com/v1/messages',
+      google: 'https://generativelanguage.googleapis.com/v1beta/models',
+    };
+
+    const apiUrl = apiUrls[settings.llmProvider];
+    if (!apiUrl) {
+      throw new Error(`Unsupported LLM provider: ${settings.llmProvider}`);
+    }
+
+    if (!settings.llmApiKey) {
+      throw new Error(`API key not configured for provider: ${settings.llmProvider}`);
+    }
+
+    const model = settings.fastModel || getDefaultFastModel(settings.llmProvider);
+
+    console.log(`[LLM Fast Stream] Using provider: ${settings.llmProvider}, model: ${model}`);
+
+    if (settings.llmProvider === 'anthropic') {
+      return invokeAnthropicStream(apiUrl, settings.llmApiKey, model, params);
+    }
+    if (settings.llmProvider === 'google') {
+      return invokeGoogleStreamFallback(userId, apiUrl, settings.llmApiKey, model, params);
+    }
+    return invokeOpenAIStream(apiUrl, settings.llmApiKey, model, params);
+  } catch (error) {
+    console.error('[LLM Fast Stream Error]', error);
+    throw error;
+  }
+}
+
 async function invokeOpenAI(
   apiUrl: string,
   apiKey: string,

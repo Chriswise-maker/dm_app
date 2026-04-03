@@ -1,5 +1,5 @@
 
-import { invokeLLMWithSettings, invokeLLMWithSettingsStream } from '../llm-with-settings';
+import { invokeFastLLMWithSettings, invokeFastLLMWithSettingsStream } from '../llm-with-settings';
 import { activity } from '../activity-log';
 import { getCombatNarrativePrompt } from '../prompts';
 import type { CombatLogEntry, CombatEntity } from './combat-types';
@@ -173,7 +173,7 @@ export async function generateCombatNarrativeStream(
     activity.narrator(sessionId, `Generating narrative for ${logs.length} log entries`);
 
     try {
-        return await invokeLLMWithSettingsStream(userId, {
+        return await invokeFastLLMWithSettingsStream(userId, {
             messages: [
                 { role: 'system', content: pre.systemPrompt },
                 { role: 'user', content: pre.userPrompt },
@@ -183,7 +183,7 @@ export async function generateCombatNarrativeStream(
     } catch (error) {
         console.error('[CombatNarrator] Stream failed, using non-streaming fallback:', error);
         try {
-            const response = await invokeLLMWithSettings(userId, {
+            const response = await invokeFastLLMWithSettings(userId, {
                 messages: [
                     { role: 'system', content: pre.systemPrompt },
                     { role: 'user', content: pre.userPrompt },

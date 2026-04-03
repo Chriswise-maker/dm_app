@@ -20,7 +20,7 @@ SKIP_VERIFY=false
 LOG_DIR="scripts/logs"
 RATE_LIMIT_WAIT=1800      # 30 minutes between retries (plan rate limits)
 RATE_LIMIT_MAX_RETRIES=8  # 8 retries × 30 min = 4 hours max wait
-MAX_BUDGET_PER_STEP=5     # max USD spend per step (safety net)
+MAX_BUDGET_PER_STEP=0     # disabled — using Claude plan with usage quota (rate limits handled by retry logic)
 MAX_FIX_ATTEMPTS=3        # max times Claude can try to fix a failing step
 
 # ── Parse flags ───────────────────────────────────────────────────────────────
@@ -195,12 +195,12 @@ invoke_claude() {
     # File tools (Read/Edit/Write/Glob/Grep) are scoped to cwd by default
     claude -p "$prompt" --print \
       --model opus \
+      --effort max \
       --permission-mode bypassPermissions \
       --allowedTools "Read" "Edit" "Write" "Glob" "Grep" \
         "Bash(pnpm check*)" "Bash(pnpm test*)" "Bash(pnpm db:push*)" "Bash(pnpm format*)" \
         "Bash(npx tsx *)" "Bash(mkdir *)" "Bash(git clone *)" "Bash(git diff*)" "Bash(git status*)" \
         "Bash(curl *)" "Bash(ls *)" "Bash(cat *)" "Bash(chmod *)" \
-      --max-budget-usd "$MAX_BUDGET_PER_STEP" \
       > "$output_file" 2>&1 || exit_code=$?
 
     # Check for rate limiting (exit code 2 or specific error text)
@@ -316,11 +316,13 @@ Run \`pnpm check\` and \`pnpm test\` after your fixes to verify they work."
     fix_exit=0
     log "  [fix] Sending fix prompt to Claude..."
     claude -p "$fix_prompt" --print \
+      --model opus \
+      --effort max \
+      --permission-mode bypassPermissions \
       --allowedTools "Read" "Edit" "Write" "Glob" "Grep" \
         "Bash(pnpm check*)" "Bash(pnpm test*)" "Bash(pnpm db:push*)" "Bash(pnpm format*)" \
         "Bash(npx tsx *)" "Bash(mkdir *)" "Bash(git clone *)" "Bash(git diff*)" "Bash(git status*)" \
         "Bash(curl *)" "Bash(ls *)" "Bash(cat *)" "Bash(chmod *)" \
-      --max-budget-usd "$MAX_BUDGET_PER_STEP" \
       > "$fix_output" 2>&1 || fix_exit=$?
 
     if [[ $fix_exit -ne 0 ]] && grep -qi "rate.limit\|429\|quota\|too many requests" "$fix_output" 2>/dev/null; then

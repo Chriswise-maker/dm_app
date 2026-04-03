@@ -679,6 +679,7 @@ export const appRouter = router({
         return {
           llmProvider: 'manus' as const,
           llmModel: null,
+          fastModel: null,
           llmApiKey: null,
           ttsEnabled: false,
           ttsProvider: null,
@@ -693,6 +694,7 @@ export const appRouter = router({
       return {
         llmProvider: settings.llmProvider,
         llmModel: settings.llmModel,
+        fastModel: settings.fastModel,
         llmApiKey: settings.llmApiKey,
         ttsEnabled: settings.ttsEnabled === 1,
         ttsProvider: settings.ttsProvider,
@@ -712,6 +714,7 @@ export const appRouter = router({
       .input(z.object({
         llmProvider: z.enum(['manus', 'openai', 'anthropic', 'google']),
         llmModel: z.string().nullable(),
+        fastModel: z.string().nullable(),
         llmApiKey: z.string().nullable(),
         ttsEnabled: z.boolean(),
         ttsProvider: z.string().nullable(),
@@ -731,6 +734,7 @@ export const appRouter = router({
           userId: ctx.user.id,
           llmProvider: input.llmProvider,
           llmModel: input.llmModel,
+          fastModel: input.fastModel,
           llmApiKey: input.llmApiKey,
           ttsEnabled: input.ttsEnabled ? 1 : 0,
           ttsProvider: input.ttsProvider,

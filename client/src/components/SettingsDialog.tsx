@@ -152,6 +152,7 @@ export default function SettingsDialog({ open, onOpenChange }: SettingsDialogPro
 
   const [llmProvider, setLlmProvider] = useState<'manus' | 'openai' | 'anthropic' | 'google'>('manus');
   const [llmModel, setLlmModel] = useState<string>('');
+  const [fastModel, setFastModel] = useState<string>('');
   const [llmApiKey, setLlmApiKey] = useState<string>('');
   const [ttsEnabled, setTtsEnabled] = useState(false);
   const [ttsProvider, setTtsProvider] = useState<string>('openai');
@@ -169,6 +170,7 @@ export default function SettingsDialog({ open, onOpenChange }: SettingsDialogPro
     if (settings) {
       setLlmProvider(settings.llmProvider);
       setLlmModel(settings.llmModel || '');
+      setFastModel(settings.fastModel || '');
       setLlmApiKey(settings.llmApiKey || '');
       setTtsEnabled(settings.ttsEnabled);
       setTtsProvider(settings.ttsProvider || 'openai');
@@ -188,6 +190,7 @@ export default function SettingsDialog({ open, onOpenChange }: SettingsDialogPro
     updateSettings.mutate({
       llmProvider,
       llmModel: llmModel || null,
+      fastModel: fastModel || null,
       llmApiKey: llmApiKey || null,
       ttsEnabled,
       ttsProvider: ttsProvider || null,
@@ -272,6 +275,21 @@ export default function SettingsDialog({ open, onOpenChange }: SettingsDialogPro
                   </SelectContent>
                 </Select>
               </div>
+
+              {llmProvider !== 'manus' && (
+                <div className="space-y-2">
+                  <Label htmlFor="fastModel">Fast model (combat)</Label>
+                  <Input
+                    id="fastModel"
+                    value={fastModel}
+                    onChange={(e) => setFastModel(e.target.value)}
+                    placeholder="Auto (provider default)"
+                  />
+                  <p className="text-sm text-muted-foreground">
+                    Used for combat AI, narration, and action parsing. Leave blank to use the provider's fast default.
+                  </p>
+                </div>
+              )}
 
               {llmProvider !== 'manus' && (
                 <div className="space-y-2">

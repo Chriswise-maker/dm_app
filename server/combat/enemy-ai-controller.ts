@@ -13,7 +13,7 @@
  */
 
 import { CombatEngineManager } from './combat-engine-manager';
-import { invokeLLMWithSettings } from '../llm-with-settings';
+import { invokeFastLLMWithSettings } from '../llm-with-settings';
 import { activity } from '../activity-log';
 import { getEnemyAIPrompt } from '../prompts';
 import { generateCombatNarrative } from './combat-narrator';
@@ -291,7 +291,7 @@ export async function executeEnemyTurn(sessionId: number, userId: number): Promi
     // Call LLM
     let llmResponse: string;
     try {
-        const result = await invokeLLMWithSettings(userId, {
+        const result = await invokeFastLLMWithSettings(userId, {
             messages: [
                 { role: 'system', content: systemPrompt },
                 { role: 'user', content: prompt },
