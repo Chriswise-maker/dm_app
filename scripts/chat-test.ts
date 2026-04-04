@@ -190,6 +190,14 @@ async function runScenario(scenario: Scenario): Promise<boolean> {
   console.log(`Session: ${scenario.sessionId}, Character: ${scenario.characterId}`);
   console.log(`Steps: ${scenario.steps.length}\n`);
 
+  // Reset session (clears messages, combat state, and context) so each run starts fresh
+  try {
+    await trpcMutation("sessions.reset", { sessionId: scenario.sessionId });
+    console.log("  (Reset session — messages, combat state, and context cleared)\n");
+  } catch (err) {
+    console.warn("  (Session reset failed — continuing anyway):", err);
+  }
+
   let allPassed = true;
 
   for (let i = 0; i < scenario.steps.length; i++) {
@@ -205,7 +213,7 @@ async function runScenario(scenario: Scenario): Promise<boolean> {
     const elapsed = Date.now() - start;
 
     console.log(`  Response (${elapsed}ms, ${result.response.length} chars):`);
-    // Print first 200 chars as preview
+    // Always log a 200-char preview so the log is readable at a glance
     const preview =
       result.response.length > 200
         ? result.response.slice(0, 200) + "..."
@@ -254,6 +262,13 @@ async function runScenario(scenario: Scenario): Promise<boolean> {
       if (failures.length > 0) {
         console.log(`  FAIL:`);
         for (const f of failures) console.log(`    - ${f}`);
+        // Log the FULL response on failure — this is the primary diagnostic signal
+        // for the orchestrator fix loop (truncated previews hide why the LLM misbehaved)
+        if (result.response.length > 200) {
+          console.log(`\n  --- Full DM response (for diagnostics) ---`);
+          console.log(`  ${result.response}`);
+          console.log(`  --- End of response ---\n`);
+        }
         allPassed = false;
       } else {
         console.log(`  PASS`);

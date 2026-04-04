@@ -11,6 +11,10 @@ set -euo pipefail
 #   ./scripts/orchestrate.sh --dry-run              # parse & print steps only
 #   ./scripts/orchestrate.sh --start-at 3           # resume from step 3
 #   ./scripts/orchestrate.sh --skip-verify          # skip verification gates
+#
+# On failure (Claude error, verify/chat-verify after fix attempts), waits 30 min and
+# retries the whole step up to STEP_MAX_RETRIES (default 8). Set STEP_MAX_RETRIES=1
+# to stop after the first failure (old behavior).
 # ──────────────────────────────────────────────────────────────────────────────
 
 TASK_FILE="${1:-scripts/TASKS.md}"
@@ -19,7 +23,8 @@ START_AT=1
 SKIP_VERIFY=false
 LOG_DIR="scripts/logs"
 RATE_LIMIT_WAIT=1800      # 30 minutes between retries (plan rate limits)
-RATE_LIMIT_MAX_RETRIES=8  # 8 retries × 30 min = 4 hours max wait
+RATE_LIMIT_MAX_RETRIES=8  # invoke_claude: max immediate re-tries while output still shows quota/rate errors
+STEP_MAX_RETRIES="${STEP_MAX_RETRIES:-8}"  # after any step failure, wait RATE_LIMIT_WAIT and retry whole step
 MAX_BUDGET_PER_STEP=0     # disabled — using Claude plan with usage quota (rate limits handled by retry logic)
 MAX_FIX_ATTEMPTS=3        # max times Claude can try to fix a failing step
 
@@ -59,6 +64,14 @@ log_separator() {
   local sep="────────────────────────────────────────────────────"
   echo "$sep"
   echo "$sep" >> "$RUN_LOG"
+}
+
+# True if log looks like quota / rate limit / plan exhaustion (Claude CLI wording varies).
+is_quota_or_rate_limit_error() {
+  local f="$1"
+  [[ -f "$f" ]] && grep -qiE \
+    'rate[[:space:]]*limit|429|too many requests|quota|hit your limit|you.?ve hit your limit|usage (limit|quota)|exceeded|billing|credit|plan.*(limit|usage)|resets[[:space:]]*[0-9]|anthropic.*(limit|quota)|over.*(limit|quota)|token.*(limit|exhaust)' \
+    "$f" 2>/dev/null
 }
 
 # ── Parse task file ───────────────────────────────────────────────────────────
@@ -203,8 +216,8 @@ invoke_claude() {
         "Bash(curl *)" "Bash(ls *)" "Bash(cat *)" "Bash(chmod *)" \
       > "$output_file" 2>&1 || exit_code=$?
 
-    # Check for rate limiting (exit code 2 or specific error text)
-    if [[ $exit_code -ne 0 ]] && grep -qi "rate.limit\|429\|quota\|too many requests" "$output_file" 2>/dev/null; then
+    # Check for rate limiting / plan quota (exit + message — wording varies by CLI version)
+    if [[ $exit_code -ne 0 ]] && is_quota_or_rate_limit_error "$output_file"; then
       retries=$((retries + 1))
       if [[ $retries -ge $RATE_LIMIT_MAX_RETRIES ]]; then
         log "  [claude] Rate limited $retries times — giving up on this step"
@@ -255,49 +268,61 @@ Important:
 - Run tests if you change test-adjacent code.
 - If something is unclear, implement the most straightforward interpretation."
 
-  if ! invoke_claude "$num" "$prompt"; then
-    log "Step $num: FAILED (Claude invocation error)"
-    failed=$((failed + 1))
-    log ""
-    log "STOPPED — Step $num failed. Fix manually and re-run with --start-at $num"
-    break
-  fi
-
-  # ── Verify + auto-fix loop ──────────────────────────────────────────────
-  step_passed=false
-  fix_attempt=0
-
-  while [[ $fix_attempt -le $MAX_FIX_ATTEMPTS ]]; do
-    if verify "$num"; then
-      step_passed=true
-      break
+  # Outer loop: on any step failure, wait RATE_LIMIT_WAIT and retry the whole step (quota, flaky verify, etc.)
+  step_round=0
+  while [[ $step_round -lt $STEP_MAX_RETRIES ]]; do
+    step_round=$((step_round + 1))
+    if [[ $step_round -gt 1 ]]; then
+      log "Step $num: attempt $step_round/$STEP_MAX_RETRIES — waiting ${RATE_LIMIT_WAIT}s (30 min), then retrying from the start of this step..."
+      sleep "$RATE_LIMIT_WAIT"
     fi
 
-    fix_attempt=$((fix_attempt + 1))
-    if [[ $fix_attempt -gt $MAX_FIX_ATTEMPTS ]]; then
-      log "Step $num: FAILED after $MAX_FIX_ATTEMPTS fix attempts"
-      break
+    if ! invoke_claude "$num" "$prompt"; then
+      log "Step $num: FAILED (Claude invocation error) — round $step_round/$STEP_MAX_RETRIES"
+      if [[ $step_round -ge $STEP_MAX_RETRIES ]]; then
+        failed=$((failed + 1))
+        log ""
+        log "STOPPED — Step $num failed after $STEP_MAX_RETRIES rounds. Fix manually or re-run with: ./scripts/orchestrate.sh \"$TASK_FILE\" --start-at $num"
+        break 2
+      fi
+      continue
     fi
 
-    log "  [fix] Attempt $fix_attempt/$MAX_FIX_ATTEMPTS — sending errors back to Claude"
+    # ── Verify + auto-fix loop ──────────────────────────────────────────────
+    step_passed=false
+    fix_attempt=0
 
-    # Read the verification log to get the actual errors
-    verify_log="$LOG_DIR/verify_step${num}_${RUN_ID}.log"
-    errors=""
-    if [[ -f "$verify_log" ]]; then
-      errors=$(tail -50 "$verify_log")
-    fi
+    while [[ $fix_attempt -le $MAX_FIX_ATTEMPTS ]]; do
+      if verify "$num"; then
+        step_passed=true
+        break
+      fi
 
-    # Also read chat verification log if it exists
-    chat_log="$LOG_DIR/chat_step${num}_${RUN_ID}.log"
-    if [[ -f "$chat_log" ]]; then
-      errors="$errors
+      fix_attempt=$((fix_attempt + 1))
+      if [[ $fix_attempt -gt $MAX_FIX_ATTEMPTS ]]; then
+        log "Step $num: FAILED after $MAX_FIX_ATTEMPTS fix attempts (this round)"
+        break
+      fi
+
+      log "  [fix] Attempt $fix_attempt/$MAX_FIX_ATTEMPTS — sending errors back to Claude"
+
+      # Read the verification log to get the actual errors
+      verify_log="$LOG_DIR/verify_step${num}_${RUN_ID}.log"
+      errors=""
+      if [[ -f "$verify_log" ]]; then
+        errors=$(tail -50 "$verify_log")
+      fi
+
+      # Also read chat verification log if it exists
+      chat_log="$LOG_DIR/chat_step${num}_${RUN_ID}.log"
+      if [[ -f "$chat_log" ]]; then
+        errors="$errors
 --- Chat scenario output ---
 $(cat "$chat_log")"
-    fi
+      fi
 
-    # Build a fix prompt with the original task + error output
-    fix_prompt="You are working on the D&D DM App project. You just attempted Step $num but verification failed.
+      # Build a fix prompt with the original task + error output
+      fix_prompt="You are working on the D&D DM App project. You just attempted Step $num but verification failed.
 
 ## Original task: $title
 
@@ -310,47 +335,59 @@ $errors
 \`\`\`
 
 Fix these errors. The original task instructions above still apply.
-Run \`pnpm check\` and \`pnpm test\` after your fixes to verify they work."
+Run \`pnpm check\` and \`pnpm test\` after your fixes to verify they work.
 
-    fix_output="$LOG_DIR/claude_step${num}_fix${fix_attempt}_${RUN_ID}.md"
-    fix_exit=0
-    log "  [fix] Sending fix prompt to Claude..."
-    claude -p "$fix_prompt" --print \
-      --model opus \
-      --effort max \
-      --permission-mode bypassPermissions \
-      --allowedTools "Read" "Edit" "Write" "Glob" "Grep" \
-        "Bash(pnpm check*)" "Bash(pnpm test*)" "Bash(pnpm db:push*)" "Bash(pnpm format*)" \
-        "Bash(npx tsx *)" "Bash(mkdir *)" "Bash(git clone *)" "Bash(git diff*)" "Bash(git status*)" \
-        "Bash(curl *)" "Bash(ls *)" "Bash(cat *)" "Bash(chmod *)" \
-      > "$fix_output" 2>&1 || fix_exit=$?
+If the failure came from a chat scenario (--- Chat scenario output --- above), read the
+full DM response text carefully — it is the primary diagnostic signal. The assertion line
+(e.g. 'Expected combatTriggered=true') only tells you what failed; the DM response tells
+you *why* (stale session history, wrong narrative state, misunderstood intent, etc.).
+You are allowed to fix the test scenario/infrastructure as well as the application code
+if that is the correct fix."
 
-    if [[ $fix_exit -ne 0 ]] && grep -qi "rate.limit\|429\|quota\|too many requests" "$fix_output" 2>/dev/null; then
-      log "  [fix] Rate limited — sleeping ${RATE_LIMIT_WAIT}s"
-      sleep "$RATE_LIMIT_WAIT"
-      fix_attempt=$((fix_attempt - 1))  # don't count rate limit as a fix attempt
-      continue
+      fix_output="$LOG_DIR/claude_step${num}_fix${fix_attempt}_${RUN_ID}.md"
+      fix_exit=0
+      log "  [fix] Sending fix prompt to Claude..."
+      claude -p "$fix_prompt" --print \
+        --model opus \
+        --effort max \
+        --permission-mode bypassPermissions \
+        --allowedTools "Read" "Edit" "Write" "Glob" "Grep" \
+          "Bash(pnpm check*)" "Bash(pnpm test*)" "Bash(pnpm db:push*)" "Bash(pnpm format*)" \
+          "Bash(npx tsx *)" "Bash(mkdir *)" "Bash(git clone *)" "Bash(git diff*)" "Bash(git status*)" \
+          "Bash(curl *)" "Bash(ls *)" "Bash(cat *)" "Bash(chmod *)" \
+        > "$fix_output" 2>&1 || fix_exit=$?
+
+      if [[ $fix_exit -ne 0 ]] && is_quota_or_rate_limit_error "$fix_output"; then
+        log "  [fix] Rate limited — sleeping ${RATE_LIMIT_WAIT}s"
+        sleep "$RATE_LIMIT_WAIT"
+        fix_attempt=$((fix_attempt - 1))  # don't count rate limit as a fix attempt
+        continue
+      fi
+
+      if [[ $fix_exit -ne 0 ]]; then
+        log "  [fix] Claude fix attempt failed (exit $fix_exit) — see $fix_output"
+      else
+        log "  [fix] Claude fix attempt done — re-verifying..."
+      fi
+    done
+
+    if $step_passed; then
+      checkpoint "$num" "$title"
+      passed=$((passed + 1))
+      log "Step $num: PASSED"
+      break
     fi
 
-    if [[ $fix_exit -ne 0 ]]; then
-      log "  [fix] Claude fix attempt failed (exit $fix_exit) — see $fix_output"
-    else
-      log "  [fix] Claude fix attempt done — re-verifying..."
+    log "Step $num: verification still failing after this round's fix attempts — round $step_round/$STEP_MAX_RETRIES"
+    log "  Review: $LOG_DIR/verify_step${num}_${RUN_ID}.log"
+    if [[ $step_round -ge $STEP_MAX_RETRIES ]]; then
+      failed=$((failed + 1))
+      log ""
+      log "STOPPED — Step $num failed after $STEP_MAX_RETRIES rounds (${RATE_LIMIT_WAIT}s wait between rounds)."
+      log "  Fix manually, then re-run with: ./scripts/orchestrate.sh \"$TASK_FILE\" --start-at $num"
+      break 2
     fi
   done
-
-  if ! $step_passed; then
-    failed=$((failed + 1))
-    log ""
-    log "STOPPED — Step $num failed verification after $MAX_FIX_ATTEMPTS fix attempts."
-    log "  Review: $LOG_DIR/verify_step${num}_${RUN_ID}.log"
-    log "  Fix manually, then re-run with: ./scripts/orchestrate.sh --start-at $num"
-    break
-  fi
-
-  checkpoint "$num" "$title"
-  passed=$((passed + 1))
-  log "Step $num: PASSED"
 done
 
 # ── Summary ───────────────────────────────────────────────────────────────────

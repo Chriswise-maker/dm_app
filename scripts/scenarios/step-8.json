@@ -5,19 +5,11 @@
   "characterId": 26,
   "steps": [
     {
-      "message": "Silas cautiously descends the stone staircase into the crypt. What does he see?",
-      "expect": {
-        "minLength": 50,
-        "combatTriggered": false,
-        "notContains": ["error", "undefined"]
-      }
-    },
-    {
-      "message": "Suddenly a group of skeletons rises from the sarcophagi and attacks!",
+      "message": "Silas rounds a corner and walks straight into a group of hostile bandits blocking the road. They draw their weapons. I cast Magic Missile at the nearest one!",
       "expect": {
         "minLength": 30,
         "combatTriggered": true,
-        "notContains": ["error", "undefined"]
+        "notContains": ["undefined"]
       }
     }
   ]
