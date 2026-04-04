@@ -20,6 +20,7 @@ export const ActorStateSchema = z.object({
     failures: z.number().int().default(0),
   }),
   exhaustion: z.number().int().min(0).max(6).default(0),
+  gold: z.number().min(0).default(0),
 });
 
 export type ActorState = z.infer<typeof ActorStateSchema>;
@@ -51,5 +52,6 @@ export function deriveInitialState(sheet: ActorSheet): ActorState {
     concentration: null,
     deathSaves: { successes: 0, failures: 0 },
     exhaustion: 0,
+    gold: 0,
   };
 }

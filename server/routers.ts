@@ -530,6 +530,228 @@ export const appRouter = router({
           results,
         };
       }),
+
+    startSkillChallenge: protectedProcedure
+      .input(z.object({
+        sessionId: z.number(),
+        name: z.string(),
+        description: z.string(),
+        dc: z.number().int().min(1).max(30),
+        successesNeeded: z.number().int().min(1),
+        failuresAllowed: z.number().int().min(1),
+        allowedSkills: z.array(z.string()).optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await import('./db');
+        const { createSkillChallenge } = await import('./skill-challenge');
+
+        const session = await db.getSession(input.sessionId);
+        if (!session || session.userId !== ctx.user.id) throw new Error('Unauthorized');
+
+        const storedContext = await db.getSessionContext(input.sessionId);
+        const parsedContext = db.parseSessionContext(storedContext);
+
+        const challenge = createSkillChallenge({
+          name: input.name,
+          description: input.description,
+          dc: input.dc,
+          successesNeeded: input.successesNeeded,
+          failuresAllowed: input.failuresAllowed,
+          allowedSkills: input.allowedSkills,
+        });
+
+        await db.upsertSessionContext(input.sessionId, {
+          ...parsedContext,
+          worldState: {
+            ...(typeof parsedContext.worldState === 'object' && parsedContext.worldState != null ? parsedContext.worldState : {}),
+            activeSkillChallenge: challenge,
+          },
+          recentEvent: `Skill challenge started: ${challenge.name}.`,
+        });
+
+        await db.saveMessage({
+          sessionId: input.sessionId,
+          characterName: 'DM',
+          content: `**Skill Challenge: ${challenge.name}**\n${challenge.description}\nDC ${challenge.dc} — ${challenge.successesNeeded} successes needed, ${challenge.failuresAllowed} failures allowed.`,
+          isDm: 1,
+        });
+
+        return challenge;
+      }),
+
+    skillChallengeCheck: protectedProcedure
+      .input(z.object({
+        characterId: z.number(),
+        skill: z.enum([
+          'acrobatics', 'animal_handling', 'arcana', 'athletics',
+          'deception', 'history', 'insight', 'intimidation', 'investigation',
+          'medicine', 'nature', 'perception', 'performance', 'persuasion',
+          'religion', 'sleight_of_hand', 'stealth', 'survival',
+        ]).optional(),
+        ability: z.enum(['str', 'dex', 'con', 'int', 'wis', 'cha']).optional(),
+        advantage: z.boolean().optional(),
+        disadvantage: z.boolean().optional(),
+        rawRoll: z.number().int().min(1).max(20).optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await import('./db');
+        const { contributeCheck } = await import('./skill-challenge');
+
+        const character = await db.getCharacter(input.characterId);
+        if (!character) throw new Error('Character not found');
+
+        const session = await db.getSession(character.sessionId);
+        if (!session || session.userId !== ctx.user.id) throw new Error('Unauthorized');
+
+        const storedContext = await db.getSessionContext(character.sessionId);
+        const parsedContext = db.parseSessionContext(storedContext);
+        const worldState = typeof parsedContext.worldState === 'object' && parsedContext.worldState != null
+          ? parsedContext.worldState as Record<string, unknown>
+          : {};
+        const challenge = worldState.activeSkillChallenge;
+        if (!challenge) throw new Error('No active skill challenge');
+
+        const result = contributeCheck(challenge as any, {
+          characterName: character.name,
+          stats: JSON.parse(character.stats),
+          level: character.level,
+          skill: input.skill,
+          ability: input.ability,
+          proficientSkills: [],
+          advantage: input.advantage,
+          disadvantage: input.disadvantage,
+          rawRoll: input.rawRoll,
+        });
+
+        const updatedWorldState = {
+          ...worldState,
+          activeSkillChallenge: result.outcome === 'in_progress' ? result.challenge : null,
+        };
+
+        await db.upsertSessionContext(character.sessionId, {
+          ...parsedContext,
+          worldState: updatedWorldState,
+          recentEvent: result.summary,
+        });
+
+        await db.saveMessage({
+          sessionId: character.sessionId,
+          characterName: 'DM',
+          content: result.summary,
+          isDm: 1,
+        });
+
+        return {
+          checkResult: result.checkResult,
+          outcome: result.outcome,
+          challenge: result.challenge,
+          summary: result.summary,
+        };
+      }),
+
+    buyItem: protectedProcedure
+      .input(z.object({
+        characterId: z.number(),
+        itemName: z.string(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await import('./db');
+        const { buyItem, getGoldCost } = await import('./shopping');
+        const { getSrdLoader } = await import('./srd');
+        const { lookupByName } = await import('./srd/srd-query');
+        const { ActorSheetSchema } = await import('./kernel/actor-sheet');
+        const { ActorStateSchema } = await import('./kernel/actor-state');
+
+        const character = await db.getCharacter(input.characterId);
+        if (!character) throw new Error('Character not found');
+
+        const session = await db.getSession(character.sessionId);
+        if (!session || session.userId !== ctx.user.id) throw new Error('Unauthorized');
+
+        const loader = getSrdLoader();
+        const srdEntry = lookupByName(loader, 'equipment', input.itemName);
+        if (!srdEntry) throw new Error(`Equipment "${input.itemName}" not found in SRD.`);
+
+        const sheet = ActorSheetSchema.parse(JSON.parse(character.actorSheet!));
+        const state = ActorStateSchema.parse(JSON.parse(character.actorState!));
+
+        const result = buyItem(sheet, state, srdEntry as any);
+        if (!result.success) throw new Error(result.error);
+
+        const updatedEquipment = [...sheet.equipment, result.item];
+        const updatedSheet = { ...sheet, equipment: updatedEquipment };
+        const updatedState = { ...state, gold: result.goldAfter };
+
+        await db.updateCharacter(character.id, {
+          actorSheet: JSON.stringify(updatedSheet),
+          actorState: JSON.stringify(updatedState),
+        });
+
+        await db.saveMessage({
+          sessionId: character.sessionId,
+          characterName: 'DM',
+          content: `**${character.name}** purchases **${srdEntry.name}** for ${getGoldCost(srdEntry as any)} gp. (${result.goldAfter} gp remaining)`,
+          isDm: 1,
+        });
+
+        return result;
+      }),
+
+    sellItem: protectedProcedure
+      .input(z.object({
+        characterId: z.number(),
+        itemName: z.string(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await import('./db');
+        const { sellItem } = await import('./shopping');
+        const { getSrdLoader } = await import('./srd');
+        const { lookupByName } = await import('./srd/srd-query');
+        const { ActorSheetSchema } = await import('./kernel/actor-sheet');
+        const { ActorStateSchema } = await import('./kernel/actor-state');
+
+        const character = await db.getCharacter(input.characterId);
+        if (!character) throw new Error('Character not found');
+
+        const session = await db.getSession(character.sessionId);
+        if (!session || session.userId !== ctx.user.id) throw new Error('Unauthorized');
+
+        const sheet = ActorSheetSchema.parse(JSON.parse(character.actorSheet!));
+        const state = ActorStateSchema.parse(JSON.parse(character.actorState!));
+
+        const loader = getSrdLoader();
+        const srdEntry = lookupByName(loader, 'equipment', input.itemName);
+
+        const result = sellItem(sheet, state, input.itemName, srdEntry as any ?? undefined);
+        if (!result.success) throw new Error(result.error);
+
+        const updatedEquipment = sheet.equipment.filter(
+          e => e.name.toLowerCase() !== input.itemName.toLowerCase(),
+        );
+        // Only remove the first matching item
+        const idx = sheet.equipment.findIndex(
+          e => e.name.toLowerCase() === input.itemName.toLowerCase(),
+        );
+        const updatedEquipmentOnce = [...sheet.equipment];
+        if (idx !== -1) updatedEquipmentOnce.splice(idx, 1);
+
+        const updatedSheet = { ...sheet, equipment: updatedEquipmentOnce };
+        const updatedState = { ...state, gold: result.goldAfter };
+
+        await db.updateCharacter(character.id, {
+          actorSheet: JSON.stringify(updatedSheet),
+          actorState: JSON.stringify(updatedState),
+        });
+
+        await db.saveMessage({
+          sessionId: character.sessionId,
+          characterName: 'DM',
+          content: `**${character.name}** sells **${input.itemName}** for ${result.refund} gp. (${result.goldAfter} gp remaining)`,
+          isDm: 1,
+        });
+
+        return result;
+      }),
   }),
 
   messages: router({
