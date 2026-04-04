@@ -267,6 +267,9 @@ export const CombatEntitySchema = z.object({
     // Feature uses remaining (e.g. { "Second Wind": 1, "Action Surge": 1 })
     featureUses: z.record(z.string(), z.number().int()).default({}),
 
+    // Bardic Inspiration die held by this entity (e.g. "d6", "d8"). Null/undefined = none.
+    bardicInspirationDie: z.string().optional(),
+
     // Link to database (for persistence)
     dbCombatantId: z.number().int().optional(),
     dbCharacterId: z.number().int().optional(),
@@ -413,6 +416,10 @@ export const ActionTypeSchema = z.enum([
     "DECLINE_SMITE",        // Paladin: skip smite, proceed with normal damage
     // Barbarian
     "RAGE",                 // Barbarian: bonus action, grants rage bonuses, uses/long rest
+    // Bard
+    "BARDIC_INSPIRATION",   // Bard: bonus action, grant ally an inspiration die
+    // Paladin
+    "LAY_ON_HANDS",         // Paladin: action, heal ally from HP pool
     // Reactions (consume Reaction)
     "OPPORTUNITY_ATTACK",
     // Meta
@@ -443,6 +450,8 @@ export const ACTION_DEFAULT_COST: Record<ActionType, ResourceCost> = {
     SMITE_3:            "free",
     DECLINE_SMITE:      "free",
     RAGE:               "bonus_action",
+    BARDIC_INSPIRATION: "bonus_action",
+    LAY_ON_HANDS:       "action",
     OPPORTUNITY_ATTACK: "reaction",
     END_TURN:           "none",
 };
@@ -628,6 +637,28 @@ export const RagePayloadSchema = z.object({
 export type RagePayload = z.infer<typeof RagePayloadSchema>;
 
 /**
+ * Bardic Inspiration Payload — Bard grants an inspiration die to an ally
+ */
+export const BardicInspirationPayloadSchema = z.object({
+    type: z.literal("BARDIC_INSPIRATION"),
+    entityId: z.string(),    // The Bard
+    targetId: z.string(),    // Ally receiving the die
+    resourceCost: ResourceCostSchema.optional(),
+});
+export type BardicInspirationPayload = z.infer<typeof BardicInspirationPayloadSchema>;
+
+/**
+ * Lay on Hands Payload — Paladin heals an ally from their HP pool
+ */
+export const LayOnHandsPayloadSchema = z.object({
+    type: z.literal("LAY_ON_HANDS"),
+    entityId: z.string(),    // The Paladin
+    targetId: z.string(),    // Ally being healed
+    resourceCost: ResourceCostSchema.optional(),
+});
+export type LayOnHandsPayload = z.infer<typeof LayOnHandsPayloadSchema>;
+
+/**
  * Divine Smite Payload — Paladin expends a spell slot after a melee hit
  */
 export const SmitePayloadSchema = z.object({
@@ -704,6 +735,8 @@ export const ActionPayloadSchema = z.discriminatedUnion("type", [
     SecondWindPayloadSchema,
     ActionSurgePayloadSchema,
     RagePayloadSchema,
+    BardicInspirationPayloadSchema,
+    LayOnHandsPayloadSchema,
     SmitePayloadSchema,
     DeclineSmitePayloadSchema,
     OpportunityAttackPayloadSchema,

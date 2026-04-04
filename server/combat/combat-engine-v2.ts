@@ -46,6 +46,8 @@ import {
     type SmitePayload,
     type DeclineSmitePayload,
     type RagePayload,
+    type BardicInspirationPayload,
+    type LayOnHandsPayload,
     type PendingSmite,
     ACTION_DEFAULT_COST,
     RangeBand,
@@ -839,6 +841,47 @@ export class CombatEngineV2 {
             });
         }
 
+        // Bardic Inspiration (Bard): bonus action, grant ally an inspiration die
+        if (entity.characterClass === 'Bard' &&
+            hasBonusAction &&
+            (entity.featureUses["Bardic Inspiration"] ?? 0) > 0) {
+            const level = entity.level ?? 1;
+            const dieName = level >= 15 ? "d12" : level >= 10 ? "d10" : level >= 5 ? "d8" : "d6";
+            // Can target any living ally (not self)
+            for (const ally of allies) {
+                actions.push({
+                    type: "BARDIC_INSPIRATION",
+                    targetId: ally.id,
+                    targetName: ally.name,
+                    description: `Bardic Inspiration — grant ${ally.name} a ${dieName} (bonus action)`,
+                    resourceCost: "bonus_action",
+                });
+            }
+        }
+
+        // Lay on Hands (Paladin): action, heal ally or self from HP pool
+        if (entity.characterClass === 'Paladin' &&
+            hasFullAction &&
+            (entity.featureUses["Lay on Hands"] ?? 0) > 0) {
+            // Can target self (always) or allies (including unconscious) within melee range
+            const healTargets = [entity, ...this.state.entities.filter(e =>
+                e.id !== entity.id &&
+                (e.type === 'player' || e.type === 'ally') &&
+                (e.status === 'ALIVE' || e.status === 'UNCONSCIOUS') &&
+                this.getRangeBetween(entity.id, e.id) === RangeBand.MELEE
+            )];
+            for (const t of healTargets) {
+                const pool = entity.featureUses["Lay on Hands"];
+                actions.push({
+                    type: "LAY_ON_HANDS",
+                    targetId: t.id,
+                    targetName: t.name,
+                    description: `Lay on Hands — heal ${t.name} (${pool} HP in pool, action)`,
+                    resourceCost: "action",
+                });
+            }
+        }
+
         // Always include END_TURN
         actions.push({
             type: "END_TURN",
@@ -1620,6 +1663,12 @@ export class CombatEngineV2 {
             case "RAGE":
                 return this.processRage(payload as RagePayload);
 
+            case "BARDIC_INSPIRATION":
+                return this.processBardicInspiration(payload as BardicInspirationPayload);
+
+            case "LAY_ON_HANDS":
+                return this.processLayOnHands(payload as LayOnHandsPayload);
+
             case "SMITE_1":
             case "SMITE_2":
             case "SMITE_3":
@@ -2372,6 +2421,17 @@ export class CombatEngineV2 {
             isFumble = false;
         }
 
+        // Bardic Inspiration: if attacker holds an inspiration die, auto-roll and add to attack
+        if (attacker.bardicInspirationDie && !isCritical && !isFumble) {
+            const inspirationRoll = this.rollFn(`1${attacker.bardicInspirationDie}`);
+            totalAttack += inspirationRoll.total;
+            logs.push(this.createLogEntry("CUSTOM", {
+                actorId: attacker.id,
+                description: `${attacker.name} uses Bardic Inspiration (${attacker.bardicInspirationDie}) — adds ${inspirationRoll.total} to attack roll (new total: ${totalAttack})`,
+            }));
+            attacker.bardicInspirationDie = undefined;
+        }
+
         // Determine hit/miss (crits always hit, fumbles always miss)
         const isHit = isCritical || (!isFumble && totalAttack >= target.baseAC);
 
@@ -3027,6 +3087,109 @@ export class CombatEngineV2 {
         this.state.updatedAt = Date.now();
 
         const turnLogs = this.autoEndTurnIfExhausted(entity);
+        logs.push(...turnLogs);
+
+        return { success: true, logs, newState: this.getState() as BattleState };
+    }
+
+    // ===========================================================================
+    // BARDIC INSPIRATION & LAY ON HANDS (Tier 5)
+    // ===========================================================================
+
+    /**
+     * Bardic Inspiration — Bard grants an inspiration die to an ally (bonus action).
+     * The die size scales with bard level: d6 (1-4), d8 (5-9), d10 (10-14), d12 (15+).
+     * The ally can add it to their next attack roll (auto-consumed).
+     */
+    private processBardicInspiration(payload: BardicInspirationPayload): ActionResult {
+        const bard = this.getEntity(payload.entityId);
+        if (!bard) return this.actionError(`Entity not found: ${payload.entityId}`);
+
+        const target = this.getEntity(payload.targetId);
+        if (!target) return this.actionError(`Target not found: ${payload.targetId}`);
+
+        if (bard.characterClass !== 'Bard') {
+            return this.actionError(`${bard.name} is not a Bard`);
+        }
+        if ((bard.featureUses["Bardic Inspiration"] ?? 0) <= 0) {
+            return this.actionError(`${bard.name} has no Bardic Inspiration uses remaining`);
+        }
+
+        const cost = payload.resourceCost ?? ACTION_DEFAULT_COST.BARDIC_INSPIRATION;
+        if (!this.consumeResource(cost)) {
+            return this.actionError(`No ${cost} available for Bardic Inspiration`);
+        }
+
+        bard.featureUses["Bardic Inspiration"]--;
+
+        // Calculate die based on bard level
+        const level = bard.level ?? 1;
+        const dieName = level >= 15 ? "d12" : level >= 10 ? "d10" : level >= 5 ? "d8" : "d6";
+
+        // Set the die on the target
+        target.bardicInspirationDie = dieName;
+
+        const logs: CombatLogEntry[] = [];
+        logs.push(this.createLogEntry("ACTION", {
+            actorId: bard.id,
+            targetId: target.id,
+            description: `${bard.name} inspires ${target.name} — they hold a ${dieName}.`,
+        }));
+
+        activity.system(this.state.sessionId, `${bard.name} grants ${target.name} Bardic Inspiration (${dieName})`);
+        this.state.updatedAt = Date.now();
+
+        const turnLogs = this.autoEndTurnIfExhausted(bard);
+        logs.push(...turnLogs);
+
+        return { success: true, logs, newState: this.getState() as BattleState };
+    }
+
+    /**
+     * Lay on Hands — Paladin heals an ally from their HP pool (action).
+     * Heals min(pool_remaining, target_missing_hp). Consumes action.
+     */
+    private processLayOnHands(payload: LayOnHandsPayload): ActionResult {
+        const paladin = this.getEntity(payload.entityId);
+        if (!paladin) return this.actionError(`Entity not found: ${payload.entityId}`);
+
+        const target = this.getEntity(payload.targetId);
+        if (!target) return this.actionError(`Target not found: ${payload.targetId}`);
+
+        if (paladin.characterClass !== 'Paladin') {
+            return this.actionError(`${paladin.name} is not a Paladin`);
+        }
+
+        const pool = paladin.featureUses["Lay on Hands"] ?? 0;
+        if (pool <= 0) {
+            return this.actionError(`${paladin.name} has no Lay on Hands pool remaining`);
+        }
+
+        const cost = payload.resourceCost ?? ACTION_DEFAULT_COST.LAY_ON_HANDS;
+        if (!this.consumeResource(cost)) {
+            return this.actionError(`No ${cost} available for Lay on Hands`);
+        }
+
+        // Heal min(pool, missing HP)
+        const missingHp = target.maxHp - target.hp;
+        const healAmount = Math.min(pool, missingHp);
+
+        paladin.featureUses["Lay on Hands"] -= healAmount;
+
+        const logs: CombatLogEntry[] = [];
+        const { actual, logs: healLogs } = this.applyHealing(target.id, healAmount);
+        logs.push(...healLogs);
+
+        logs.push(this.createLogEntry("ACTION", {
+            actorId: paladin.id,
+            targetId: target.id,
+            description: `${paladin.name} uses Lay on Hands on ${target.name}, healing ${actual} HP. (${paladin.featureUses["Lay on Hands"]} remaining in pool)`,
+        }));
+
+        activity.system(this.state.sessionId, `${paladin.name} Lay on Hands on ${target.name} for ${actual} HP`);
+        this.state.updatedAt = Date.now();
+
+        const turnLogs = this.autoEndTurnIfExhausted(paladin);
         logs.push(...turnLogs);
 
         return { success: true, logs, newState: this.getState() as BattleState };
