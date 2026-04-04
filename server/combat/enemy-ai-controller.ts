@@ -17,6 +17,7 @@ import { invokeFastLLMWithSettings } from '../llm-with-settings';
 import { activity } from '../activity-log';
 import { getEnemyAIPrompt } from '../prompts';
 import { generateCombatNarrative } from './combat-narrator';
+import { RangeBand } from './combat-types';
 import type { CombatEntity, BattleState, ActionPayload, CombatLogEntry, LegalAction } from './combat-types';
 
 // =============================================================================
@@ -41,16 +42,131 @@ export function scoreTargets(enemy: CombatEntity, state: BattleState): CombatEnt
     const candidates = alive.length > 0 ? alive : unconscious;
     if (candidates.length === 0) return [];
 
-    // Sort by HP percentage ascending (lowest first = most vulnerable)
+    // Sort by threat score descending (highest threat = best target)
+    // Multi-enemy penalty reduces score for targets already chosen this round
     const sorted = [...candidates].sort((a, b) => {
-        const pctA = a.maxHp > 0 ? a.hp / a.maxHp : 1;
-        const pctB = b.maxHp > 0 ? b.hp / b.maxHp : 1;
-        if (pctA !== pctB) return pctA - pctB;
+        const threatA = scoreThreat(a, state.entities) - getTargetPenalty(state.sessionId, a.id);
+        const threatB = scoreThreat(b, state.entities) - getTargetPenalty(state.sessionId, b.id);
+        if (threatA !== threatB) return threatB - threatA;
         // Tie-break: random
         return Math.random() - 0.5;
     });
 
     return sorted;
+}
+
+// =============================================================================
+// THREAT SCORING
+// =============================================================================
+
+/**
+ * Estimate average damage from a dice formula (e.g. "1d8+3" → 7.5)
+ */
+function estimateAverageDamage(formula?: string): number {
+    if (!formula) return 0;
+    const match = formula.match(/(\d+)d(\d+)(?:\s*\+\s*(\d+))?/);
+    if (!match) return 0;
+    const count = parseInt(match[1]);
+    const sides = parseInt(match[2]);
+    const bonus = parseInt(match[3] || '0');
+    return (count * (sides + 1)) / 2 + bonus;
+}
+
+/**
+ * Score how threatening a target is. Higher = more attractive to attack.
+ * Factors: (a) low HP ratio, (b) concentration, (c) damage output.
+ */
+export function scoreThreat(target: CombatEntity, allEntities: CombatEntity[]): number {
+    let score = 0;
+
+    // (a) Low HP = easier to finish off (0–50 points)
+    const hpRatio = target.maxHp > 0 ? target.hp / target.maxHp : 1;
+    score += (1 - hpRatio) * 50;
+
+    // (b) Concentration caster — breaking concentration is high value
+    const isConcentrating = target.activeConditions?.some(c => c.name === 'concentrating') ?? false;
+    if (isConcentrating) score += 30;
+
+    // (c) High damage dealers are dangerous (approx from damageFormula)
+    score += estimateAverageDamage(target.damageFormula) * 2;
+
+    return score;
+}
+
+// =============================================================================
+// ACTION SCORING (spatial / tactical fitness)
+// =============================================================================
+
+/**
+ * Score a legal action for spatial and tactical fitness.
+ * Ranged enemies prefer distance; melee enemies prefer closing.
+ */
+export function scoreAction(enemy: CombatEntity, action: LegalAction, state: BattleState): number {
+    let score = 0;
+    const isRanged = enemy.isRanged ?? false;
+
+    // Movement with a direction: score based on range preference
+    if ((action.type === 'MOVE' || action.type === 'DASH') && action.targetId && action.direction) {
+        const currentRange = enemy.rangeTo?.[action.targetId] ?? RangeBand.NEAR;
+
+        if (isRanged) {
+            // Ranged: escape melee, stay at distance
+            if (currentRange === RangeBand.MELEE && action.direction === 'away') {
+                score += 25;
+            } else if (action.direction === 'toward') {
+                score -= 10;
+            }
+        } else {
+            // Melee: close to striking range
+            if (currentRange !== RangeBand.MELEE && action.direction === 'toward') {
+                score += 20;
+            } else if (action.direction === 'away') {
+                score -= 10;
+            }
+        }
+    }
+
+    // DASH (no direction) — score based on overall spatial need
+    if (action.type === 'DASH' && !action.direction) {
+        if (isRanged) {
+            const inMelee = state.entities.some(e =>
+                e.type === 'player' && e.status === 'ALIVE' &&
+                (enemy.rangeTo?.[e.id] ?? RangeBand.NEAR) === RangeBand.MELEE
+            );
+            if (inMelee) score += 15;
+        } else {
+            const alivePlayers = state.entities.filter(e => e.type === 'player' && e.status === 'ALIVE');
+            const allFar = alivePlayers.length > 0 && alivePlayers.every(
+                e => (enemy.rangeTo?.[e.id] ?? RangeBand.NEAR) === RangeBand.FAR
+            );
+            if (allFar) score += 15;
+        }
+    }
+
+    return score;
+}
+
+// =============================================================================
+// MULTI-ENEMY COORDINATION
+// =============================================================================
+
+/** Track which targets have been chosen this AI loop to avoid piling on */
+const roundTargetCounts = new Map<number, Map<string, number>>();
+
+export function resetRoundTargets(sessionId: number): void {
+    roundTargetCounts.set(sessionId, new Map());
+}
+
+export function recordTargetChoice(sessionId: number, targetId: string): void {
+    const counts = roundTargetCounts.get(sessionId) ?? new Map();
+    counts.set(targetId, (counts.get(targetId) ?? 0) + 1);
+    roundTargetCounts.set(sessionId, counts);
+}
+
+function getTargetPenalty(sessionId: number, targetId: string): number {
+    const counts = roundTargetCounts.get(sessionId);
+    if (!counts) return 0;
+    return (counts.get(targetId) ?? 0) * 15;
 }
 
 // =============================================================================
@@ -75,6 +191,25 @@ function buildEnemyDecisionPromptV2(enemy: CombatEntity, state: BattleState, ran
     }
     if (enemy.isRanged) {
         prompt += `- Ranged attacker\n`;
+    }
+
+    // Spatial awareness hints
+    if (enemy.isRanged) {
+        const playersInMelee = state.entities.filter(e =>
+            e.type === 'player' && e.status === 'ALIVE' &&
+            (enemy.rangeTo?.[e.id] ?? RangeBand.NEAR) === RangeBand.MELEE
+        );
+        if (playersInMelee.length > 0) {
+            prompt += `\n⚠ WARNING: You are a RANGED attacker stuck in MELEE with ${playersInMelee.map(e => e.name).join(', ')}! Prioritize DASH or MOVE away to escape melee range.\n`;
+        }
+    } else {
+        const aliveTargets = rankedTargets.filter(t => t.status === 'ALIVE');
+        const noneInMelee = aliveTargets.length > 0 && aliveTargets.every(
+            t => (enemy.rangeTo?.[t.id] ?? RangeBand.NEAR) !== RangeBand.MELEE
+        );
+        if (noneInMelee) {
+            prompt += `\n⚠ ADVICE: You are a MELEE fighter with no targets in melee range. Prioritize MOVE toward or DASH to close distance.\n`;
+        }
     }
 
     if (allies.length > 0) {
@@ -113,13 +248,15 @@ function buildEnemyDecisionPromptV2(enemy: CombatEntity, state: BattleState, ran
         prompt += `\nBiggest threat: ${biggestThreat.name} (${pct}% HP, most dangerous)\n`;
     }
 
-    // List legal actions as numbered choices
-    prompt += `\nYour available actions:\n`;
+    // List legal actions as numbered choices, annotated by tactical score
+    prompt += `\nYour available actions (★ = recommended):\n`;
     legalActions.forEach((action, i) => {
+        const actScore = scoreAction(enemy, action, state);
+        const tag = actScore >= 20 ? ' ★★' : actScore >= 10 ? ' ★' : '';
         if (action.type === 'ATTACK' && action.targetId) {
-            prompt += `${i + 1}. ATTACK target=${action.targetId} — ${action.description}\n`;
+            prompt += `${i + 1}. ATTACK target=${action.targetId} — ${action.description}${tag}\n`;
         } else {
-            prompt += `${i + 1}. ${action.type} — ${action.description}\n`;
+            prompt += `${i + 1}. ${action.type} — ${action.description}${tag}\n`;
         }
     });
 
@@ -315,6 +452,11 @@ export async function executeEnemyTurn(sessionId: number, userId: number): Promi
 
     // Parse response (matched against legal actions)
     const parsed = parseEnemyAction(llmResponse, entity, state, legalActions);
+
+    // Record target for multi-enemy coordination (reduce piling on same target)
+    if (parsed.targetId) {
+        recordTargetChoice(sessionId, parsed.targetId);
+    }
 
     // Build action payload based on parsed AI decision
     let actionPayload: ActionPayload;
@@ -576,6 +718,9 @@ export async function runAILoop(sessionId: number, userId: number): Promise<void
 
     console.log(`[EnemyAI] Starting AI loop for session ${sessionId}`);
     CombatEngineManager.setAILoopRunning(sessionId, true);
+
+    // Reset multi-enemy target tracker so enemies spread their attacks
+    resetRoundTargets(sessionId);
 
     let iterationCount = 0;
     const maxIterations = 20; // Safety limit to prevent infinite loops
