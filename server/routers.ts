@@ -752,6 +752,212 @@ export const appRouter = router({
 
         return result;
       }),
+
+    startTravel: protectedProcedure
+      .input(z.object({
+        sessionId: z.number(),
+        destination: z.string(),
+        distanceMiles: z.number().positive(),
+        pace: z.enum(['fast', 'normal', 'slow']),
+        encounterChance: z.number().min(0).max(100).optional(),
+        encounterCheckIntervalMiles: z.number().positive().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await import('./db');
+        const { createTravel } = await import('./travel');
+
+        const session = await db.getSession(input.sessionId);
+        if (!session || session.userId !== ctx.user.id) throw new Error('Unauthorized');
+
+        const storedContext = await db.getSessionContext(input.sessionId);
+        const parsedContext = db.parseSessionContext(storedContext);
+
+        const travel = createTravel({
+          destination: input.destination,
+          distanceMiles: input.distanceMiles,
+          pace: input.pace,
+          encounterChance: input.encounterChance,
+          encounterCheckIntervalMiles: input.encounterCheckIntervalMiles,
+        });
+
+        await db.upsertSessionContext(input.sessionId, {
+          ...parsedContext,
+          worldState: {
+            ...(typeof parsedContext.worldState === 'object' && parsedContext.worldState != null ? parsedContext.worldState : {}),
+            activeTravel: travel,
+          },
+          recentEvent: `The party sets out for ${travel.destination} (${travel.distanceMiles} miles, ${travel.pace} pace).`,
+        });
+
+        await db.saveMessage({
+          sessionId: input.sessionId,
+          characterName: 'DM',
+          content: `**Travel Begins:** The party sets out for **${travel.destination}** — ${travel.distanceMiles} miles at ${travel.pace} pace.`,
+          isDm: 1,
+        });
+
+        return travel;
+      }),
+
+    advanceTravelDay: protectedProcedure
+      .input(z.object({ sessionId: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await import('./db');
+        const { advanceTravelDay } = await import('./travel');
+
+        const session = await db.getSession(input.sessionId);
+        if (!session || session.userId !== ctx.user.id) throw new Error('Unauthorized');
+
+        const storedContext = await db.getSessionContext(input.sessionId);
+        const parsedContext = db.parseSessionContext(storedContext);
+        const worldState = typeof parsedContext.worldState === 'object' && parsedContext.worldState != null
+          ? parsedContext.worldState as Record<string, unknown>
+          : {};
+        const travel = worldState.activeTravel;
+        if (!travel) throw new Error('No active travel');
+
+        const result = advanceTravelDay(travel as any);
+
+        const updatedWorldState = {
+          ...worldState,
+          activeTravel: result.completed ? null : result.travel,
+        };
+
+        await db.upsertSessionContext(input.sessionId, {
+          ...parsedContext,
+          worldState: updatedWorldState,
+          recentEvent: result.summary,
+        });
+
+        await db.saveMessage({
+          sessionId: input.sessionId,
+          characterName: 'DM',
+          content: result.summary,
+          isDm: 1,
+        });
+
+        return {
+          travel: result.travel,
+          milesAdvanced: result.milesAdvanced,
+          encounterChecks: result.encounterChecks,
+          completed: result.completed,
+          summary: result.summary,
+        };
+      }),
+
+    startSocialEncounter: protectedProcedure
+      .input(z.object({
+        sessionId: z.number(),
+        npcName: z.string(),
+        disposition: z.enum(['hostile', 'neutral', 'friendly']),
+        dc: z.number().int().min(1).max(30),
+        maxInteractions: z.number().int().min(1).optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await import('./db');
+        const { createSocialEncounter } = await import('./social-encounter');
+
+        const session = await db.getSession(input.sessionId);
+        if (!session || session.userId !== ctx.user.id) throw new Error('Unauthorized');
+
+        const storedContext = await db.getSessionContext(input.sessionId);
+        const parsedContext = db.parseSessionContext(storedContext);
+
+        const encounter = createSocialEncounter({
+          npcName: input.npcName,
+          disposition: input.disposition,
+          dc: input.dc,
+          maxInteractions: input.maxInteractions,
+        });
+
+        await db.upsertSessionContext(input.sessionId, {
+          ...parsedContext,
+          worldState: {
+            ...(typeof parsedContext.worldState === 'object' && parsedContext.worldState != null ? parsedContext.worldState : {}),
+            activeSocialEncounter: encounter,
+          },
+          recentEvent: `Social encounter with ${encounter.npcName} (${encounter.disposition}).`,
+        });
+
+        await db.saveMessage({
+          sessionId: input.sessionId,
+          characterName: 'DM',
+          content: `**Social Encounter: ${encounter.npcName}**\nDisposition: ${encounter.disposition} — DC ${encounter.dc}. Up to ${encounter.maxInteractions} interactions.`,
+          isDm: 1,
+        });
+
+        return encounter;
+      }),
+
+    socialCheck: protectedProcedure
+      .input(z.object({
+        characterId: z.number(),
+        skill: z.enum([
+          'acrobatics', 'animal_handling', 'arcana', 'athletics',
+          'deception', 'history', 'insight', 'intimidation', 'investigation',
+          'medicine', 'nature', 'perception', 'performance', 'persuasion',
+          'religion', 'sleight_of_hand', 'stealth', 'survival',
+        ]).optional(),
+        ability: z.enum(['str', 'dex', 'con', 'int', 'wis', 'cha']).optional(),
+        advantage: z.boolean().optional(),
+        disadvantage: z.boolean().optional(),
+        rawRoll: z.number().int().min(1).max(20).optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await import('./db');
+        const { attemptSocialCheck } = await import('./social-encounter');
+
+        const character = await db.getCharacter(input.characterId);
+        if (!character) throw new Error('Character not found');
+
+        const session = await db.getSession(character.sessionId);
+        if (!session || session.userId !== ctx.user.id) throw new Error('Unauthorized');
+
+        const storedContext = await db.getSessionContext(character.sessionId);
+        const parsedContext = db.parseSessionContext(storedContext);
+        const worldState = typeof parsedContext.worldState === 'object' && parsedContext.worldState != null
+          ? parsedContext.worldState as Record<string, unknown>
+          : {};
+        const encounter = worldState.activeSocialEncounter;
+        if (!encounter) throw new Error('No active social encounter');
+
+        const result = attemptSocialCheck(encounter as any, {
+          characterName: character.name,
+          stats: JSON.parse(character.stats),
+          level: character.level,
+          skill: input.skill,
+          ability: input.ability,
+          proficientSkills: [],
+          advantage: input.advantage,
+          disadvantage: input.disadvantage,
+          rawRoll: input.rawRoll,
+        });
+
+        const updatedWorldState = {
+          ...worldState,
+          activeSocialEncounter: result.outcome === 'in_progress' ? result.encounter : null,
+        };
+
+        await db.upsertSessionContext(character.sessionId, {
+          ...parsedContext,
+          worldState: updatedWorldState,
+          recentEvent: result.summary,
+        });
+
+        await db.saveMessage({
+          sessionId: character.sessionId,
+          characterName: 'DM',
+          content: result.summary,
+          isDm: 1,
+        });
+
+        return {
+          checkResult: result.checkResult,
+          outcome: result.outcome,
+          encounter: result.encounter,
+          summary: result.summary,
+        };
+      }),
   }),
 
   messages: router({
