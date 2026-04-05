@@ -115,7 +115,10 @@ export const SpellSchema = z.object({
     range: z.number().int().default(30),      // feet
     isAreaEffect: z.boolean().default(false),
     areaType: z.enum(['sphere', 'cone', 'line', 'cube']).optional(),
-    areaSize: z.number().int().optional(),    // radius/length in feet
+    areaSize: z.preprocess(
+        (v) => { const n = Number(v); return Number.isNaN(n) ? undefined : n; },
+        z.number().int().optional()
+    ),
     savingThrow: z.enum(['STR', 'DEX', 'CON', 'INT', 'WIS', 'CHA']).optional(),
     halfOnSave: z.boolean().default(true),    // true = half damage on successful save
     damageFormula: z.string().optional(),     // e.g. "8d6" for Fireball

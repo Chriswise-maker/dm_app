@@ -58,6 +58,7 @@ import {
     type LogEntryType,
     SpellSchema,
     PendingSpellSaveSchema,
+    type WeaponEntry,
 } from "./combat-types";
 import { validateDiceRoll } from "./combat-validators";
 import { resolveCheck } from "../kernel/check-resolver";
@@ -74,6 +75,22 @@ import type { AbilityStat } from "../kernel/actor-sheet";
 // =============================================================================
 // HELPER FUNCTIONS
 // =============================================================================
+
+/**
+ * Match a weapon by name from an entity's weapons array.
+ * Case-insensitive with partial/substring fallback.
+ */
+function matchWeapon(weapons: WeaponEntry[] | undefined, name?: string): WeaponEntry | undefined {
+    if (!name || !weapons?.length) return undefined;
+    const lower = name.toLowerCase();
+    // Exact case-insensitive match
+    const exact = weapons.find(w => w.name.toLowerCase() === lower);
+    if (exact) return exact;
+    // Partial match (name contains or is contained by)
+    return weapons.find(w =>
+        w.name.toLowerCase().includes(lower) || lower.includes(w.name.toLowerCase())
+    );
+}
 
 /**
  * Deep clone state for history (undo support)
@@ -1407,17 +1424,17 @@ export class CombatEngineV2 {
                 actorId: attacker.id,
                 targetId: target.id,
                 amount: damage,
-                damageType: attacker.damageType,
+                damageType: dt,
                 roll: {
                     formula: damageFormula,
                     result: damage,
                     isCritical,
                     isFumble: false,
                 },
-                description: `${attacker.name} deals ${damage} ${attacker.damageType} damage to ${target.name}! (${target.hp}/${target.maxHp} HP remaining)`,
+                description: `${attacker.name} deals ${damage} ${dt} damage to ${target.name}! (${target.hp}/${target.maxHp} HP remaining)`,
             }));
 
-            activity.damage(this.state.sessionId, `${attacker.name} deals ${damage} ${attacker.damageType} to ${target.name} (${target.hp}/${target.maxHp} HP)`);
+            activity.damage(this.state.sessionId, `${attacker.name} deals ${damage} ${dt} to ${target.name} (${target.hp}/${target.maxHp} HP)`);
             logs.push(...this.checkConcentrationSave(target.id, damage));
         } else if (hasImmunity) {
             logs.push(this.createLogEntry("CUSTOM", {
@@ -2118,9 +2135,7 @@ export class CombatEngineV2 {
         const effectiveAdvantage = (payload.advantage || false) || this.hasActiveCondition(attacker.id, 'invisible') || targetCondAdv;
 
         // Use weapon-specific attack bonus if available
-        const matchedWeapon = payload.weaponName && attacker.weapons?.length
-            ? attacker.weapons.find(w => w.name === payload.weaponName)
-            : undefined;
+        const matchedWeapon = matchWeapon(attacker.weapons, payload.weaponName);
         const attackMod = matchedWeapon?.attackBonus ?? attacker.attackModifier;
 
         this.state.phase = 'AWAIT_ATTACK_ROLL';
@@ -2480,9 +2495,7 @@ export class CombatEngineV2 {
         }
 
         // HIT! Resolve weapon-specific damage formula if available
-        const matchedWeapon = payload.weaponName && attacker.weapons?.length
-            ? attacker.weapons.find(w => w.name === payload.weaponName)
-            : undefined;
+        const matchedWeapon = matchWeapon(attacker.weapons, payload.weaponName);
         const baseDamageFormula = matchedWeapon?.damageFormula ?? attacker.damageFormula;
         const damageFormula = isCritical
             ? this.doubleDiceFormula(baseDamageFormula)
@@ -3217,9 +3230,7 @@ export class CombatEngineV2 {
         if (this.state.turnResources?.sneakAttackUsedThisTurn) return [];
 
         // Check weapon: must be finesse or ranged
-        const weapon = weaponName && attacker.weapons?.length
-            ? attacker.weapons.find(w => w.name === weaponName)
-            : undefined;
+        const weapon = matchWeapon(attacker.weapons, weaponName);
         const weaponIsFinesse = weapon?.properties?.includes('finesse') ?? false;
         const weaponIsRanged = weapon?.isRanged ?? isRanged;
         if (!weaponIsFinesse && !weaponIsRanged) return [];

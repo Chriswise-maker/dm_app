@@ -120,18 +120,17 @@ export function deriveDamageFormula(sheet: ActorSheet, loader?: ContentPackLoade
     const strMod = Math.floor((sheet.abilityScores.str - 10) / 2);
     const dexMod = Math.floor((sheet.abilityScores.dex - 10) / 2);
 
-    // Find first weapon in equipment
     const weapon = sheet.equipment.find(e => e.type === 'weapon');
-    if (!weapon || !weapon.properties) return `1d4+${Math.max(strMod, 0)}`;
-
-    const baseDie = typeof weapon.properties.damage === 'string'
-        ? weapon.properties.damage
-        : '1d8';
+    if (!weapon) return `1d4+${Math.max(strMod, 0)}`;
 
     const srd = loader ? lookupByName(loader, 'equipment', weapon.name) : null;
+    const baseDie = srd?.damage?.formula
+        ?? (typeof weapon.properties?.damage === 'string' ? weapon.properties.damage : null)
+        ?? '1d4';
+
     const srdProps: string[] = srd?.properties ?? [];
-    const hasFinesse = srdProps.includes('finesse') || weapon.properties.finesse === true;
-    const isRanged = srd?.subcategory?.includes('ranged') || weapon.properties.ranged === true;
+    const hasFinesse = srdProps.includes('finesse') || weapon.properties?.finesse === true;
+    const isRanged = srd?.subcategory?.includes('ranged') || weapon.properties?.ranged === true;
 
     let abilityMod: number;
     if (hasFinesse) {
@@ -277,6 +276,7 @@ export async function handleAutoCombatInitiation(
                         initiativeModifier: dexModSheet,
                         attackModifier: deriveAttackBonus(sheet),
                         damageFormula: deriveDamageFormula(sheet, loader),
+                        damageType: combatWeapons[0]?.damageType ?? 'bludgeoning',
                         spells: combatSpells,
                         spellSlots: state.spellSlotsCurrent,
                         spellSaveDC: sheet.spellcasting?.saveDC,
@@ -287,6 +287,7 @@ export async function handleAutoCombatInitiation(
                         proficiencyBonus: sheet.proficiencyBonus,
                         resistances: collectResistances(sheet),
                         immunities: collectImmunities(sheet),
+                        featureUses: state.featureUses,
                     };
                 } catch (e) {
                     console.warn(`[AutoCombat] Failed to parse actorSheet for ${character.name}:`, e);
@@ -547,6 +548,9 @@ export async function syncCombatStateToDb(sessionId: number): Promise<void> {
                             actorState.hpCurrent = entity.hp;
                             if (Object.keys(entity.spellSlots ?? {}).length > 0) {
                                 actorState.spellSlotsCurrent = { ...entity.spellSlots };
+                            }
+                            if (Object.keys(entity.featureUses ?? {}).length > 0) {
+                                actorState.featureUses = { ...entity.featureUses };
                             }
                             await db.updateCharacter(entity.dbCharacterId, {
                                 actorState: JSON.stringify(actorState),

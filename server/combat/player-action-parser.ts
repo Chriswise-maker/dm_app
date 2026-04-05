@@ -84,9 +84,21 @@ function buildActionParserPrompt(
         prompt += `- "${p.name}" (id: ${p.id})${p.id === currentPlayerId ? ' ← CURRENT PLAYER' : ''}\n`;
     });
 
-    // Show spells if current player has them
+    // Show spells and weapons if current player has them
     if (currentPlayerId) {
         const currentPlayer = state.entities.find((e: CombatEntity) => e.id === currentPlayerId);
+
+        if (currentPlayer?.weapons && currentPlayer.weapons.length > 0) {
+            prompt += `\nWEAPONS (${currentPlayer.name}):\n`;
+            for (const weapon of currentPlayer.weapons) {
+                const props = [weapon.damageFormula, weapon.damageType];
+                if (weapon.isRanged) props.push('ranged');
+                if (weapon.properties?.length) props.push(...weapon.properties);
+                prompt += `- "${weapon.name}" (${props.join(', ')})\n`;
+            }
+            prompt += `When the player mentions a weapon, use the EXACT name from this list as weaponName. If they say "bow", match to the ranged weapon. If no weapon is mentioned, leave weaponName empty.\n\n`;
+        }
+
         if (currentPlayer?.spells && currentPlayer.spells.length > 0) {
             prompt += `\nKNOWN SPELLS (${currentPlayer.name}):\n`;
             for (const spell of currentPlayer.spells) {
@@ -166,12 +178,28 @@ function buildActionParserPrompt(
  */
 function parseLLMResponse(response: string): LLMParseResult {
     try {
-        // Clean up response (remove markdown if present)
         let jsonStr = response.trim();
         if (jsonStr.startsWith('```')) {
             jsonStr = jsonStr
                 .replace(/^```(?:json)?\s*\n?/, '')
                 .replace(/\n?```\s*$/, '');
+        }
+
+        // Extract first JSON object — LLMs often append explanation text after the JSON
+        const firstBrace = jsonStr.indexOf('{');
+        if (firstBrace >= 0) {
+            let depth = 0;
+            let inString = false;
+            let escape = false;
+            for (let i = firstBrace; i < jsonStr.length; i++) {
+                const ch = jsonStr[i];
+                if (escape) { escape = false; continue; }
+                if (ch === '\\' && inString) { escape = true; continue; }
+                if (ch === '"') { inString = !inString; continue; }
+                if (inString) continue;
+                if (ch === '{') depth++;
+                else if (ch === '}') { depth--; if (depth === 0) { jsonStr = jsonStr.slice(firstBrace, i + 1); break; } }
+            }
         }
 
         const parsed = JSON.parse(jsonStr);
@@ -240,6 +268,31 @@ function isLikelyRangedAttack(weaponName: string | undefined, playerMessage: str
 
     const text = `${weaponName || ''} ${playerMessage}`.toLowerCase();
     return /\b(bow|longbow|shortbow|crossbow|arrow|bolt|sling|shoot|fire)\b/.test(text);
+}
+
+/**
+ * Resolve the best weapon name for an attack action.
+ * Falls back through: LLM result → ranged weapon if ranged attack → first weapon.
+ */
+function resolveWeaponName(
+    llmWeaponName: string | undefined,
+    playerMessage: string,
+    currentEntity: CombatEntity
+): string | undefined {
+    // 1. LLM extracted a weapon name — use it
+    if (llmWeaponName && llmWeaponName !== 'weapon') return llmWeaponName;
+
+    const weapons = currentEntity.weapons;
+    if (!weapons?.length) return undefined;
+
+    // 2. Ranged attack keywords → pick first ranged weapon
+    if (isLikelyRangedAttack(llmWeaponName, playerMessage, currentEntity)) {
+        const ranged = weapons.find(w => w.isRanged);
+        if (ranged) return ranged.name;
+    }
+
+    // 3. Default to first weapon
+    return weapons[0].name;
 }
 
 function isDirectCombatQuestion(message: string): boolean {
@@ -380,7 +433,7 @@ export async function parsePlayerAction(
                     type: 'ATTACK',
                     attackerId: currentEntity.id,
                     targetId: target.id,
-                    weaponName: llmResult.weaponName || 'weapon',
+                    weaponName: resolveWeaponName(llmResult.weaponName, playerMessage, currentEntity),
                     isRanged: isLikelyRangedAttack(llmResult.weaponName, playerMessage, currentEntity),
                     advantage: llmResult.advantage || false,
                     disadvantage: llmResult.disadvantage || false,

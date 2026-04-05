@@ -185,7 +185,14 @@ function buildEnemyDecisionPromptV2(enemy: CombatEntity, state: BattleState, ran
     prompt += `- HP: ${enemy.hp}/${enemy.maxHp}\n`;
     prompt += `- AC: ${enemy.baseAC}\n`;
     prompt += `- Attack: +${enemy.attackModifier} to hit\n`;
-    prompt += `- Damage: ${enemy.damageFormula} ${enemy.damageType}\n`;
+    if (enemy.weapons && enemy.weapons.length > 1) {
+        prompt += `- Weapons:\n`;
+        for (const w of enemy.weapons) {
+            prompt += `    * ${w.name}: +${w.attackBonus} to hit, ${w.damageFormula} ${w.damageType}${w.isRanged ? ' (ranged)' : ''}\n`;
+        }
+    } else {
+        prompt += `- Damage: ${enemy.damageFormula} ${enemy.damageType}\n`;
+    }
     if (enemy.tacticalRole) {
         prompt += `- Role: ${enemy.tacticalRole}\n`;
     }
@@ -284,6 +291,7 @@ interface ParsedEnemyAction {
     targetIds?: string[];
     direction?: 'toward' | 'away';
     flavor?: string;
+    weaponName?: string;
 }
 
 /**
@@ -324,7 +332,7 @@ function parseEnemyAction(response: string, enemy: CombatEntity, state: BattleSt
     if (choiceNum !== undefined && choiceNum >= 1 && choiceNum <= legalActions.length) {
         const chosen = legalActions[choiceNum - 1];
         if (chosen.type === 'ATTACK' && chosen.targetId) {
-            return { type: 'ATTACK', targetId: chosen.targetId, flavor };
+            return { type: 'ATTACK', targetId: chosen.targetId, weaponName: chosen.weaponName, flavor };
         }
         if (chosen.type === 'MOVE' && chosen.targetId && chosen.direction) {
             return { type: 'MOVE', targetId: chosen.targetId, direction: chosen.direction, flavor };
@@ -348,7 +356,7 @@ function parseEnemyAction(response: string, enemy: CombatEntity, state: BattleSt
     if (legacyTargetId) {
         const matchedAction = legalActions.find(a => a.type === 'ATTACK' && a.targetId === legacyTargetId);
         if (matchedAction) {
-            return { type: 'ATTACK', targetId: legacyTargetId, flavor };
+            return { type: 'ATTACK', targetId: legacyTargetId, weaponName: matchedAction.weaponName, flavor };
         }
     }
 
@@ -356,7 +364,7 @@ function parseEnemyAction(response: string, enemy: CombatEntity, state: BattleSt
     const firstAttack = legalActions.find(a => a.type === 'ATTACK' && a.targetId);
     if (firstAttack) {
         console.warn(`[EnemyAI] Invalid choice from LLM, using first legal attack: ${firstAttack.description}`);
-        return { type: 'ATTACK', targetId: firstAttack.targetId, flavor };
+        return { type: 'ATTACK', targetId: firstAttack.targetId, weaponName: firstAttack.weaponName, flavor };
     }
 
     return { type: 'END_TURN', flavor };
@@ -473,7 +481,7 @@ export async function executeEnemyTurn(sessionId: number, userId: number): Promi
                     type: 'ATTACK',
                     attackerId: entity.id,
                     targetId: parsed.targetId,
-                    weaponName: 'natural weapon',
+                    weaponName: parsed.weaponName || entity.weapons?.[0]?.name || 'natural weapon',
                     isRanged: entity.isRanged ?? false,
                     advantage: false,
                     disadvantage: targetIsDodging,
@@ -558,7 +566,7 @@ export async function executeEnemyTurn(sessionId: number, userId: number): Promi
             type: 'ATTACK',
             attackerId: entity.id,
             targetId: extraTarget.id,
-            weaponName: 'natural weapon',
+            weaponName: entity.weapons?.[0]?.name || 'natural weapon',
             isRanged: entity.isRanged ?? false,
             advantage: false,
             disadvantage: extraTargetIsDodging,
@@ -623,8 +631,8 @@ export async function executeEnemyTurn(sessionId: number, userId: number): Promi
                     true, // isEnemyTurn
                     undefined, // activePlayerId
                     {
-                        weaponName: entity.damageFormula,
-                        damageType: entity.damageType,
+                        weaponName: parsed.weaponName || entity.weapons?.[0]?.name || entity.name + "'s attack",
+                        damageType: entity.weapons?.find(w => w.name === parsed.weaponName)?.damageType ?? entity.damageType,
                         tacticalRole: entity.tacticalRole,
                     }
                 );
