@@ -8,6 +8,8 @@ import type { UserSettings, Character, Session, CombatState, Combatant, Message 
 import { RangeBand, type BattleState, type CombatEntity } from "./combat/combat-types";
 import type { ExtractedContext } from "./context-extraction";
 import type { Tool } from "./_core/llm";
+import type { ActorSheet } from "./kernel/actor-sheet";
+import type { ActorState } from "./kernel/actor-state";
 
 // =============================================================================
 // SRD TOOL DEFINITIONS (OpenAI function-calling format)
@@ -80,7 +82,7 @@ Your goal is to weave a tapestry of narrative from the threads of player choices
 5.  **Character Focus**: Address the characters by name. Acknowledge their specific abilities, backgrounds, and current status.
 
 **COMBAT MODERATION (CRITICAL):**
-WWhen combat begins or is ongoing, you are a MODERATOR, not a player. Follow these rules:
+When combat begins or is ongoing, you are a MODERATOR, not a player. Follow these rules:
 
 1.  **NEVER roll dice for the player character.** You may describe what they ATTEMPT, but never resolve their actions.
 2.  **NEVER resolve player attacks or saving throws.** Wait for them to declare actions and provide their rolls.
@@ -213,128 +215,27 @@ Extract the player's combat intent from their natural language message.
 
 // Structured Output Wrapper for automatic combat detection
 const STRUCTURED_OUTPUT_WRAPPER = `
-
-═══════════════════════════════════════════════════════════════
-                    ⚠️ MANDATORY OUTPUT FORMAT ⚠️
-═══════════════════════════════════════════════════════════════
-
-You MUST wrap your ENTIRE response in this JSON structure:
-
+⚠️ MANDATORY OUTPUT FORMAT — You MUST return raw JSON (no markdown, no plain text):
 {"narrative": "Your full DM response here", "gameStateChanges": {...}}
 
-DO NOT output plain text. DO NOT use markdown code blocks. ONLY output raw JSON.
+MECHANICAL BOUNDARY:
+- NEVER invent damage numbers, HP changes, dice rolls, or saving throws — only use numbers the combat engine provides.
+- NEVER deduct spell slots, modify HP, or change conditions in narrative text. The engine handles ALL mechanical state.
 
-═══════════════════════════════════════════════════════════════
+COMBAT INITIATION — set "combatInitiated": true when violence begins or the player attacks:
+{"narrative": "Scene-setting ONLY — tension, stakes, the moment BEFORE impact. No dice, no damage, no initiative order, no resolved actions.",
+ "gameStateChanges": {"combatInitiated": true, "enemies": [{"name": "...", "ac": 13, "hpMax": 20, "attackBonus": 4, "damageFormula": "1d8+2", "damageType": "slashing", "initiative": 15}]}}
+A separate COMBAT ENGINE takes over ALL mechanics after your scene-setting.
 
-MECHANICAL BOUNDARY — STRICT:
-You MUST NOT specify exact damage numbers, healing amounts, or dice results in your narrative unless the combat engine has already resolved them and provided the numbers in the combat state context.
-You MUST NOT deduct spell slots, modify HP, add/remove conditions, or change any mechanical state in your narrative text. The engine handles ALL mechanical state changes.
-When a character casts a spell out of combat, describe the narrative effect. The engine will deduct the spell slot and apply mechanical effects.
-When you narrate damage, use only the numbers provided by the engine in the combat log — never invent your own.
+COMBAT END — when enemies are defeated/fled/surrendered:
+{"narrative": "Victory narrative...", "gameStateChanges": {"combatEnded": true}}
 
-═══════════════════════════════════════════════════════════════
+SKILL CHECKS — when the fiction calls for uncertainty outside combat, request ONE check:
+{"narrative": "Narrative...", "gameStateChanges": {"skillCheck": {"skill": "perception", "dc": 14, "reason": "spotting the hidden compartment"}}}
+You may use "ability" (e.g. "str") instead of "skill". Only request checks when the outcome is uncertain and meaningful.
 
-**COMBAT INITIATION - CRITICAL:**
-You MUST set "combatInitiated": true when ANY of these occur:
-- Player says "attack", "fight", "strike", "cast [offensive spell]", "shoot", "combat", "battle", "enemies", "start combat"
-- Player declares violent intent toward any creature or NPC
-- Player explicitly asks for a combat encounter
-- Hostile creatures attack or threaten immediate violence
-- A confrontation turns deadly
-
-ALWAYS initiate combat when the player explicitly attacks. Include enemy stats:
-{
-  "narrative": "Your tense scene-setting that stops BEFORE any action resolves...",
-  "gameStateChanges": {
-    "combatInitiated": true,
-    "enemies": [
-      {"name": "Enemy Name", "ac": 13, "hpMax": 20, "attackBonus": 4, "damageFormula": "1d8+2", "damageType": "slashing", "initiative": 15}
-    ]
-  }
-}
-
-═══════════════════════════════════════════════════════════════
-⚠️ COMBAT NARRATIVE BOUNDARY — OBEY THIS ABSOLUTELY ⚠️
-═══════════════════════════════════════════════════════════════
-
-When you set "combatInitiated": true, a separate COMBAT ENGINE takes over
-ALL mechanics. The engine handles initiative, turn order, attack rolls,
-damage, HP tracking, and death. You handle NONE of these.
-
-Your narrative when initiating combat must ONLY set the scene:
-- Describe the environment, the tension, the stakes
-- Show enemies readying weapons, charging, snarling — but NOT connecting
-- Convey what the player sees, hears, smells — the moment BEFORE impact
-- End on a beat of tension: the held breath before the storm breaks
-
-ABSOLUTELY FORBIDDEN in combat initiation narratives:
-❌ Any dice rolls or attack rolls ("Attack: 18 vs AC 12")
-❌ Any damage numbers ("You take 8 damage", "7 piercing damage")
-❌ Any HP changes or tracking ("HP: 28 → 21", "21/28 HP remaining")
-❌ Any initiative order ("Initiative: Goblin 16, You 13")
-❌ Any resolved actions ("The bolt hits your shoulder", "The spell strikes")
-❌ Any saving throws ("Constitution save DC 14")
-❌ Any dice formulas ("1d8+3", "2d6")
-❌ Any stat blocks or combat status sections
-❌ Asking the player to "Roll for initiative" (the engine prompts this)
-❌ Describing multiple rounds or turns of combat
-
-✅ CORRECT combat initiation narrative:
-"Steel rings as blades clear their scabbards. The Seekers fan out across
-the bridge, crossbows leveled at your chest. Mira's eyes blaze with
-starlight, the Shield fragment pulsing like a second heartbeat. The wind
-howls through the gorge below. Blood is about to be spilled."
-
-❌ WRONG combat initiation narrative:
-"The Seeker fires — Attack: 16 vs your AC 12 — the bolt hits! You take
-7 damage. HP: 28 → 21. Mira unleashes radiant energy. Constitution save
-DC 14. Initiative Order: Mira 16, Seeker 14, You 13..."
-
-The combat engine will handle everything after your scene-setting.
-Your ONLY job is to make the player FEEL the danger.
-
-**COMBAT END:**
-When combat is clearly over (enemies defeated, fled, or surrendered):
-{
-  "narrative": "Victory/resolution narrative...",
-  "gameStateChanges": {
-    "combatEnded": true
-  }
-}
-
-**OUT-OF-COMBAT CHECKS:**
-When the fiction calls for uncertainty outside combat, you may request ONE mechanical check:
-{
-  "narrative": "Dust veils the hallway as you search the broken shrine for clues.",
-  "gameStateChanges": {
-    "skillCheck": {
-      "skill": "perception",
-      "dc": 14,
-      "reason": "spotting the hidden compartment"
-    }
-  }
-}
-You may also use an ability directly instead of a skill:
-{
-  "narrative": "The stone lid is heavy and slick with old moss.",
-  "gameStateChanges": {
-    "skillCheck": {
-      "ability": "str",
-      "dc": 12,
-      "reason": "forcing the sarcophagus open"
-    }
-  }
-}
-Only request a skill check when the outcome is uncertain and meaningful. Do not narrate certainty and request a check for the same beat.
-
-**FOR NORMAL RESPONSES (exploration, dialogue, non-combat):**
-{"narrative": "Your response text here..."}
-
-**REMEMBER:**
-- The "narrative" field contains ALL your immersive DM text
-- Player attacks → ALWAYS set combatInitiated: true with enemies array
-- Combat initiation narrative = SCENE SETTING ONLY, zero mechanics
-- DO NOT resolve combat without triggering combat mode first`;
+NORMAL RESPONSES (exploration, dialogue):
+{"narrative": "Your response text here..."}`;
 
 /**
  * Build the main DM system prompt
@@ -506,7 +407,11 @@ export function buildBattlefieldSnapshot(
         const isCurrent = entity.id === currentTurnEntity?.id;
         const status = entity.status === "ALIVE" ? "" : ` [${entity.status}]`;
         const charClass = entity.characterClass ? ` [${entity.characterClass}]` : '';
-        const weapons = entity.weapons?.length ? ` | weapons: ${entity.weapons.map((w: any) => w.name).join(', ')}` : '';
+        const weapons = entity.weapons?.length ? ` | weapons: ${entity.weapons.map((w: any) => {
+            const parts = [w.damageFormula, w.damageType];
+            if (w.isRanged) parts.push('ranged');
+            return `${w.name} (${parts.join(', ')})`;
+        }).join('; ')}` : '';
         const spells = entity.spells?.length ? ` | spells: ${entity.spells.map((s: any) => s.name).join(', ')}` : '';
         snapshot += `${idx + 1}. ${entity.name} (${entity.type})${charClass} - Init: ${entity.initiative}, HP: ${entity.hp}/${entity.maxHp}, AC: ${entity.baseAC}${status}${weapons}${spells}${isCurrent ? " <- CURRENT TURN" : ""}\n`;
     });
@@ -532,38 +437,20 @@ export function buildBattlefieldSnapshot(
 export function buildCombatQueryPrompt(params: {
     battleState: BattleState;
     focusEntityId?: string;
-    playerName: string;
-    playerHp?: number;
-    playerMaxHp?: number;
-    playerAc?: number;
-    abilityScores?: { str: number; dex: number; con: number; int: number; wis: number; cha: number };
+    characterSheetText: string;
     resourceStatus: string;
     actionList: string;
     question: string;
 }): string {
-    const {
-        battleState,
-        focusEntityId,
-        playerName,
-        playerHp,
-        playerMaxHp,
-        playerAc,
-        abilityScores,
-        resourceStatus,
-        actionList,
-        question,
-    } = params;
-
-    const statsLine = abilityScores
-        ? `STR ${abilityScores.str} (+${Math.floor((abilityScores.str - 10) / 2)}), DEX ${abilityScores.dex} (+${Math.floor((abilityScores.dex - 10) / 2)}), CON ${abilityScores.con} (+${Math.floor((abilityScores.con - 10) / 2)}), INT ${abilityScores.int} (+${Math.floor((abilityScores.int - 10) / 2)}), WIS ${abilityScores.wis} (+${Math.floor((abilityScores.wis - 10) / 2)}), CHA ${abilityScores.cha} (+${Math.floor((abilityScores.cha - 10) / 2)})`
-        : null;
+    const { battleState, focusEntityId, characterSheetText, resourceStatus, actionList, question } = params;
 
     return `You are a D&D 5e Dungeon Master helping a player understand their combat state and options.
 
 The combat engine is using theater-of-mind range bands instead of a tactical grid.
 The battlefield snapshot below is authoritative. Do NOT say you need a tactical map or enemy positions.
 
-PLAYER CHARACTER: ${playerName} (HP: ${playerHp ?? "?"}/${playerMaxHp ?? "?"}, AC: ${playerAc ?? "?"})${statsLine ? `\nABILITY SCORES: ${statsLine}` : ''}
+PLAYER CHARACTER:
+${characterSheetText}
 TURN RESOURCES: ${resourceStatus}
 
 BATTLEFIELD SNAPSHOT:
@@ -577,17 +464,235 @@ PLAYER'S QUESTION: "${question}"
 Answer the question directly.
 - If they ask where they are, summarize who is in melee, near, and far relative to them.
 - If they ask how far enemies are, use the exact range bands above.
-- If they ask what they can do, use AVAILABLE ACTIONS.
+- If they ask what they can do, use AVAILABLE ACTIONS and their character sheet above.
+- If they ask about special attacks or abilities, check their class features and spells.
 Keep it concise, helpful, and in character as the DM.`;
 }
 
 /**
- * Build the chat user prompt with full context
+ * Produce a single canonical text block describing the full character.
+ * Merges DB columns, actorSheet, and actorState into one representation.
+ * Every prompt path should use this instead of ad-hoc field extraction.
+ *
+ * Covers:
+ *   Identity   — name, class, subclass, level, ancestry, background, feats
+ *   Combat     — HP (current/max/temp), AC (with source), ability scores + mods,
+ *                proficiency bonus, passive Perception, weapons (damage/type/ranged)
+ *   Resources  — spell slots (current/max), feature uses (remaining/max/recharge),
+ *                hit dice (remaining/die size), gold
+ *   Casting    — save DC, attack bonus, cantrips, prepared spells
+ *   Traits     — speeds, senses, proficiencies (saves/skills/weapons/armor/tools)
+ *   Status     — conditions, concentration, exhaustion
+ *   Gear       — equipment list (from actorSheet) or inventory (legacy DB column)
+ *   Features   — class features with descriptions (truncated to 100 chars)
+ *   Notes      — freeform character notes
+ */
+export function formatCharacterSheet(character: Character): string {
+    // --- DB columns (always available) ---
+    let stats: Record<string, number> = {};
+    try { stats = JSON.parse(character.stats); } catch { /* empty */ }
+    let inventory: string[] = [];
+    try { inventory = JSON.parse(character.inventory); } catch { /* empty */ }
+
+    const mod = (v: number) => {
+        const m = Math.floor((v - 10) / 2);
+        return m >= 0 ? `+${m}` : `${m}`;
+    };
+
+    const lines: string[] = [];
+    lines.push(`Name: ${character.name}`);
+    lines.push(`Class: ${character.className} Level ${character.level}`);
+
+    // --- actorSheet (rich data) ---
+    let sheet: ActorSheet | null = null;
+    if (character.actorSheet) {
+        try { sheet = JSON.parse(character.actorSheet); } catch (e) { console.warn('[formatCharacterSheet] Failed to parse actorSheet:', e); }
+    }
+
+    // --- actorState (runtime data) ---
+    let state: ActorState | null = null;
+    if (character.actorState) {
+        try { state = JSON.parse(character.actorState); } catch (e) { console.warn('[formatCharacterSheet] Failed to parse actorState:', e); }
+    }
+
+    // Ancestry / subclass / background (from sheet)
+    if (sheet) {
+        lines.push(`Ancestry: ${sheet.ancestry}`);
+        if (sheet.subclass) lines.push(`Subclass: ${sheet.subclass}`);
+        if (sheet.background) lines.push(`Background: ${sheet.background}`);
+        if (sheet.feats.length > 0) lines.push(`Feats: ${sheet.feats.join(', ')}`);
+    }
+
+    // HP — prefer actorState, fall back to DB
+    const hpCurrent = state?.hpCurrent ?? character.hpCurrent;
+    const hpMax = state?.hpMax ?? character.hpMax;
+    let hpLine = `HP: ${hpCurrent}/${hpMax}`;
+    if (state?.tempHp) hpLine += ` (+${state.tempHp} temp)`;
+    lines.push(hpLine);
+
+    // AC — prefer sheet (has source), fall back to DB
+    if (sheet) {
+        lines.push(`AC: ${sheet.ac.base} (${sheet.ac.source})`);
+    } else {
+        lines.push(`AC: ${character.ac}`);
+    }
+
+    // Ability scores — prefer sheet, fall back to DB
+    const scores = sheet?.abilityScores ?? stats;
+    if (scores && Object.keys(scores).length > 0) {
+        lines.push(`Stats: STR ${scores.str}(${mod(scores.str)}) DEX ${scores.dex}(${mod(scores.dex)}) CON ${scores.con}(${mod(scores.con)}) INT ${scores.int}(${mod(scores.int)}) WIS ${scores.wis}(${mod(scores.wis)}) CHA ${scores.cha}(${mod(scores.cha)})`);
+    }
+
+    // Proficiency bonus — from sheet, or derived from level
+    const profBonus = sheet?.proficiencyBonus ?? Math.floor((character.level - 1) / 4) + 2;
+    lines.push(`Proficiency Bonus: +${profBonus}`);
+
+    // Passive Perception — 10 + WIS mod + proficiency if Perception is a proficient skill
+    const wisScore = (sheet?.abilityScores ?? stats)?.wis ?? 10;
+    const wisMod = Math.floor((wisScore - 10) / 2);
+    const hasPerceptionProf = sheet?.proficiencies?.skills?.some(
+        s => s.toLowerCase() === 'perception'
+    ) ?? false;
+    const passivePerception = 10 + wisMod + (hasPerceptionProf ? profBonus : 0);
+    lines.push(`Passive Perception: ${passivePerception}`);
+
+    // Speeds
+    if (sheet?.speeds) {
+        const parts: string[] = [`Walk ${sheet.speeds.walk} ft`];
+        if (sheet.speeds.fly) parts.push(`Fly ${sheet.speeds.fly} ft`);
+        if (sheet.speeds.swim) parts.push(`Swim ${sheet.speeds.swim} ft`);
+        if (sheet.speeds.climb) parts.push(`Climb ${sheet.speeds.climb} ft`);
+        if (sheet.speeds.burrow) parts.push(`Burrow ${sheet.speeds.burrow} ft`);
+        lines.push(`Speed: ${parts.join(', ')}`);
+    }
+
+    // Senses
+    if (sheet?.senses) {
+        const parts: string[] = [];
+        if (sheet.senses.darkvision) parts.push(`Darkvision ${sheet.senses.darkvision} ft`);
+        if (sheet.senses.blindsight) parts.push(`Blindsight ${sheet.senses.blindsight} ft`);
+        if (sheet.senses.tremorsense) parts.push(`Tremorsense ${sheet.senses.tremorsense} ft`);
+        if (sheet.senses.truesight) parts.push(`Truesight ${sheet.senses.truesight} ft`);
+        if (parts.length > 0) lines.push(`Senses: ${parts.join(', ')}`);
+    }
+
+    // Proficiencies
+    if (sheet?.proficiencies) {
+        const p = sheet.proficiencies;
+        const parts: string[] = [];
+        if (p.saves.length) parts.push(`Saves: ${p.saves.join(', ')}`);
+        if (p.skills.length) parts.push(`Skills: ${p.skills.join(', ')}`);
+        if (p.weapons.length) parts.push(`Weapons: ${p.weapons.join(', ')}`);
+        if (p.armor.length) parts.push(`Armor: ${p.armor.join(', ')}`);
+        if (p.tools.length) parts.push(`Tools: ${p.tools.join(', ')}`);
+        if (parts.length > 0) lines.push(`Proficiencies: ${parts.join(' | ')}`);
+    }
+
+    // Equipment / Inventory — prefer actorSheet.equipment, fall back to DB inventory
+    if (sheet?.equipment && sheet.equipment.length > 0) {
+        const weapons = sheet.equipment.filter(e => e.type === 'weapon');
+        const nonWeapons = sheet.equipment.filter(e => e.type !== 'weapon');
+        if (weapons.length > 0) {
+            lines.push(`Weapons: ${weapons.map(w => {
+                const dmg = (w.properties as any)?.damage || '';
+                const dmgType = (w.properties as any)?.damageType || '';
+                const ranged = (w.properties as any)?.ranged ? ', ranged' : '';
+                return dmgType ? `${w.name} (${dmg} ${dmgType}${ranged})` : w.name;
+            }).join(', ')}`);
+        }
+        if (nonWeapons.length > 0) {
+            lines.push(`Equipment: ${nonWeapons.map(e => e.name).join(', ')}`);
+        }
+    } else if (inventory.length > 0) {
+        lines.push(`Inventory: ${inventory.join(', ')}`);
+    }
+
+    // Spellcasting (from sheet)
+    if (sheet?.spellcasting) {
+        const sc = sheet.spellcasting;
+        lines.push(`Spell Save DC: ${sc.saveDC}, Attack Bonus: +${sc.attackBonus}`);
+        if (sc.cantripsKnown.length > 0) lines.push(`Cantrips: ${sc.cantripsKnown.join(', ')}`);
+        if (sc.spellsKnown.length > 0) lines.push(`Spells Prepared: ${sc.spellsKnown.join(', ')}`);
+    }
+
+    // Spell slots — prefer actorState (current) vs sheet (max)
+    if (state && Object.keys(state.spellSlotsCurrent).length > 0) {
+        const maxSlots = sheet?.spellcasting?.spellSlots ?? {};
+        const slotParts = Object.entries(state.spellSlotsCurrent)
+            .filter(([level, v]) => v > 0 || (maxSlots as any)[level] > 0)
+            .map(([level, current]) => `L${level}: ${current}/${(maxSlots as any)[level] ?? '?'}`);
+        if (slotParts.length > 0) lines.push(`Spell Slots: ${slotParts.join(', ')}`);
+    }
+
+    // Hit dice — remaining from actorState, die size from sheet
+    if (sheet) {
+        const hdRemaining = state?.hitDiceCurrent ?? sheet.level;
+        lines.push(`Hit Dice: ${hdRemaining}/${sheet.level} (${sheet.hitDie})`);
+    }
+
+    // Gold
+    if (state && state.gold > 0) {
+        lines.push(`Gold: ${state.gold}`);
+    }
+
+    // Class features (from sheet + uses from actorState)
+    if (sheet?.features && sheet.features.length > 0) {
+        const featureParts = sheet.features.map(f => {
+            let entry = f.name;
+            if (f.usesMax != null) {
+                const remaining = state?.featureUses?.[f.name] ?? f.usesMax;
+                entry += ` (${remaining}/${f.usesMax}, ${f.rechargeOn ?? 'rest'})`;
+            }
+            if (f.description) entry += ` — ${f.description.substring(0, 100)}`;
+            return entry;
+        });
+        lines.push(`Class Features: ${featureParts.join('; ')}`);
+    }
+
+    // Conditions & concentration (from actorState)
+    if (state) {
+        if (state.conditions.length > 0) {
+            lines.push(`Conditions: ${state.conditions.map((c: any) => c.name ?? c).join(', ')}`);
+        }
+        if (state.concentration) {
+            lines.push(`Concentrating on: ${state.concentration.spellName}`);
+        }
+        if (state.exhaustion > 0) {
+            lines.push(`Exhaustion: ${state.exhaustion}`);
+        }
+    }
+
+    // Notes
+    if (character.notes) lines.push(`Notes: ${character.notes}`);
+
+    return lines.join('\n');
+}
+
+/**
+ * Extract the list of skill proficiency names from a character's actorSheet.
+ * Normalizes to lowercase snake_case to match SkillName conventions (e.g. "Sleight of Hand" → "sleight_of_hand").
+ * Returns an empty array if the sheet is missing or malformed.
+ */
+export function getSkillProficiencies(character: Character): string[] {
+    if (!character.actorSheet) return [];
+    try {
+        const sheet: ActorSheet = JSON.parse(character.actorSheet);
+        return (sheet.proficiencies?.skills ?? []).map(
+            s => s.toLowerCase().replace(/[\s-]+/g, '_')
+        );
+    } catch (e) {
+        console.warn('[getSkillProficiencies] Failed to parse actorSheet:', e);
+        return [];
+    }
+}
+
+/**
+ * Build the chat user prompt with full context.
+ * Character data comes FIRST so the DM always sees who it's talking to.
+ * Session summary provides continuity across the context window.
  */
 export function buildChatUserPrompt(
     character: Character,
-    stats: any,
-    inventory: string[],
     session: Session,
     recentMessages: Message[],
     context: Partial<ExtractedContext>,
@@ -622,10 +727,6 @@ export function buildChatUserPrompt(
     const recentEvents = recentMessages
         .map(m => `${m.characterName}: ${m.content}`)
         .join('\n');
-    const resourceState = (context.worldState as any)?.characterResources?.[String(character.id)];
-    const resourceText = resourceState
-        ? `Hit Dice: ${resourceState.hitDiceRemaining}/${resourceState.hitDiceMax}; Spell Slots: ${Object.entries(resourceState.spellSlotsCurrent || {}).map(([level, count]) => `L${level} ${count}`).join(', ') || 'none'}`
-        : 'Hit Dice / spell slots not yet tracked';
 
     let combatContext = '';
 
@@ -669,7 +770,13 @@ ${JSON.stringify({
 `;
     }
 
-    return `[CAMPAIGN CONTEXT]
+    return `[ACTIVE CHARACTER]
+${formatCharacterSheet(character)}
+
+[SESSION SUMMARY]
+${session.currentSummary || 'Session just started.'}
+
+[CAMPAIGN CONTEXT]
 **Known NPCs:**
 ${npcsText}
 
@@ -688,16 +795,6 @@ ${questsText}
 [RECENT EVENTS - Last 10 Messages]
 ${recentEvents}
 ${combatContext}
-[ACTIVE CHARACTER]
-Name: ${character.name}
-Class: ${character.className} Level ${character.level}
-HP: ${character.hpCurrent}/${character.hpMax}
-AC: ${character.ac}
-Stats: STR ${stats.str}, DEX ${stats.dex}, CON ${stats.con}, INT ${stats.int}, WIS ${stats.wis}, CHA ${stats.cha}
-Inventory: ${inventory.join(', ') || 'Empty'}
-Notes: ${character.notes || 'None'}
-Resources: ${resourceText}
-
 [CURRENT ACTION]
 ${character.name}: ${userMessage}
 

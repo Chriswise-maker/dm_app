@@ -14,6 +14,14 @@ vi.mock('../../llm-with-settings', () => ({
       yield 'Thorin strikes the goblin!';
     })()
   ),
+  invokeFastLLMWithSettings: vi.fn().mockResolvedValue({
+    choices: [{ message: { content: 'Thorin strikes the goblin!' } }],
+  }),
+  invokeFastLLMWithSettingsStream: vi.fn().mockImplementation(async () =>
+    (async function* () {
+      yield 'Thorin strikes the goblin!';
+    })()
+  ),
 }));
 vi.mock('../../db', () => ({
   getUserSettings: vi.fn().mockResolvedValue({}),

@@ -74,6 +74,8 @@ vi.mock("./prompts", () => ({
     buildChatSystemPrompt: vi.fn(),
     buildChatUserPrompt: vi.fn(),
     buildCombatQueryPrompt: vi.fn(),
+    formatCharacterSheet: vi.fn().mockReturnValue("Name: Silas Gravemourn\nClass: Rogue Level 3"),
+    getSkillProficiencies: vi.fn().mockReturnValue([]),
 }));
 
 vi.mock("./response-parser", () => ({

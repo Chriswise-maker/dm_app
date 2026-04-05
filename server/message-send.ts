@@ -1,5 +1,6 @@
 import type { Combatant } from '../drizzle/schema';
 import type { TrpcContext } from './_core/context';
+import type { SkillName } from './skill-check';
 
 export type MessageSendInput = {
   sessionId: number;
@@ -80,7 +81,7 @@ export async function executeMessageSend(
 
   const db = await import('./db');
   const { invokeLLMWithSettings } = await import('./llm-with-settings');
-  const { buildChatSystemPrompt, buildChatUserPrompt, buildCombatQueryPrompt } = await import('./prompts');
+  const { buildChatSystemPrompt, buildChatUserPrompt, buildCombatQueryPrompt, formatCharacterSheet, getSkillProficiencies } = await import('./prompts');
   const { parseStructuredResponse, hasCombatInitiation, hasCombatEnd, getEnemies } = await import('./response-parser');
   const { handleAutoCombatInitiation, handleAutoCombatEnd } = await import('./combat/combat-helpers');
   const { CombatEngineManager } = await import('./combat/combat-engine-manager');
@@ -130,11 +131,7 @@ export async function executeMessageSend(
       const queryPrompt = buildCombatQueryPrompt({
         battleState: state,
         focusEntityId: currentEntityId,
-        playerName: currentEntity?.name || character.name,
-        playerHp: currentEntity?.hp,
-        playerMaxHp: currentEntity?.maxHp,
-        playerAc: currentEntity?.baseAC,
-        abilityScores: currentEntity?.abilityScores,
+        characterSheetText: formatCharacterSheet(character),
         resourceStatus: 'Awaiting damage roll',
         actionList: `Currently waiting for damage roll (${state.pendingAttack?.damageFormula})`,
         question: input.message,
@@ -759,11 +756,7 @@ export async function executeMessageSend(
       const queryPrompt = buildCombatQueryPrompt({
         battleState: state,
         focusEntityId: currentEntityId,
-        playerName: currentEntity?.name || 'Unknown',
-        playerHp: currentEntity?.hp,
-        playerMaxHp: currentEntity?.maxHp,
-        playerAc: currentEntity?.baseAC,
-        abilityScores: currentEntity?.abilityScores,
+        characterSheetText: formatCharacterSheet(character),
         resourceStatus,
         actionList,
         question: input.message,
@@ -875,6 +868,21 @@ export async function executeMessageSend(
         ? (!currentState.turnResources.actionUsed || !currentState.turnResources.bonusActionUsed)
         : false;
 
+    // Resolve weapon context for narrative (attacks, misses, etc.)
+    const activeEntity = activePlayerId
+        ? currentState.entities.find(e => e.id === activePlayerId)
+        : undefined;
+    let narrativeWeaponCtx: Record<string, any> = {};
+    if (parsed.action.type === 'ATTACK' && 'weaponName' in parsed.action) {
+        const weapon = activeEntity?.weapons?.find(
+            w => w.name.toLowerCase() === (parsed.action as any).weaponName?.toLowerCase()
+        );
+        narrativeWeaponCtx = {
+            weaponName: weapon?.name ?? (parsed.action as any).weaponName,
+            damageType: weapon?.damageType ?? activeEntity?.damageType,
+        };
+    }
+
     const narrative = await streamToString(
       await generateCombatNarrativeStream(
         input.sessionId,
@@ -885,7 +893,10 @@ export async function executeMessageSend(
         currentState.entities,
         false,
         activePlayerId,
-        playerHasRemainingResources ? { playerHasRemainingResources: true } : undefined
+        {
+          ...narrativeWeaponCtx,
+          playerHasRemainingResources: playerHasRemainingResources || undefined,
+        }
       ),
       streamHooks?.onNarrativeDelta
     );
@@ -943,8 +954,6 @@ export async function executeMessageSend(
 
   let enrichedPrompt = buildChatUserPrompt(
     character,
-    stats,
-    inventory,
     session,
     recentMessages,
     context,
@@ -1134,7 +1143,7 @@ export async function executeMessageSend(
       dc: request.dc,
       ability: normalizeAbilityName(request.ability),
       skill: normalizeSkillName(request.skill),
-      proficientSkills: [],
+      proficientSkills: getSkillProficiencies(character) as SkillName[],
       advantage: request.advantage,
       disadvantage: request.disadvantage,
     });
