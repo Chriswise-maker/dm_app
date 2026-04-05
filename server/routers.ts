@@ -1458,7 +1458,7 @@ export const appRouter = router({
                 attackModifier: deriveAttackBonus(sheet),
                 damageFormula: deriveDamageFormula(sheet, loader),
                 damageType: combatWeapons[0]?.damageType ?? 'bludgeoning',
-                spells: buildCombatSpells(sheet, loader),
+                spells: buildCombatSpells(sheet, loader).spells,
                 spellSlots: actorState.spellSlotsCurrent,
                 spellSaveDC: sheet.spellcasting?.saveDC,
                 spellAttackBonus: sheet.spellcasting?.attackBonus,

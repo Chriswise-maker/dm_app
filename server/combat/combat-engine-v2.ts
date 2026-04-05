@@ -2224,9 +2224,23 @@ export class CombatEngineV2 {
             const isFumble = rawD20Roll === 1;
 
             const logs: CombatLogEntry[] = [];
+            // Include SPELL_CAST context so the narrator knows this is a spell, not a weapon.
+            // The original SPELL_CAST log was returned in the castSpell() result (prior request);
+            // this batch only contains the roll resolution, so we re-emit the context here.
+            logs.push(this.createLogEntry("SPELL_CAST", {
+                actorId: caster.id,
+                description: `${caster.name} casts ${spell.name}!`,
+            }));
             logs.push(this.createLogEntry("ATTACK_ROLL", {
                 actorId: caster.id,
                 targetId: target.id,
+                roll: {
+                    formula: `1d20+${pending.attackModifier}`,
+                    result: totalAttack,
+                    isCritical: isCrit,
+                    isFumble,
+                },
+                success: isHit && !isFumble,
                 description: `${caster.name} rolls spell attack: ${rawD20Roll}+${pending.attackModifier}=${totalAttack} vs AC ${targetAC} — ${
                     isFumble ? 'FUMBLE!' : isCrit ? 'CRITICAL HIT!' : isHit ? 'HIT!' : 'MISS!'
                 }`,
@@ -3519,10 +3533,18 @@ export class CombatEngineV2 {
                 const targetAC = target.baseAC;
                 const isHit = total >= targetAC;
                 const isCrit = attackRoll.total === 20;
+                const isFumble = attackRoll.total === 1;
 
                 logs.push(this.createLogEntry("ATTACK_ROLL", {
                     actorId: caster.id,
                     targetId: target.id,
+                    roll: {
+                        formula: `1d20+${attackBonus}`,
+                        result: total,
+                        isCritical: isCrit,
+                        isFumble,
+                    },
+                    success: isHit && !isFumble,
                     description: `${caster.name} rolls spell attack: ${attackRoll.total}+${attackBonus}=${total} vs AC ${targetAC} — ${isHit ? (isCrit ? 'CRITICAL HIT!' : 'HIT!') : 'MISS!'}`,
                 }));
 

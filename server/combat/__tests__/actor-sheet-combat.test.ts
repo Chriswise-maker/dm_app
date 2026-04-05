@@ -185,9 +185,10 @@ describe('buildCombatSpells', () => {
     it('converts ActorSheet spells to combat Spell[] with SRD data', () => {
         const sheet = makeWizardSheet();
         const loader = makeMockLoader();
-        const spells = buildCombatSpells(sheet, loader);
+        const { spells, fallbackSpells } = buildCombatSpells(sheet, loader);
 
         expect(spells).toHaveLength(5); // 2 cantrips + 3 known spells
+        expect(fallbackSpells).toHaveLength(0);
 
         const fireBolt = spells.find(s => s.name === 'Fire Bolt');
         expect(fireBolt).toBeDefined();
@@ -210,10 +211,37 @@ describe('buildCombatSpells', () => {
         expect(shield!.range).toBe(0); // Self → 0
     });
 
-    it('returns empty array for non-caster', () => {
+    it('returns empty result for non-caster', () => {
         const sheet = makeFighterSheet();
         const loader = makeMockLoader();
-        expect(buildCombatSpells(sheet, loader)).toEqual([]);
+        const result = buildCombatSpells(sheet, loader);
+        expect(result.spells).toEqual([]);
+        expect(result.fallbackSpells).toEqual([]);
+    });
+
+    it('uses fallback spell when SRD lookup fails', () => {
+        const sheet = makeWizardSheet({
+            spellcasting: {
+                ability: 'int' as const,
+                saveDC: 14,
+                attackBonus: 6,
+                cantripsKnown: ['Fire Bolt', 'Unknown Cantrip'],
+                spellsKnown: ['Shield', 'Magic Missile', 'Fireball'],
+                spellSlots: { '1': 4, '2': 3, '3': 2 },
+            },
+        });
+        // The mock loader won't find "Unknown Cantrip" in SRD
+        const loader = makeMockLoader();
+        const { spells, fallbackSpells } = buildCombatSpells(sheet, loader);
+
+        // All 5 spells should be present (4 from SRD + 1 fallback)
+        expect(spells).toHaveLength(5);
+        expect(fallbackSpells).toEqual(['Unknown Cantrip']);
+
+        const fallback = spells.find(s => s.name === 'Unknown Cantrip');
+        expect(fallback).toBeDefined();
+        expect(fallback!.level).toBe(0); // cantrip
+        expect(fallback!.description).toContain('fallback');
     });
 });
 
@@ -285,7 +313,7 @@ describe('Full entity from ActorSheet', () => {
     it('creates entity with spells, spell slots, ability scores, and correct AC', () => {
         const sheet = makeWizardSheet();
         const loader = makeMockLoader();
-        const spells = buildCombatSpells(sheet, loader);
+        const { spells } = buildCombatSpells(sheet, loader);
 
         const entity = createPlayerEntity(
             'player-1',

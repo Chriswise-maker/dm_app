@@ -632,7 +632,6 @@ export async function executeEnemyTurn(sessionId: number, userId: number): Promi
                     undefined, // activePlayerId
                     {
                         weaponName: parsed.weaponName || entity.weapons?.[0]?.name || entity.name + "'s attack",
-                        damageType: entity.weapons?.find(w => w.name === parsed.weaponName)?.damageType ?? entity.damageType,
                         tacticalRole: entity.tacticalRole,
                     }
                 );

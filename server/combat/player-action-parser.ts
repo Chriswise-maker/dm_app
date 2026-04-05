@@ -14,7 +14,7 @@ import { CombatEngineManager } from './combat-engine-manager';
 import { invokeFastLLMWithSettings } from '../llm-with-settings';
 import { activity } from '../activity-log';
 import { getActionParserPrompt } from '../prompts';
-import type { CombatEntity, BattleState, ActionPayload } from './combat-types';
+import type { CombatEntity, BattleState, ActionPayload, Spell } from './combat-types';
 
 // =============================================================================
 // TYPES
@@ -45,6 +45,32 @@ interface LLMParseResult {
     advantage?: boolean; // "with advantage"
     disadvantage?: boolean; // "at disadvantage"
     confidence: number;
+}
+
+// =============================================================================
+// HELPERS
+// =============================================================================
+
+/** Normalize a string for fuzzy comparison: lowercase, strip spaces/hyphens/apostrophes */
+function normalize(s: string): string {
+    return s.toLowerCase().replace(/[\s\-']/g, '');
+}
+
+/**
+ * Find a spell by name with progressive fuzzy matching:
+ * 1. Exact case-insensitive match
+ * 2. Normalized match (strips spaces/hyphens — "firebolt" matches "Fire Bolt")
+ * 3. startsWith match (partial names)
+ * 4. includes match (substring)
+ */
+function findSpellFuzzy(spells: Spell[], name: string): Spell | undefined {
+    const lower = name.toLowerCase();
+    const norm = normalize(name);
+
+    return spells.find(s => s.name.toLowerCase() === lower)
+        ?? spells.find(s => normalize(s.name) === norm)
+        ?? spells.find(s => s.name.toLowerCase().startsWith(lower))
+        ?? spells.find(s => s.name.toLowerCase().includes(lower));
 }
 
 // =============================================================================
@@ -105,7 +131,7 @@ function buildActionParserPrompt(
                 const slotInfo = spell.level === 0 ? 'cantrip' : `level ${spell.level} (${currentPlayer.spellSlots[String(spell.level)] ?? 0} slots left)`;
                 prompt += `- "${spell.name}" (${slotInfo}): ${spell.description || spell.damageFormula || spell.healingFormula || 'utility'}\n`;
             }
-            prompt += '\n';
+            prompt += `When the player casts a spell, use the EXACT name from this KNOWN SPELLS list as spellName. For example if the list has "Fire Bolt", use "Fire Bolt" not "Firebolt" or "fire bolt".\n\n`;
         }
     }
 
@@ -602,10 +628,8 @@ export async function parsePlayerAction(
             };
         }
 
-        // Check if the current entity has this spell
-        const spell = currentEntity.spells?.find(
-            (s: any) => s.name.toLowerCase() === spellName.toLowerCase()
-        );
+        // Check if the current entity has this spell (with fuzzy matching)
+        const spell = findSpellFuzzy(currentEntity.spells ?? [], spellName);
         if (!spell) {
             return {
                 action: { type: 'END_TURN', entityId: currentEntity.id },

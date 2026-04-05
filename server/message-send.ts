@@ -81,7 +81,7 @@ export async function executeMessageSend(
 
   const db = await import('./db');
   const { invokeLLMWithSettings } = await import('./llm-with-settings');
-  const { buildChatSystemPrompt, buildChatUserPrompt, buildCombatQueryPrompt, formatCharacterSheet, getSkillProficiencies } = await import('./prompts');
+  const { buildChatSystemPrompt, buildChatUserPrompt, buildCombatQueryPrompt, formatCharacterSheet, formatCharacterSheetForCombat, getSkillProficiencies } = await import('./prompts');
   const { parseStructuredResponse, hasCombatInitiation, hasCombatEnd, getEnemies } = await import('./response-parser');
   const { handleAutoCombatInitiation, handleAutoCombatEnd } = await import('./combat/combat-helpers');
   const { CombatEngineManager } = await import('./combat/combat-engine-manager');
@@ -131,7 +131,9 @@ export async function executeMessageSend(
       const queryPrompt = buildCombatQueryPrompt({
         battleState: state,
         focusEntityId: currentEntityId,
-        characterSheetText: formatCharacterSheet(character),
+        characterSheetText: currentEntity
+          ? formatCharacterSheetForCombat(character, currentEntity)
+          : formatCharacterSheet(character),
         resourceStatus: 'Awaiting damage roll',
         actionList: `Currently waiting for damage roll (${state.pendingAttack?.damageFormula})`,
         question: input.message,
@@ -215,8 +217,6 @@ export async function executeMessageSend(
         attackerId,
         {
           weaponName: pendingCtx?.weaponName,
-          damageType: pendingCtx?.damageType,
-          isCriticalHit: pendingCtx?.isCritical,
           playerHasRemainingResources: hasRemainingResources || undefined,
         }
       ),
@@ -756,7 +756,9 @@ export async function executeMessageSend(
       const queryPrompt = buildCombatQueryPrompt({
         battleState: state,
         focusEntityId: currentEntityId,
-        characterSheetText: formatCharacterSheet(character),
+        characterSheetText: currentEntity
+          ? formatCharacterSheetForCombat(character, currentEntity)
+          : formatCharacterSheet(character),
         resourceStatus,
         actionList,
         question: input.message,
@@ -879,7 +881,6 @@ export async function executeMessageSend(
         );
         narrativeWeaponCtx = {
             weaponName: weapon?.name ?? (parsed.action as any).weaponName,
-            damageType: weapon?.damageType ?? activeEntity?.damageType,
         };
     }
 

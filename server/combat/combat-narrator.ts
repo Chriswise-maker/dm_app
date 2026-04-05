@@ -7,22 +7,15 @@ import type { CombatLogEntry, CombatEntity } from './combat-types';
 /**
  * Additional context for combat narration.
  *
- * Currently optional — fields will be populated as DND data integration
- * is built out (weapon names, damage types, spell info, etc.).
+ * Most combat data (spell name, damage type, crit status) is now derived
+ * directly from the combat logs — the single source of truth. This context
+ * carries only information that cannot be inferred from logs.
  */
 export interface CombatNarrativeContext {
-    /** The weapon or spell used for the action (e.g. "greatsword", "Eldritch Blast") */
+    /** Weapon name override for enemy attacks (from AI controller's parsed action) */
     weaponName?: string;
-    /** Damage type of the attack (e.g. "slashing", "fire") */
-    damageType?: string;
     /** Tactical role of the acting entity (for enemy narration flavor) */
     tacticalRole?: string;
-    /** True when the engine is in AWAIT_DAMAGE_ROLL — player still needs to roll damage */
-    awaitingDamageRoll?: boolean;
-    /** The pending damage formula (e.g. "2d6+3") — shown to player */
-    pendingDamageFormula?: string;
-    /** Whether the pending hit is a critical */
-    isCriticalHit?: boolean;
     /** True when the player still has resources (bonus action, etc.) after their action */
     playerHasRemainingResources?: boolean;
 }
@@ -48,7 +41,7 @@ function createNameResolver(entities: CombatEntity[], activePlayerId?: string): 
     };
 }
 
-async function computeCombatNarrativePrompts(
+export async function computeCombatNarrativePrompts(
     userId: number,
     logs: CombatLogEntry[],
     playerFlavorText: string,
@@ -68,13 +61,26 @@ async function computeCombatNarrativePrompts(
     const activeEntity = activePlayerId ? entities.find(e => e.id === activePlayerId) : entities.find(e => e.type === 'player');
     const playerName = activeEntity?.name || entities.find(e => e.type === 'player')?.name || 'the adventurer';
 
-    // Build optional entity metadata block for grounding
+    // Build entity metadata block from logs (single source of truth)
     const actingEntity = entities.find(e => e.name === actorName);
+    const spellCastLog = logs.find(l => l.type === 'SPELL_CAST');
+    const damageLog = logs.find(l => l.type === 'DAMAGE');
+    const attackLog = logs.find(l => l.type === 'ATTACK_ROLL');
+
     const contextLines: string[] = [];
-    if (narrativeContext?.weaponName || actingEntity?.damageFormula) {
-        contextLines.push(`WEAPON: ${narrativeContext?.weaponName || 'unknown'} (${narrativeContext?.damageType || actingEntity?.damageType || 'unknown'} damage)`);
+    if (spellCastLog) {
+        // Spell action: extract spell name from log description ("X casts Fire Bolt!")
+        const spellMatch = spellCastLog.description?.match(/casts (.+?)!?$/);
+        const spellName = spellMatch?.[1] || 'a spell';
+        const dt = damageLog?.damageType || 'magical';
+        contextLines.push(`SPELL: ${spellName} (${dt} damage)`);
+    } else if (actingEntity?.damageFormula) {
+        // Weapon action: use entity's equipped weapon info
+        const weaponName = narrativeContext?.weaponName || actingEntity.weapons?.[0]?.name || 'weapon';
+        const dt = damageLog?.damageType || actingEntity.damageType || 'unknown';
+        contextLines.push(`WEAPON: ${weaponName} (${dt} damage)`);
     }
-    if (narrativeContext?.isCriticalHit) {
+    if (attackLog?.roll?.isCritical) {
         contextLines.push(`CRITICAL HIT: Yes — describe a devastating, precise strike`);
     }
     if (narrativeContext?.tacticalRole || actingEntity?.tacticalRole) {
@@ -125,9 +131,9 @@ MECHANICAL RESULTS:
 ${logSummary}
 
 Write a vivid, immersive 2-3 sentence narrative of what just happened.
-- Address the player in SECOND PERSON ("you") - vary between "you", "your blade", or their name for variety
+- Address the player in SECOND PERSON ("you")
 - Include the player's flavor where it fits naturally
-- Use the WEAPON and damage type from ENTITY DETAILS — describe the attack in a way consistent with the weapon (e.g. arrows pierce, swords slash, maces crush)
+- ENTITY DETAILS tells you what was used. If it says SPELL, narrate the spell being cast (e.g. a bolt of fire streaks from your hand, a beam of energy lances out). If it says WEAPON, narrate a physical attack (e.g. your blade slashes, your arrow flies). NEVER describe a spell as a weapon strike or vice versa.
 - Scale the narrative intensity to the damage: a low roll barely grazes, a high roll strikes true, a critical hit is devastating
 - ${endingInstruction}`;
     }
@@ -348,6 +354,8 @@ function formatLogEntry(log: CombatLogEntry, resolveName: (id: string | undefine
             return `${resolveName(log.actorId)}'s turn begins`;
         case 'TURN_END':
             return `${resolveName(log.actorId)}'s turn ends`;
+        case 'SPELL_CAST':
+            return `Spell: ${log.description || 'A spell is cast'}`;
         case 'CUSTOM':
             return `Info: ${log.description}`;
         default:

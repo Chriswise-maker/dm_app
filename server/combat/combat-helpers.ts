@@ -17,17 +17,26 @@ import type { ContentPackLoader } from '../srd/content-pack';
 // ActorSheet → CombatEntity helpers
 // =============================================================================
 
+export interface BuildCombatSpellsResult {
+    spells: Spell[];
+    /** Spell names that failed SRD lookup and used a fallback instead. */
+    fallbackSpells: string[];
+}
+
 /**
  * Convert ActorSheet spellcasting data to CombatEntity Spell[] format.
  * Looks up each spell in the SRD to get damage formulas, save info, etc.
+ * Spells that fail SRD lookup get a minimal fallback so they remain castable.
  */
 export function buildCombatSpells(
     sheet: ActorSheet,
     srdLoader: ContentPackLoader,
-): Spell[] {
-    if (!sheet.spellcasting) return [];
+): BuildCombatSpellsResult {
+    if (!sheet.spellcasting) return { spells: [], fallbackSpells: [] };
 
+    const cantripSet = new Set(sheet.spellcasting.cantripsKnown.map(n => n.toLowerCase()));
     const spells: Spell[] = [];
+    const fallbackSpells: string[] = [];
     const allNames = [
         ...sheet.spellcasting.cantripsKnown,
         ...sheet.spellcasting.spellsKnown,
@@ -36,9 +45,36 @@ export function buildCombatSpells(
         const srd = lookupByName(srdLoader, 'spells', name);
         if (srd) {
             spells.push(srdSpellToCombatSpell(srd, sheet.level));
+        } else {
+            console.warn(`[buildCombatSpells] SRD lookup failed for "${name}" — using fallback spell`);
+            const isCantrip = cantripSet.has(name.toLowerCase());
+            spells.push(buildFallbackSpell(name, isCantrip));
+            fallbackSpells.push(name);
         }
     }
-    return spells;
+    return { spells, fallbackSpells };
+}
+
+/**
+ * Create a minimal Spell when SRD data is unavailable.
+ * Ensures the spell is still present in CombatEntity.spells[] and castable.
+ */
+function buildFallbackSpell(name: string, isCantrip: boolean): Spell {
+    return {
+        name,
+        level: isCantrip ? 0 : 1,
+        school: 'evocation',
+        castingTime: 'action',
+        range: 60,
+        isAreaEffect: false,
+        halfOnSave: true,
+        damageFormula: isCantrip ? '1d10' : '1d6',
+        damageType: 'magical',
+        requiresConcentration: false,
+        requiresAttackRoll: true,
+        conditions: [],
+        description: `${name} (SRD data unavailable — using fallback)`,
+    };
 }
 
 /** Resistance keywords to scan for in features/equipment. */
@@ -263,7 +299,11 @@ export async function handleAutoCombatInitiation(
                         : deriveInitialState(sheet);
 
                     const loader = getSrdLoader();
-                    const combatSpells = buildCombatSpells(sheet, loader);
+                    const { spells: combatSpells, fallbackSpells } = buildCombatSpells(sheet, loader);
+                    if (fallbackSpells.length > 0) {
+                        console.warn(`[AutoCombat] ${character.name}: ${fallbackSpells.length} spell(s) used fallback (SRD miss): ${fallbackSpells.join(', ')}`);
+                    }
+                    console.log(`[AutoCombat] ${character.name}: loaded ${combatSpells.length} combat spells: ${combatSpells.map(s => s.name).join(', ')}`);
                     const dexModSheet = Math.floor((sheet.abilityScores.dex - 10) / 2);
 
                     const combatWeapons = buildCombatWeapons(sheet, loader);

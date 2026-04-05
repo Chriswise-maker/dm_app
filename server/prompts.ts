@@ -173,21 +173,23 @@ FLAVOR: With a guttural snarl, it lunges for the warrior's exposed flank.`;
  * Used by combat-narrator.ts to narrate combat results
  * Settings field: combatNarrationPrompt
  */
-const DEFAULT_COMBAT_NARRATIVE_PROMPT = `You are the CHAOS WEAVER, narrating combat with vivid, visceral prose.
+const DEFAULT_COMBAT_NARRATIVE_PROMPT = `You are the CHAOS WEAVER, a D&D 5e combat narrator.
 
-**NARRATION STYLE:**
-- **On HIT**: Describe the impact—the sound of steel meeting flesh, the spray of blood, the target's reaction
-- **On MISS**: Show WHY it missed—a desperate dodge, a ringing parry, armor deflecting the blow
-- **On CRITICAL**: Amplify everything—bones crack, armor shatters, the crowd gasps
-- **On KILL**: Give a memorable death—a final breath, a curse, a dramatic collapse
+**CORE RULE: ENTITY DETAILS is your ground truth.** It tells you exactly what was used — a SPELL or a WEAPON. Narrate THAT, not something else. A Fire Bolt is a mote of flame hurled from the hand, not a blade wreathed in fire. A longsword is steel, not magic. Read ENTITY DETAILS first, narrate accordingly.
+
+**NARRATION BY ACTION TYPE:**
+- **Spell HIT**: Describe the spell effect — fire erupts, necrotic energy drains, radiant light sears. Match the damage type.
+- **Spell MISS**: The spell fizzles, streaks wide, or the target ducks the bolt of energy.
+- **Weapon HIT**: Steel bites flesh, arrows thud into armor, maces crack bone.
+- **Weapon MISS**: A desperate dodge, a ringing parry, armor turns the blow.
+- **CRITICAL**: Amplify the specific attack — a spell detonates with terrible force, a blade finds the gap between plates.
+- **KILL**: A memorable death fitting the damage type — charred remains for fire, a clean cut for slashing, a crumpled heap for bludgeoning.
+- **HEALING**: Warm light knits wounds, vitality surges back, color returns to pale cheeks.
 
 **FORMAT:**
 - 2-3 sentences maximum
 - Include the mechanical result naturally (damage amount, remaining HP)
-- End with whose turn is next, or if combat ended
-
-**EXAMPLE:**
-"The blade bites deep into the goblin's shoulder (8 damage), green ichor spattering across the stone floor. It staggers, clutching the wound—still standing at 4 HP, but barely. The Crystal Sentinel's turn begins."`;
+- End with whose turn is next, or if combat ended`;
 
 /**
  * Action Parser Prompt (V2)
@@ -462,10 +464,11 @@ ${actionList}
 PLAYER'S QUESTION: "${question}"
 
 Answer the question directly.
+- AVAILABLE ACTIONS is the authoritative list of what the player can do THIS turn. Only recommend spells or actions that appear there. If a spell appears on the character sheet but NOT in available actions, do NOT suggest it.
 - If they ask where they are, summarize who is in melee, near, and far relative to them.
 - If they ask how far enemies are, use the exact range bands above.
-- If they ask what they can do, use AVAILABLE ACTIONS and their character sheet above.
-- If they ask about special attacks or abilities, check their class features and spells.
+- If they ask what they can do, list from AVAILABLE ACTIONS above.
+- If they ask about special attacks or abilities, check their class features and available actions.
 Keep it concise, helpful, and in character as the DM.`;
 }
 
@@ -666,6 +669,51 @@ export function formatCharacterSheet(character: Character): string {
     if (character.notes) lines.push(`Notes: ${character.notes}`);
 
     return lines.join('\n');
+}
+
+/**
+ * Combat-scoped variant of formatCharacterSheet.
+ * Replaces the spell section with data from the CombatEntity (the authoritative
+ * source during combat), so the DM LLM never recommends spells the engine can't execute.
+ */
+export function formatCharacterSheetForCombat(
+    character: Character,
+    combatEntity: CombatEntity,
+): string {
+    const baseText = formatCharacterSheet(character);
+    const lines = baseText.split('\n');
+
+    // Remove the character-sheet spell lines (these come from ActorSheet, not combat entity)
+    const filtered = lines.filter(line =>
+        !line.startsWith('Cantrips:') && !line.startsWith('Spells Prepared:')
+    );
+
+    // Replace with combat-authoritative spell data
+    const cantrips = combatEntity.spells?.filter(s => s.level === 0) ?? [];
+    const leveled = combatEntity.spells?.filter(s => s.level > 0) ?? [];
+
+    if (cantrips.length > 0 || leveled.length > 0) {
+        if (cantrips.length > 0) {
+            filtered.push(`Cantrips (combat): ${cantrips.map(s => s.name).join(', ')}`);
+        }
+        if (leveled.length > 0) {
+            filtered.push(`Spells (combat): ${leveled.map(s => s.name).join(', ')}`);
+        }
+    } else {
+        // Warn the DM that no spells loaded — check if character sheet had spells
+        let sheetSpells: string[] = [];
+        try {
+            const sheet: ActorSheet = JSON.parse(character.actorSheet || '{}');
+            if (sheet.spellcasting) {
+                sheetSpells = [...sheet.spellcasting.cantripsKnown, ...sheet.spellcasting.spellsKnown];
+            }
+        } catch { /* ignore */ }
+        if (sheetSpells.length > 0) {
+            filtered.push(`Spells: NONE loaded in combat engine (character sheet lists: ${sheetSpells.join(', ')})`);
+        }
+    }
+
+    return filtered.join('\n');
 }
 
 /**
@@ -881,7 +929,13 @@ export function getEnemyAIPrompt(settings?: UserSettings | null): string {
  * @param settings User settings (uses combatNarrationPrompt field)
  */
 export function getCombatNarrativePrompt(settings?: UserSettings | null): string {
-    return settings?.combatNarrationPrompt || DEFAULT_COMBAT_NARRATIVE_PROMPT;
+    const custom = settings?.combatNarrationPrompt;
+    // Ignore custom prompts that contain unsubstituted {{mustache}} templates —
+    // these are stale/broken prompts from earlier versions that confuse the LLM.
+    if (custom && !custom.includes('{{')) {
+        return custom;
+    }
+    return DEFAULT_COMBAT_NARRATIVE_PROMPT;
 }
 
 /**
