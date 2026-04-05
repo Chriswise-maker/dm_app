@@ -247,8 +247,24 @@ export async function updateCharacterHP(characterId: number, hpCurrent: number) 
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
+  const row = await getCharacter(characterId);
+  let actorStateJson: string | undefined;
+  if (row?.actorState) {
+    try {
+      const state = JSON.parse(row.actorState) as { hpCurrent?: number };
+      state.hpCurrent = hpCurrent;
+      actorStateJson = JSON.stringify(state);
+    } catch {
+      // Keep column-only update if actorState is malformed
+    }
+  }
+
   await db.update(characters)
-    .set({ hpCurrent, updatedAt: new Date() })
+    .set({
+      hpCurrent,
+      updatedAt: new Date(),
+      ...(actorStateJson ? { actorState: actorStateJson } : {}),
+    })
     .where(eq(characters.id, characterId));
 }
 

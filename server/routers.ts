@@ -279,6 +279,51 @@ export const appRouter = router({
         return { success: true };
       }),
 
+    updateState: protectedProcedure
+      .input(z.object({
+        characterId: z.number(),
+        updates: z.object({
+          hpCurrent: z.number().int().min(0).optional(),
+          tempHp: z.number().int().min(0).optional(),
+          spellSlotsCurrent: z.record(z.string(), z.number().int()).optional(),
+          hitDiceCurrent: z.number().int().min(0).optional(),
+          featureUses: z.record(z.string(), z.number().int()).optional(),
+          exhaustion: z.number().int().min(0).max(6).optional(),
+          gold: z.number().min(0).optional(),
+          deathSaves: z.object({
+            successes: z.number().int().min(0).max(3),
+            failures: z.number().int().min(0).max(3),
+          }).optional(),
+          concentration: z.object({
+            spellName: z.string(),
+            saveDC: z.number().int(),
+          }).nullable().optional(),
+        }),
+      }))
+      .mutation(async ({ input }) => {
+        const db = await import('./db');
+        const existing = await db.getCharacter(input.characterId);
+        if (!existing?.actorState) {
+          throw new Error('Character has no actorState');
+        }
+        const state = JSON.parse(existing.actorState);
+        const merged = { ...state, ...input.updates };
+        // Partial merge for nested records
+        if (input.updates.spellSlotsCurrent) {
+          merged.spellSlotsCurrent = { ...state.spellSlotsCurrent, ...input.updates.spellSlotsCurrent };
+        }
+        if (input.updates.featureUses) {
+          merged.featureUses = { ...state.featureUses, ...input.updates.featureUses };
+        }
+        const updateData: any = { actorState: JSON.stringify(merged) };
+        // Keep hpCurrent DB column in sync
+        if (input.updates.hpCurrent !== undefined) {
+          updateData.hpCurrent = input.updates.hpCurrent;
+        }
+        await db.updateCharacter(input.characterId, updateData);
+        return { success: true };
+      }),
+
     delete: protectedProcedure
       .input(z.object({ characterId: z.number() }))
       .mutation(async ({ input }) => {
@@ -986,8 +1031,6 @@ export const appRouter = router({
         if (!session) throw new Error('Session not found');
 
         const recentMessages = await db.getSessionMessages(input.sessionId, 10);
-        const stats = JSON.parse(character.stats);
-        const inventory = JSON.parse(character.inventory);
 
         // Get extracted context
         const storedContext = await db.getSessionContext(input.sessionId);
@@ -1007,8 +1050,6 @@ export const appRouter = router({
         const systemPrompt = buildChatSystemPrompt(userSettings, session.narrativePrompt);
         const enrichedPrompt = buildChatUserPrompt(
           character,
-          stats,
-          inventory,
           session,
           recentMessages,
           context,
@@ -1408,6 +1449,7 @@ export const appRouter = router({
                 : deriveInitialState(sheet);
               const loader = getSrdLoader();
 
+              const combatWeapons = buildCombatWeapons(sheet, loader);
               extraOptions = {
                 ...extraOptions,
                 characterClass: sheet.characterClass,
@@ -1415,12 +1457,13 @@ export const appRouter = router({
                 initiativeModifier: Math.floor((sheet.abilityScores.dex - 10) / 2),
                 attackModifier: deriveAttackBonus(sheet),
                 damageFormula: deriveDamageFormula(sheet, loader),
+                damageType: combatWeapons[0]?.damageType ?? 'bludgeoning',
                 spells: buildCombatSpells(sheet, loader),
                 spellSlots: actorState.spellSlotsCurrent,
                 spellSaveDC: sheet.spellcasting?.saveDC,
                 spellAttackBonus: sheet.spellcasting?.attackBonus,
                 spellcastingAbility: sheet.spellcasting?.ability,
-                weapons: buildCombatWeapons(sheet, loader),
+                weapons: combatWeapons,
                 saveProficiencies: sheet.proficiencies.saves,
                 proficiencyBonus: sheet.proficiencyBonus,
                 resistances: collectResistances(sheet),
@@ -2055,8 +2098,8 @@ export const appRouter = router({
           rangeTo: {},
         }));
 
-        // Start combat
-        const logs = engine.initiateCombat(entities);
+        // Prepare combat (enters AWAIT_INITIATIVE if players need to roll)
+        const { logs, awaitingInitiative } = engine.prepareCombat(entities);
 
         // Persist to database
         await CombatEngineManager.persist(input.sessionId);
@@ -2064,6 +2107,7 @@ export const appRouter = router({
         return {
           success: true,
           logs,
+          awaitingInitiative,
           state: engine.getState(),
         };
       }),

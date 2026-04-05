@@ -1,5 +1,4 @@
 import { trpc } from '@/lib/trpc';
-import { Button } from '@/components/ui/button';
 import { Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
@@ -13,6 +12,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { useState } from 'react';
+import CharacterSheet from './character-sheet/CharacterSheet';
 
 interface CharacterPanelProps {
   sessionId: number | null;
@@ -84,6 +84,8 @@ export default function CharacterPanel({
     );
   }
 
+  const selectedCharacter = characters?.find((c) => c.id === selectedCharacterId);
+
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
@@ -96,116 +98,92 @@ export default function CharacterPanel({
         </button>
       </div>
 
-      <div className="space-y-6">
+      {/* Character list — compact cards */}
+      <div className="space-y-1">
         {isLoading ? (
           <div className="flex justify-center py-4">
             <Loader2 className="h-5 w-5 animate-spin text-ghost" />
           </div>
         ) : characters && characters.length > 0 ? (
-          characters.map((char) => (
-            <div
-              key={char.id}
-              onClick={() => onCharacterSelect(char.id)}
-              className={`cursor-pointer transition-colors py-4 px-3 ${
-                selectedCharacterId === char.id
-                  ? 'bg-surface-high/50'
-                  : 'hover:bg-surface-high/30'
-              }`}
-            >
-              {/* Name & class */}
-              <div className="flex items-start justify-between gap-1 mb-3">
-                <div className="min-w-0 flex-1">
-                  <h3 className={`font-serif text-lg tracking-tight ${
-                    selectedCharacterId === char.id ? 'text-vellum' : 'text-foreground'
-                  }`}>{char.name}</h3>
-                  <p className="font-sans text-[9px] tracking-[0.2em] uppercase text-ghost mt-1">
-                    {char.className} &middot; Level {char.level}
-                  </p>
-                </div>
-                <div className="flex gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onEditCharacter(char.id);
-                    }}
-                    className="font-sans text-[8px] tracking-[0.2em] uppercase text-ghost hover:text-vellum transition-colors"
-                  >
-                    Edit
-                  </button>
-                  <button
-                    onClick={(e) => handleDeleteClick(char.id, e)}
-                    className="font-sans text-[8px] tracking-[0.2em] uppercase text-destructive/60 hover:text-destructive transition-colors"
-                  >
-                    Remove
-                  </button>
-                </div>
-              </div>
+          characters.map((char) => {
+            const isSelected = selectedCharacterId === char.id;
+            const hpPct = char.hpMax > 0 ? char.hpCurrent / char.hpMax : 0;
 
-              {/* Vitality — Typography-driven HP */}
-              <div className="mb-3">
-                <span className="font-sans text-[9px] tracking-[0.3em] uppercase text-ghost block mb-1">Vitality</span>
-                <div className="flex items-baseline gap-1">
-                  <span className="font-serif text-2xl text-foreground leading-none tracking-tighter">
-                    {char.hpCurrent}
-                  </span>
-                  <span className="font-serif text-sm text-ghost">/ {char.hpMax}</span>
-                </div>
-                <div className="flex items-center gap-2 mt-2" onClick={(e) => e.stopPropagation()}>
-                  <button
-                    onClick={() => handleHPChange(char.id, char.hpCurrent, char.hpMax, -5)}
-                    className="font-sans text-[9px] text-ghost hover:text-vellum transition-colors"
-                  >
-                    -5
-                  </button>
-                  <button
-                    onClick={() => handleHPChange(char.id, char.hpCurrent, char.hpMax, -1)}
-                    className="font-sans text-[9px] text-ghost hover:text-vellum transition-colors"
-                  >
-                    -1
-                  </button>
-                  <button
-                    onClick={() => handleHPChange(char.id, char.hpCurrent, char.hpMax, 1)}
-                    className="font-sans text-[9px] text-ghost hover:text-vellum transition-colors"
-                  >
-                    +1
-                  </button>
-                  <button
-                    onClick={() => handleHPChange(char.id, char.hpCurrent, char.hpMax, 5)}
-                    className="font-sans text-[9px] text-ghost hover:text-vellum transition-colors"
-                  >
-                    +5
-                  </button>
-                </div>
-              </div>
-
-              {/* Defense */}
-              <div className="mb-3">
-                <span className="font-sans text-[9px] tracking-[0.3em] uppercase text-ghost block mb-1">Defense</span>
-                <span className="font-serif text-2xl text-foreground leading-none tracking-tighter">{char.ac}</span>
-              </div>
-
-              {/* Ability Scores — The Spine Layout */}
-              <div className="space-y-1">
-                {[
-                  ['Str', char.stats.str],
-                  ['Dex', char.stats.dex],
-                  ['Con', char.stats.con],
-                  ['Int', char.stats.int],
-                  ['Wis', char.stats.wis],
-                  ['Cha', char.stats.cha],
-                ].map(([label, value]) => (
-                  <div key={label as string} className="flex items-baseline justify-between">
-                    <span className="font-sans text-[9px] tracking-[0.2em] uppercase text-ghost">{label}</span>
-                    <span className="font-serif text-sm text-foreground">{value as number}</span>
+            return (
+              <div
+                key={char.id}
+                onClick={() => onCharacterSelect(char.id)}
+                className={`cursor-pointer transition-colors py-2 px-3 ${
+                  isSelected
+                    ? 'bg-surface-high/50'
+                    : 'hover:bg-surface-high/30'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <span className={`font-serif text-sm tracking-tight ${
+                      isSelected ? 'text-vellum' : 'text-foreground'
+                    }`}>{char.name}</span>
+                    <span className="font-sans text-[8px] tracking-[0.15em] uppercase text-ghost ml-2">
+                      {char.className} {char.level}
+                    </span>
                   </div>
-                ))}
+                  <div className="flex items-center gap-2 shrink-0">
+                    {/* Mini HP indicator */}
+                    <span className="font-sans text-[9px] text-ghost">
+                      {char.hpCurrent}/{char.hpMax}
+                    </span>
+                    <div className="w-8 h-1 rounded-full bg-ghost/10 overflow-hidden">
+                      <div
+                        className="h-full rounded-full transition-all"
+                        style={{
+                          width: `${Math.min(100, hpPct * 100)}%`,
+                          backgroundColor: hpPct > 0.5 ? 'hsl(100, 60%, 40%)' : hpPct > 0.25 ? 'hsl(45, 70%, 40%)' : 'hsl(0, 80%, 40%)',
+                        }}
+                      />
+                    </div>
+                  </div>
+                </div>
               </div>
-            </div>
-          ))
+            );
+          })
         ) : (
           <p className="font-serif text-sm italic text-ghost/60">No characters yet</p>
         )}
       </div>
+
+      {/* Selected character — full sheet */}
+      {selectedCharacter && (
+        <div className="mt-4 pt-4 border-t border-ghost/10">
+          {/* Edit / Delete controls */}
+          <div className="flex items-center justify-end gap-2 mb-3" onClick={(e) => e.stopPropagation()}>
+            <button
+              onClick={() => onEditCharacter(selectedCharacter.id)}
+              className="font-sans text-[8px] tracking-[0.2em] uppercase text-ghost hover:text-vellum transition-colors"
+            >
+              Edit
+            </button>
+            <button
+              onClick={(e) => handleDeleteClick(selectedCharacter.id, e)}
+              className="font-sans text-[8px] tracking-[0.2em] uppercase text-destructive/60 hover:text-destructive transition-colors"
+            >
+              Remove
+            </button>
+          </div>
+
+          <CharacterSheet
+            character={selectedCharacter}
+            onHPAdjust={(delta) =>
+              handleHPChange(
+                selectedCharacter.id,
+                selectedCharacter.hpCurrent,
+                selectedCharacter.hpMax,
+                delta,
+              )
+            }
+          />
+        </div>
+      )}
 
       {/* Delete Confirmation Dialog */}
       <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
