@@ -10,8 +10,8 @@ let _loader: ContentPackLoader | null = null;
 export function getSrdLoader(): ContentPackLoader {
   if (!_loader) {
     _loader = new ContentPackLoader();
-    _loader.loadPack(path.resolve(__dirname, '../../data/srd-2014'));
-    _loader.loadPack(path.resolve(__dirname, '../../data/custom'));
+    _loader.loadPack(path.resolve(import.meta.dirname, '../../data/srd-2014'));
+    _loader.loadPack(path.resolve(import.meta.dirname, '../../data/custom'));
   }
   return _loader;
 }

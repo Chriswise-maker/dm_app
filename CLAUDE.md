@@ -41,6 +41,8 @@ docs/           → Design docs, plans, fix logs
 - **Combat is a state machine** — see `docs/combat/COMBAT_ENGINE.md`. Deterministic engine, undo support, LLM only for enemy AI decisions.
 - **Main router** — `server/routers.ts` (~2000 lines) contains all tRPC endpoints. Sub-routers: auth, sessions, characters, mechanics, messages, settings, combat, tts.
 - **SRD tools** — `lookup_spell`, `lookup_monster`, `lookup_equipment`, `search_srd` wired as LLM tool calls in the DM chat loop (`server/prompts.ts`, `server/message-send.ts`).
+- **Character data in prompts** — `formatCharacterSheet()` in `server/prompts.ts` is the single canonical formatter. It merges DB columns, `actorSheet` (rich SRD data), and `actorState` (runtime resources) into one text block. All prompt paths (chat, combat queries, skill checks) should use this instead of ad-hoc field extraction.
+- **Character sheet UI** — `client/src/components/character-sheet/` uses shared kernel types; see `docs/CHARACTER_SHEET_UI.md` for component map, mutations (`updateHP` / `updateState`), and integration notes.
 
 ## Conventions
 - Zod for all runtime validation (combat types, tRPC inputs)
