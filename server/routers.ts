@@ -386,7 +386,7 @@ export const appRouter = router({
           className: characterData.className,
           level: characterData.level,
           hpMax: characterData.hpMax,
-          hpCurrent: characterData.hpCurrent,
+          hpCurrent: characterData.hpMax, // New characters always start at full HP
           ac: characterData.ac,
           stats: JSON.stringify(characterData.stats),
           inventory: JSON.stringify(characterData.inventory),
@@ -407,8 +407,7 @@ export const appRouter = router({
           background: characterData.background ?? null,
         }, getLoader());
         const genState = deriveState(genSheet);
-        // Set hpCurrent to match the generated value (may differ from max)
-        genState.hpCurrent = characterData.hpCurrent;
+        // New characters always start at full HP (deriveInitialState already sets hpCurrent = maxHp)
 
         await db.updateCharacter(result.id, {
           actorSheet: JSON.stringify(genSheet),
@@ -2471,6 +2470,9 @@ export const appRouter = router({
             hasLogs: result.logs.length > 0,
             phase: newState.phase,
             playerHasRemainingResources: _playerHasRemainingResources,
+            // Capture weapon/spell context from pending state (before engine clears it)
+            weaponName: state.pendingAttack?.isSpellAttack ? undefined : (state.pendingAttack?.weaponName ?? state.pendingAttackRoll?.weaponName),
+            spellName: state.pendingAttack?.spellName ?? state.pendingAttackRoll?.spellName,
           },
         };
         }); // end withLock
@@ -2487,7 +2489,11 @@ export const appRouter = router({
               a.sessionId, a.userId, lockResult.logs, a.flavorText,
               a.rollingEntityName, a.entities, false, a.activePlayerId,
               undefined,
-              a.playerHasRemainingResources ? { playerHasRemainingResources: true } : undefined
+              {
+                ...(a.weaponName ? { weaponName: a.weaponName } : {}),
+                ...(a.spellName ? { spellName: a.spellName } : {}),
+                ...(a.playerHasRemainingResources ? { playerHasRemainingResources: true } : {}),
+              }
             ).catch(err => console.error('[CombatV2] Async narrative error:', err));
           }
 

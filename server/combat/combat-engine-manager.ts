@@ -7,7 +7,7 @@
  * - Automatic persistence on mutations
  */
 
-import { CombatEngineV2, createCombatEngine } from "./combat-engine-v2";
+import { CombatEngineV2, createCombatEngine, type RollFn } from "./combat-engine-v2";
 import {
     type BattleState,
     type CombatEntity,
@@ -15,6 +15,30 @@ import {
     createPlayerEntity,
     createEnemyEntity,
 } from "./combat-types";
+
+// ── Deterministic dice for testing ──────────────────────────────────────────
+// Set DICE_SEED env var to enable deterministic dice rolls.
+// Value is a comma-separated list of roll totals that cycle.
+// Example: DICE_SEED=15,10,8 → first roll returns 15, second 10, third 8, fourth 15, ...
+
+function createSeededRollFn(seed: string): RollFn {
+    const values = seed.split(",").map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
+    if (values.length === 0) throw new Error("DICE_SEED must be comma-separated integers, e.g. DICE_SEED=15,10,8");
+    let idx = 0;
+    return (_formula: string) => {
+        const total = values[idx % values.length];
+        idx++;
+        return { total, rolls: [total], isCritical: total === 20, isFumble: total === 1 };
+    };
+}
+
+const seededRollFn: RollFn | null = process.env.DICE_SEED
+    ? createSeededRollFn(process.env.DICE_SEED)
+    : null;
+
+if (seededRollFn) {
+    console.log(`[CombatEngineManager] Deterministic dice active (DICE_SEED=${process.env.DICE_SEED})`);
+}
 
 // =============================================================================
 // ENGINE MANAGER
@@ -45,7 +69,7 @@ class CombatEngineManagerClass {
     getOrCreate(sessionId: number, settings?: Partial<GameSettings>): CombatEngineV2 {
         let engine = this.engines.get(sessionId);
         if (!engine) {
-            engine = createCombatEngine(sessionId, settings);
+            engine = createCombatEngine(sessionId, settings, seededRollFn ?? undefined);
             this.engines.set(sessionId, engine);
         }
         return engine;
@@ -62,7 +86,7 @@ class CombatEngineManagerClass {
         const savedState = await db.loadCombatEngineState(sessionId);
 
         if (savedState) {
-            const engine = createCombatEngine(sessionId);
+            const engine = createCombatEngine(sessionId, undefined, seededRollFn ?? undefined);
             engine.loadState(savedState);
             this.engines.set(sessionId, engine);
             console.log(`[CombatEngineManager] Loaded engine for session ${sessionId} from DB`);

@@ -242,12 +242,12 @@ export async function executeMessageSend(
       console.log('[CombatV2] Combat ended after damage, destroying engine');
       await CombatEngineManager.destroy(input.sessionId);
     } else {
-      // Trigger Enemy AI if turn passed
+      // Trigger AI loop if turn passed to enemy or non-active player
       const nextEntity = engine.getCurrentTurnEntity();
-      if (nextEntity && nextEntity.type === 'enemy') {
+      if (nextEntity && (nextEntity.type === 'enemy' || nextEntity.dbCharacterId !== character.id)) {
         const { runAILoop } = await import('./combat/enemy-ai-controller');
-        console.log(`[CombatV2] Turn passed to ${nextEntity.name} (enemy), triggering AI loop...`);
-        runAILoop(input.sessionId, ctx.user.id).catch(err => {
+        console.log(`[CombatV2] Turn passed to ${nextEntity.name}, triggering AI loop...`);
+        runAILoop(input.sessionId, ctx.user.id, character.id).catch(err => {
           console.error('[CombatV2] AI loop error:', err);
         });
       }
@@ -340,9 +340,9 @@ export async function executeMessageSend(
       await CombatEngineManager.destroy(input.sessionId);
     } else {
       const nextEntity = engine.getCurrentTurnEntity();
-      if (nextEntity && nextEntity.type === 'enemy') {
+      if (nextEntity && (nextEntity.type === 'enemy' || nextEntity.dbCharacterId !== character.id)) {
         const { runAILoop } = await import('./combat/enemy-ai-controller');
-        runAILoop(input.sessionId, ctx.user.id).catch(err => console.error('[CombatV2] AI loop error:', err));
+        runAILoop(input.sessionId, ctx.user.id, character.id).catch(err => console.error('[CombatV2] AI loop error:', err));
       }
     }
 
@@ -415,9 +415,9 @@ export async function executeMessageSend(
       await CombatEngineManager.destroy(input.sessionId);
     } else {
       const nextEntity = engine.getCurrentTurnEntity();
-      if (nextEntity && nextEntity.type === 'enemy') {
+      if (nextEntity && (nextEntity.type === 'enemy' || nextEntity.dbCharacterId !== character.id)) {
         const { runAILoop } = await import('./combat/enemy-ai-controller');
-        runAILoop(input.sessionId, ctx.user.id).catch(err => console.error('[CombatV2] AI loop error:', err));
+        runAILoop(input.sessionId, ctx.user.id, character.id).catch(err => console.error('[CombatV2] AI loop error:', err));
       }
     }
 
@@ -461,6 +461,8 @@ export async function executeMessageSend(
     }
 
     console.log(`[CombatV2] Extracted attack roll: ${rawRoll}`);
+    // Capture pending state before resolveAttackRoll clears it
+    const pendingAttackRoll = engine.getState().pendingAttackRoll;
     const result = engine.resolveAttackRoll(rawRoll);
 
     if (!result.success) {
@@ -495,7 +497,10 @@ export async function executeMessageSend(
           character.name,
           currentState.entities,
           false,
-          currentState.pendingAttackRoll?.attackerId,
+          pendingAttackRoll?.attackerId,
+          {
+            ...(pendingAttackRoll?.weaponName ? { weaponName: pendingAttackRoll.weaponName } : {}),
+          }
         ),
         streamHooks?.onNarrativeDelta
       );
@@ -507,9 +512,9 @@ export async function executeMessageSend(
       await CombatEngineManager.destroy(input.sessionId);
     } else {
       const nextEntity = engine.getCurrentTurnEntity();
-      if (nextEntity && nextEntity.type === 'enemy') {
+      if (nextEntity && (nextEntity.type === 'enemy' || nextEntity.dbCharacterId !== character.id)) {
         const { runAILoop } = await import('./combat/enemy-ai-controller');
-        runAILoop(input.sessionId, ctx.user.id).catch(err => console.error('[CombatV2] AI loop error:', err));
+        runAILoop(input.sessionId, ctx.user.id, character.id).catch(err => console.error('[CombatV2] AI loop error:', err));
       }
     }
 
@@ -546,8 +551,15 @@ export async function executeMessageSend(
     const initiativeRoll = parseInt(initiativeMatch[1], 10);
     console.log(`[CombatV2] Extracted initiative roll: ${initiativeRoll}`);
 
-    // Find which player entity this character corresponds to
-    const playerEntityId = `player-${character.id}`;
+    // Find which player entity this character corresponds to.
+    // If this character already rolled, apply to the next pending character instead
+    // (supports single-player controlling multiple characters via chat).
+    let playerEntityId = `player-${character.id}`;
+    const pendingIds = engine.getState().pendingInitiative?.pendingEntityIds ?? [];
+    if (!pendingIds.includes(playerEntityId) && pendingIds.length > 0) {
+      playerEntityId = pendingIds[0];
+      console.log(`[CombatV2] Character already rolled, applying to next pending: ${playerEntityId}`);
+    }
     const result = engine.applyInitiative(playerEntityId, initiativeRoll);
 
     if (result.logs.length > 0) {
@@ -582,11 +594,11 @@ export async function executeMessageSend(
         isDm: 1
       });
 
-      // Trigger enemy AI if first turn is an enemy
-      if (firstEntity && firstEntity.type === 'enemy') {
+      // Trigger AI loop if first turn is an enemy or non-active player
+      if (firstEntity && (firstEntity.type === 'enemy' || firstEntity.dbCharacterId !== character.id)) {
         const { runAILoop } = await import('./combat/enemy-ai-controller');
-        console.log(`[CombatV2] First turn is ${firstEntity.name} (enemy), triggering AI loop...`);
-        runAILoop(input.sessionId, ctx.user.id).catch(err => {
+        console.log(`[CombatV2] First turn is ${firstEntity.name}, triggering AI loop...`);
+        runAILoop(input.sessionId, ctx.user.id, character.id).catch(err => {
           console.error('[CombatV2] AI loop error:', err);
         });
       }
@@ -884,11 +896,17 @@ export async function executeMessageSend(
         };
     }
 
+    // For END_TURN, pass full turn logs so narrator has context about what happened
+    // (e.g. crits, spells cast earlier in the turn). For other actions, use immediate logs.
+    const narrativeLogs = parsed.action.type === 'END_TURN'
+        ? engine!.getTurnLogs()
+        : result.logs;
+
     const narrative = await streamToString(
       await generateCombatNarrativeStream(
         input.sessionId,
         ctx.user.id,
-        result.logs,
+        narrativeLogs,
         parsed.flavorText,
         character.name,
         currentState.entities,
@@ -923,12 +941,12 @@ export async function executeMessageSend(
       console.log('[CombatV2] Combat ended, destroying engine');
       await CombatEngineManager.destroy(input.sessionId);
     } else {
-      // 7. Trigger Enemy AI if turn passed
+      // 7. Trigger AI loop if turn passed to enemy or non-active player
       const nextEntity = engine!.getCurrentTurnEntity();
-      if (nextEntity && nextEntity.type === 'enemy') {
+      if (nextEntity && (nextEntity.type === 'enemy' || nextEntity.dbCharacterId !== character.id)) {
         const { runAILoop } = await import('./combat/enemy-ai-controller');
-        console.log(`[CombatV2] Turn passed to ${nextEntity.name} (enemy), triggering AI loop...`);
-        runAILoop(input.sessionId, ctx.user.id).catch(err => {
+        console.log(`[CombatV2] Turn passed to ${nextEntity.name}, triggering AI loop...`);
+        runAILoop(input.sessionId, ctx.user.id, character.id).catch(err => {
           console.error('[CombatV2] AI loop error:', err);
         });
       }

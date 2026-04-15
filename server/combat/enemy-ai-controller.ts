@@ -713,10 +713,34 @@ export function shouldExecuteAI(sessionId: number): boolean {
 }
 
 /**
- * Run the AI loop for consecutive enemy turns
- * This will keep executing until it's a player's turn or combat ends
+ * Check if the current turn belongs to a non-active player character
+ * (a PC that isn't being controlled by the message sender).
+ * These turns are auto-ended so combat keeps flowing in single-player multi-PC setups.
  */
-export async function runAILoop(sessionId: number, userId: number): Promise<void> {
+function isUncontrolledPlayerTurn(sessionId: number, activeCharacterId?: number): boolean {
+    if (activeCharacterId == null) return false; // No active char info → can't determine
+    const engine = CombatEngineManager.get(sessionId);
+    if (!engine) return false;
+
+    const state = engine.getState();
+    if (state.phase !== 'ACTIVE') return false;
+
+    const entity = engine.getCurrentTurnEntity();
+    if (!entity || entity.type !== 'player') return false;
+
+    // If this player entity maps to a different DB character, it's uncontrolled
+    return entity.dbCharacterId !== activeCharacterId;
+}
+
+/**
+ * Run the AI loop for consecutive enemy turns (and auto-skip uncontrolled PC turns).
+ * This will keep executing until it's the active player's turn or combat ends.
+ *
+ * @param activeCharacterId - The DB character ID of the player sending messages.
+ *   When provided, non-matching player entities get their turns auto-ended (DODGE).
+ *   When omitted, the loop stops at ANY player turn (backwards-compatible).
+ */
+export async function runAILoop(sessionId: number, userId: number, activeCharacterId?: number): Promise<void> {
     // Prevent re-entrant AI loops on the same session
     if (CombatEngineManager.isAILoopRunning(sessionId)) {
         console.log(`[EnemyAI] AI loop already running for session ${sessionId}, skipping`);
@@ -743,22 +767,52 @@ export async function runAILoop(sessionId: number, userId: number): Promise<void
                 break;
             }
 
-            if (!shouldExecuteAI(sessionId)) {
-                console.log(`[EnemyAI] Not an enemy's turn, exiting loop`);
-                break;
+            const currentEntity = engine.getCurrentTurnEntity();
+            if (!currentEntity) break;
+
+            // Enemy turn → execute AI
+            if (currentEntity.type === 'enemy') {
+                iterationCount++;
+                console.log(`[EnemyAI] Loop iteration ${iterationCount} — enemy turn: ${currentEntity.name}`);
+
+                const { logs, flavor } = await (executeEnemyTurn(sessionId, userId) as any);
+                allLogs.push(...logs);
+                if (flavor) {
+                    combinedFlavor += (combinedFlavor ? " " : "") + flavor;
+                }
+                continue;
             }
 
-            iterationCount++;
-            console.log(`[EnemyAI] Loop iteration ${iterationCount}`);
+            // Uncontrolled player turn → auto-end with DODGE (defensive stance)
+            if (currentEntity.type === 'player' && isUncontrolledPlayerTurn(sessionId, activeCharacterId)) {
+                iterationCount++;
+                console.log(`[EnemyAI] Auto-ending uncontrolled PC turn: ${currentEntity.name}`);
 
-            const { logs, flavor } = await (executeEnemyTurn(sessionId, userId) as any);
-            allLogs.push(...logs);
-            if (flavor) {
-                combinedFlavor += (combinedFlavor ? " " : "") + flavor;
+                // Submit DODGE then END_TURN for a defensive posture
+                const dodgeResult = engine.submitAction({ type: 'DODGE', entityId: currentEntity.id });
+                const endResult = engine.submitAction({ type: 'END_TURN', entityId: currentEntity.id });
+                allLogs.push(...(dodgeResult.logs || []), ...(endResult.logs || []));
+
+                // Save a brief narrative so the chat shows what happened
+                try {
+                    const db = await import('../db');
+                    await db.saveMessage({
+                        sessionId,
+                        characterName: 'DM',
+                        content: `*${currentEntity.name} takes a defensive stance, watching for an opening.*`,
+                        isDm: 1,
+                    });
+                } catch (err) {
+                    console.error('[EnemyAI] Failed to save auto-turn message:', err);
+                }
+
+                await CombatEngineManager.persist(sessionId);
+                continue;
             }
 
-            // Narrative generation is awaited inside executeEnemyTurn,
-            // so no extra delay is needed — natural pacing from the LLM call.
+            // Active player's turn → exit loop, let them act
+            console.log(`[EnemyAI] Active player's turn (${currentEntity.name}), exiting loop`);
+            break;
         }
 
         // Per-turn messages are now saved immediately in executeEnemyTurn,
