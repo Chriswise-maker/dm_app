@@ -58,6 +58,7 @@ import {
     type LogEntryType,
     SpellSchema,
     PendingSpellSaveSchema,
+    PendingSpellDamageSchema,
     type WeaponEntry,
 } from "./combat-types";
 import { validateDiceRoll } from "./combat-validators";
@@ -81,7 +82,9 @@ import type { AbilityStat } from "../kernel/actor-sheet";
  * Case-insensitive with partial/substring fallback.
  */
 function matchWeapon(weapons: WeaponEntry[] | undefined, name?: string): WeaponEntry | undefined {
-    if (!name || !weapons?.length) return undefined;
+    if (!weapons?.length) return undefined;
+    // No name specified: fall back to first weapon (e.g., visual dice roller path)
+    if (!name) return weapons[0];
     const lower = name.toLowerCase();
     // Exact case-insensitive match
     const exact = weapons.find(w => w.name.toLowerCase() === lower);
@@ -174,6 +177,27 @@ export class CombatEngineV2 {
      */
     getState(): Readonly<BattleState> {
         return structuredClone(this.state) as Readonly<BattleState>;
+    }
+
+    /**
+     * Get all combat log entries from the most recently completed turn.
+     * After END_TURN: returns logs from TURN_START through TURN_END (the turn that just ended).
+     * Mid-turn: returns logs from the current TURN_START onward.
+     * Useful for giving the narrator full context about what happened during a turn.
+     */
+    getTurnLogs(): CombatLogEntry[] {
+        const turnEndIdx = this.state.log.findLastIndex(l => l.type === 'TURN_END');
+        if (turnEndIdx >= 0) {
+            // Find the TURN_START before this TURN_END
+            const preceding = this.state.log.slice(0, turnEndIdx);
+            const startIdx = preceding.findLastIndex(l => l.type === 'TURN_START');
+            return startIdx >= 0
+                ? this.state.log.slice(startIdx, turnEndIdx + 1)
+                : this.state.log.slice(0, turnEndIdx + 1);
+        }
+        // No TURN_END yet — return logs since the last TURN_START (mid-turn)
+        const startIdx = this.state.log.findLastIndex(l => l.type === 'TURN_START');
+        return startIdx >= 0 ? this.state.log.slice(startIdx) : [...this.state.log];
     }
 
     /**
@@ -945,7 +969,8 @@ export class CombatEngineV2 {
         logs.push(...this.triggerReadiedActions("turn_start", entityId));
 
         // Death saving throws: unconscious essential entities must roll at the start of their turn
-        if (entity.status === 'UNCONSCIOUS' && entity.isEssential) {
+        // Stabilized entities (3 successes) skip death saves — they're stable but unconscious.
+        if (entity.status === 'UNCONSCIOUS' && entity.isEssential && !entity.isStabilized) {
             this.state.phase = 'AWAIT_DEATH_SAVE';
             this.state.updatedAt = Date.now();
             logs.push(this.createLogEntry("CUSTOM", {
@@ -2131,8 +2156,10 @@ export class CombatEngineV2 {
             || this.hasActiveCondition(target.id, 'paralyzed')
             || (!isRangedAttack && this.hasActiveCondition(target.id, 'prone'));
         const rangedInMeleeDisadvantage = isRangedAttack && this.getEngagedHostiles(attacker.id).length > 0;
-        const effectiveDisadvantage = (payload.disadvantage || false) || targetIsDodging || attackerCondDisadv || rangedInMeleeDisadvantage;
-        const effectiveAdvantage = (payload.advantage || false) || this.hasActiveCondition(attacker.id, 'invisible') || targetCondAdv;
+        const targetProneDisadv = isRangedAttack && this.hasActiveCondition(target.id, 'prone');
+        const attackerHelped = attacker.conditions.some(c => c.startsWith("helped_by:"));
+        const effectiveDisadvantage = (payload.disadvantage || false) || targetIsDodging || attackerCondDisadv || rangedInMeleeDisadvantage || targetProneDisadv;
+        const effectiveAdvantage = (payload.advantage || false) || this.hasActiveCondition(attacker.id, 'invisible') || targetCondAdv || attackerHelped;
 
         // Use weapon-specific attack bonus if available
         const matchedWeapon = matchWeapon(attacker.weapons, payload.weaponName);
@@ -2247,8 +2274,41 @@ export class CombatEngineV2 {
             }));
 
             if (isHit && !isFumble) {
+                // Player spell attacks: prompt for damage roll (same as weapon attacks)
+                if (caster.type === 'player' && spell.damageFormula) {
+                    const damageFormula = isCrit
+                        ? this.doubleDiceFormula(spell.damageFormula)
+                        : spell.damageFormula;
+
+                    this.state.phase = 'AWAIT_DAMAGE_ROLL';
+                    this.state.pendingAttack = {
+                        attackerId: caster.id,
+                        targetId: pending.targetId,
+                        isCritical: isCrit,
+                        damageFormula,
+                        damageType: spell.damageType ?? 'force',
+                        isSpellAttack: true,
+                        spellName: spell.name,
+                        createdAt: Date.now(),
+                    };
+                    this.state.updatedAt = Date.now();
+
+                    activity.system(this.state.sessionId, `${caster.name} hit with ${spell.name}! Awaiting damage roll (${damageFormula})`);
+
+                    return {
+                        success: true,
+                        logs,
+                        newState: this.getState() as BattleState,
+                        awaitingDamageRoll: true,
+                    };
+                }
+                // Non-player or no damage formula: auto-resolve
                 logs.push(...this.applySpellEffect(caster, spell, pending.targetId, false));
             }
+
+            // Check for queued spell targets (multi-ray spells like Scorching Ray)
+            const nextTarget = this.advanceSpellTargetQueue(caster, logs);
+            if (nextTarget) return nextTarget;
 
             this.state.updatedAt = Date.now();
             const turnLogs = this.autoEndTurnIfExhausted(caster);
@@ -2340,6 +2400,14 @@ export class CombatEngineV2 {
             }
         }
 
+        // Validate action resource availability BEFORE resolving the attack
+        if (this.state.turnResources) {
+            const r = this.state.turnResources;
+            if (r.extraAttacksRemaining <= 0 && r.actionUsed) {
+                return this.actionError(`${attacker.name} has no attacks remaining this turn`);
+            }
+        }
+
         // Engine-level dodge check: if target has 'dodging' internal flag, force disadvantage
         const targetDodging = target.conditions?.some?.(
             (c: any) => (typeof c === 'string' ? c === 'dodging' : c.name === 'dodging')
@@ -2364,12 +2432,13 @@ export class CombatEngineV2 {
         const targetIncapacitated = targetStunned || targetParalyzed;
         const rangedInMeleeDisadvantage = isRangedAttack && this.getEngagedHostiles(attacker.id).length > 0;
 
+        const attackerHelped = attacker.conditions.some(c => c.startsWith("helped_by:"));
         const hasDisadvantage = (payload.disadvantage || false) || targetDodging
             || attackerBlinded || attackerPoisoned || attackerFrightened || attackerProne
             || rangedInMeleeDisadvantage
             || targetProneDisadv;
         const hasAdvantage = (payload.advantage || false) || attackerInvisible
-            || targetProneAdv || targetIncapacitated;
+            || targetProneAdv || targetIncapacitated || attackerHelped;
 
         // Auto-crit: attacks against stunned/paralyzed within 5ft (melee) always crit
         const forceAutoCrit = targetIncapacitated && !isRangedAttack;
@@ -2389,39 +2458,30 @@ export class CombatEngineV2 {
         let rollDescription: string;
 
         if (payload.attackRoll !== undefined) {
-            // Validate player's roll against formula
-            const validation = validateDiceRoll(payload.attackRoll, `${diceFormula}+${attacker.attackModifier}`);
-
-            // Note: validateDiceRoll checks the raw roll against formula min/max.
-            // But payload.attackRoll is the TOTAL. We need to be careful.
-            // Actually, the parser extracts "18" from "I got 18". This is the total.
-            // But the formula is 1d20+Mod.
-            // So we need to validate if 18 is possible given 1d20+Mod.
-
-            // Re-check semantics: validateDiceRoll takes (result, formula)
-            // If formula is "1d20+5", max is 25, min is 6.
-            // If user says "I got 30", validation fails.
-
-            if (!validation.valid) {
-                return {
-                    success: false,
-                    logs: [],
-                    newState: this.getState() as BattleState,
-                    error: `Invalid attack roll: ${payload.attackRoll} is not possible with ${diceFormula}+${attacker.attackModifier} (Range: ${validation.min}-${validation.max})`
-                };
-            }
-
-            // Player provided their roll (e.g., "I roll 20")
-            totalAttack = payload.attackRoll; // Already includes their modifier
             if (payload.rawD20 !== undefined) {
-                // Prefer the raw d20 for accurate crit/fumble detection
+                // Dice-roller path: resolveAttackRoll already computed the total using
+                // the weapon-specific modifier (which may differ from entity.attackModifier).
+                // Skip re-validation — the raw d20 was already validated as 1-20.
                 isCritical = payload.rawD20 === 20;
                 isFumble = payload.rawD20 === 1;
             } else {
-                // Legacy path: reverse-engineer from total (kept for chat fallback)
+                // Chat fallback: player typed a total (e.g. "I rolled 18").
+                // Validate the total is achievable with 1d20+modifier.
+                const validation = validateDiceRoll(payload.attackRoll, `${diceFormula}+${attacker.attackModifier}`);
+                if (!validation.valid) {
+                    return {
+                        success: false,
+                        logs: [],
+                        newState: this.getState() as BattleState,
+                        error: `Invalid attack roll: ${payload.attackRoll} is not possible with ${diceFormula}+${attacker.attackModifier} (Range: ${validation.min}-${validation.max})`
+                    };
+                }
+                // Legacy path: reverse-engineer crit/fumble from total
                 isCritical = payload.attackRoll >= 20 + attacker.attackModifier;
                 isFumble = payload.attackRoll <= 1 + attacker.attackModifier;
             }
+
+            totalAttack = payload.attackRoll; // Already includes modifier
             rollDescription = `(player rolled ${totalAttack})`;
             console.log(`[CombatEngine] Using player-provided roll: ${totalAttack}`);
         } else {
@@ -2496,6 +2556,9 @@ export class CombatEngineV2 {
             }
         }
 
+        // Consume Help advantage after attack (hit or miss)
+        attacker.conditions = attacker.conditions.filter(c => !c.startsWith("helped_by:"));
+
         // If miss, mark action used and check auto-end (no longer force-ends turn)
         if (!isHit) {
             this.state.updatedAt = Date.now();
@@ -2569,6 +2632,11 @@ export class CombatEngineV2 {
      * @param damageRoll - The player's rolled damage value
      */
     applyDamage(damageRoll: number): ActionResult {
+        // Handle save-based spell damage (Fireball, etc.)
+        if (this.state.phase === 'AWAIT_DAMAGE_ROLL' && this.state.pendingSpellDamage) {
+            return this.applySpellSaveDamage(damageRoll);
+        }
+
         if (this.state.phase !== 'AWAIT_DAMAGE_ROLL' || !this.state.pendingAttack) {
             return {
                 success: false,
@@ -2635,21 +2703,35 @@ export class CombatEngineV2 {
         this.pushHistory();
         const logs: CombatLogEntry[] = [];
 
-        logs.push(...this.applyWeaponDamage(
-            attacker,
-            target,
-            damageRoll,
-            pending.damageFormula,
-            pending.isCritical,
-            pending.isRanged ?? false,
-            pending.damageType
-        ));
-        this.clearSneakAttackModifier(attacker);
+        if (pending.isSpellAttack && pending.spellName) {
+            // Spell damage: apply with resistance/immunity/vulnerability checks
+            logs.push(...this.applySpellDamageFromRoll(
+                attacker, target, damageRoll, pending.spellName,
+                pending.damageType ?? 'force', pending.isCritical
+            ));
+        } else {
+            logs.push(...this.applyWeaponDamage(
+                attacker,
+                target,
+                damageRoll,
+                pending.damageFormula,
+                pending.isCritical,
+                pending.isRanged ?? false,
+                pending.damageType
+            ));
+            this.clearSneakAttackModifier(attacker);
+        }
 
         // Clear pending attack and resume normal phase
         this.state.pendingAttack = undefined;
         this.state.phase = 'ACTIVE';
         this.state.updatedAt = Date.now();
+
+        // Check for queued spell targets (multi-ray spells like Scorching Ray)
+        if (pending.isSpellAttack) {
+            const nextTarget = this.advanceSpellTargetQueue(attacker, logs);
+            if (nextTarget) return nextTarget;
+        }
 
         // Check if turn should auto-end
         const turnLogs = this.autoEndTurnIfExhausted(attacker);
@@ -2660,6 +2742,173 @@ export class CombatEngineV2 {
             logs,
             newState: this.getState() as BattleState,
         };
+    }
+
+    /**
+     * Resolve save-based spell damage after the player rolls their damage dice.
+     * Each target makes a save; damage is halved on success (if halfOnSave).
+     * Called from applyDamage when pendingSpellDamage is set.
+     */
+    private applySpellSaveDamage(damageRoll: number): ActionResult {
+        const pending = this.state.pendingSpellDamage!;
+        const caster = this.getEntity(pending.casterId);
+        if (!caster) return this.actionError('Caster no longer exists');
+
+        // Validate damage roll against formula
+        const validation = validateDiceRoll(damageRoll, pending.damageFormula);
+        if (!validation.valid) {
+            return {
+                success: false,
+                logs: [],
+                newState: this.getState() as BattleState,
+                error: `Invalid damage roll: ${damageRoll} is not possible with ${pending.damageFormula} (Range: ${validation.min}-${validation.max})`,
+            };
+        }
+
+        this.pushHistory();
+        const logs: CombatLogEntry[] = [];
+
+        // Include SPELL_CAST context so the narrator knows what spell was cast
+        logs.push(this.createLogEntry("SPELL_CAST", {
+            actorId: caster.id,
+            description: `${caster.name} casts ${pending.spellName}!`,
+        }));
+
+        // Separate enemy vs player targets
+        const enemyTargets = pending.targetIds.filter(id => {
+            const e = this.getEntity(id);
+            return e && e.type !== 'player';
+        });
+        const playerTargets = pending.targetIds.filter(id => {
+            const e = this.getEntity(id);
+            return e && e.type === 'player';
+        });
+
+        // Auto-resolve enemy saves with the player's rolled damage
+        for (const targetId of enemyTargets) {
+            const target = this.getEntity(targetId);
+            if (!target || target.status === 'DEAD') continue;
+
+            const saveMod = this.getAbilityMod(target, pending.savingThrow);
+            const saveRoll = this.rollFn("1d20");
+            const total = saveRoll.total + saveMod;
+            const saveSuccess = total >= pending.spellSaveDC;
+
+            logs.push(this.createLogEntry("ACTION", {
+                actorId: targetId,
+                description: `${target.name} rolls a ${pending.savingThrow} saving throw: ${saveRoll.total}+${saveMod}=${total} vs DC ${pending.spellSaveDC} — ${saveSuccess ? 'SUCCESS' : 'FAILURE'}!`,
+            }));
+
+            // Apply damage (halved on successful save)
+            let damage = damageRoll;
+            if (saveSuccess && pending.halfOnSave) {
+                damage = Math.floor(damage / 2);
+            }
+
+            // Check immunities/resistances
+            const hasImmunity = target.immunities.includes(pending.damageType);
+            const hasResistance = target.resistances.includes(pending.damageType);
+            if (hasImmunity) {
+                damage = 0;
+                logs.push(this.createLogEntry("CUSTOM", {
+                    targetId, description: `${target.name} is immune to ${pending.damageType} damage!`,
+                }));
+            } else {
+                if (target.vulnerabilities.includes(pending.damageType)) damage *= 2;
+                if (hasResistance) damage = Math.floor(damage / 2);
+            }
+
+            if (damage > 0) {
+                if (target.tempHp > 0) {
+                    const absorbed = Math.min(target.tempHp, damage);
+                    target.tempHp -= absorbed;
+                    damage -= absorbed;
+                }
+                target.hp = Math.max(0, target.hp - damage);
+
+                logs.push(this.createLogEntry("DAMAGE", {
+                    actorId: caster.id, targetId: target.id,
+                    amount: damage, damageType: pending.damageType,
+                    description: `${pending.spellName} deals ${damage} ${pending.damageType} damage to ${target.name}! (${target.hp}/${target.maxHp} HP)`,
+                }));
+                activity.damage(this.state.sessionId, `${pending.spellName} deals ${damage} ${pending.damageType} to ${target.name} (${target.hp}/${target.maxHp} HP)`);
+                logs.push(...this.checkConcentrationSave(target.id, damage));
+            }
+
+            // Check death
+            if (target.hp <= 0 && target.status === 'ALIVE') {
+                if (target.isEssential) {
+                    target.status = 'UNCONSCIOUS';
+                    logs.push(this.createLogEntry("UNCONSCIOUS", {
+                        targetId, description: `${target.name} falls unconscious!`,
+                    }));
+                } else {
+                    target.status = 'DEAD';
+                    logs.push(this.createLogEntry("DEATH", {
+                        targetId, description: `${target.name} is slain by ${pending.spellName}!`,
+                    }));
+                    activity.death(this.state.sessionId, `${target.name} is slain by ${pending.spellName}!`);
+                }
+            }
+
+            // Apply conditions on failed save
+            if (!saveSuccess && pending.conditions.length > 0) {
+                for (const cond of pending.conditions) {
+                    logs.push(this.applyCondition(targetId, {
+                        name: cond, sourceId: caster.id, duration: 1,
+                    }));
+                }
+            }
+        }
+
+        // Clear pending spell damage
+        this.state.pendingSpellDamage = undefined;
+
+        // If there are player targets, enter AWAIT_SAVE_ROLL for them
+        if (playerTargets.length > 0) {
+            this.state.pendingSpellSave = PendingSpellSaveSchema.parse({
+                casterId: caster.id,
+                spellName: pending.spellName,
+                spellSaveDC: pending.spellSaveDC,
+                saveStat: pending.savingThrow,
+                halfOnSave: pending.halfOnSave,
+                damageFormula: pending.damageFormula,
+                damageType: pending.damageType,
+                conditions: pending.conditions,
+                requiresConcentration: pending.requiresConcentration,
+                pendingTargetIds: playerTargets,
+            });
+            this.state.phase = 'AWAIT_SAVE_ROLL';
+            this.state.updatedAt = Date.now();
+
+            const firstTarget = this.getEntity(playerTargets[0]);
+            logs.push(this.createLogEntry("ACTION", {
+                description: `${firstTarget?.name ?? 'Player'} must make a DC ${pending.spellSaveDC} ${pending.savingThrow} saving throw!`,
+            }));
+
+            return {
+                success: true,
+                logs,
+                newState: this.getState() as BattleState,
+                awaitingSaveRoll: true,
+            };
+        }
+
+        // All resolved — back to ACTIVE
+        this.state.phase = 'ACTIVE';
+        this.state.updatedAt = Date.now();
+
+        // Check if combat ended (all enemies dead)
+        const aliveEnemies = this.state.entities.filter(e => e.type === 'enemy' && e.status === 'ALIVE');
+        if (aliveEnemies.length === 0) {
+            logs.push(...this.endCombat('All enemies defeated'));
+            return { success: true, logs, newState: this.getState() as BattleState };
+        }
+
+        const turnLogs = this.autoEndTurnIfExhausted(caster);
+        logs.push(...turnLogs);
+
+        return { success: true, logs, newState: this.getState() as BattleState };
     }
 
     /**
@@ -2822,6 +3071,7 @@ export class CombatEngineV2 {
             entity.hp = 1;
             entity.status = 'ALIVE';
             entity.deathSaves = { successes: 0, failures: 0 };
+            entity.isStabilized = false;
             logs.push(this.createLogEntry("CUSTOM", {
                 actorId: entityId,
                 description: `${entity.name} rolls a NATURAL 20 on their death save and regains consciousness with 1 HP!`,
@@ -2841,6 +3091,7 @@ export class CombatEngineV2 {
             if (entity.deathSaves.successes >= 3) {
                 // Stable — no more death saves needed (stays unconscious but won't die)
                 entity.deathSaves = { successes: 0, failures: 0 };
+                entity.isStabilized = true;
                 logs.push(this.createLogEntry("CUSTOM", {
                     actorId: entityId,
                     description: `${entity.name} stabilizes! They remain unconscious but are no longer in danger.`,
@@ -2956,6 +3207,7 @@ export class CombatEngineV2 {
         if (target.status === 'UNCONSCIOUS' && target.hp > 0 && target.isEssential) {
             target.status = 'ALIVE';
             target.deathSaves = { successes: 0, failures: 0 };
+            target.isStabilized = false;
             logs.push(this.createLogEntry("CUSTOM", {
                 targetId: target.id,
                 description: `${target.name} regains consciousness!`,
@@ -3197,9 +3449,10 @@ export class CombatEngineV2 {
             return this.actionError(`No ${cost} available for Lay on Hands`);
         }
 
-        // Heal min(pool, missing HP)
+        // Heal min(pool, missing HP, requested amount)
         const missingHp = target.maxHp - target.hp;
-        const healAmount = Math.min(pool, missingHp);
+        const requested = payload.amount ?? missingHp; // default: heal as much as possible
+        const healAmount = Math.min(pool, missingHp, requested);
 
         paladin.featureUses["Lay on Hands"] -= healAmount;
 
@@ -3460,6 +3713,7 @@ export class CombatEngineV2 {
         // Handle concentration: drop previous concentration, apply new
         if (spell.requiresConcentration) {
             if (this.hasActiveCondition(caster.id, 'concentrating')) {
+                logs.push(...this.dropConcentrationEffects(caster.id));
                 logs.push(this.removeCondition(caster.id, 'concentrating'));
             }
             logs.push(this.applyCondition(caster.id, {
@@ -3495,13 +3749,23 @@ export class CombatEngineV2 {
 
         // Attack-roll spells (Fire Bolt, Guiding Bolt, etc.) — resolve via attack roll vs AC
         if (spell.requiresAttackRoll) {
-            const attackBonus = caster.spellAttackBonus ?? caster.spellSaveDC ? (caster.spellSaveDC! - 8) : 0;
-            const targetId = targetIds[0];
-            const target = this.getEntity(targetId);
-            if (!target) return this.actionError('No target for spell attack');
+            const attackBonus = caster.spellAttackBonus ?? (caster.spellSaveDC ? (caster.spellSaveDC - 8) : 0);
 
             if (caster.type === 'player') {
-                // Player: pause for visual dice
+                // Player: pause for visual dice — process first target, queue remaining
+                const targetId = targetIds[0];
+                const target = this.getEntity(targetId);
+                if (!target) return this.actionError('No target for spell attack');
+
+                // Queue remaining targets for multi-ray spells (e.g., Scorching Ray)
+                if (targetIds.length > 1) {
+                    this.state.pendingSpellTargets = {
+                        spellName: spell.name,
+                        casterId: caster.id,
+                        remainingTargetIds: targetIds.slice(1),
+                    };
+                }
+
                 this.state.phase = 'AWAIT_ATTACK_ROLL';
                 this.state.pendingAttackRoll = {
                     attackerId: caster.id,
@@ -3527,29 +3791,34 @@ export class CombatEngineV2 {
                     awaitingAttackRoll: true,
                 };
             } else {
-                // Enemy: auto-resolve spell attack
-                const attackRoll = this.rollFn('1d20');
-                const total = attackRoll.total + attackBonus;
-                const targetAC = target.baseAC;
-                const isHit = total >= targetAC;
-                const isCrit = attackRoll.total === 20;
-                const isFumble = attackRoll.total === 1;
+                // Enemy: auto-resolve spell attack against ALL targets
+                for (const targetId of targetIds) {
+                    const target = this.getEntity(targetId);
+                    if (!target) continue;
 
-                logs.push(this.createLogEntry("ATTACK_ROLL", {
-                    actorId: caster.id,
-                    targetId: target.id,
-                    roll: {
-                        formula: `1d20+${attackBonus}`,
-                        result: total,
-                        isCritical: isCrit,
-                        isFumble,
-                    },
-                    success: isHit && !isFumble,
-                    description: `${caster.name} rolls spell attack: ${attackRoll.total}+${attackBonus}=${total} vs AC ${targetAC} — ${isHit ? (isCrit ? 'CRITICAL HIT!' : 'HIT!') : 'MISS!'}`,
-                }));
+                    const attackRoll = this.rollFn('1d20');
+                    const total = attackRoll.total + attackBonus;
+                    const targetAC = target.baseAC;
+                    const isHit = total >= targetAC;
+                    const isCrit = attackRoll.total === 20;
+                    const isFumble = attackRoll.total === 1;
 
-                if (isHit) {
-                    logs.push(...this.applySpellEffect(caster, spell, targetId, false));
+                    logs.push(this.createLogEntry("ATTACK_ROLL", {
+                        actorId: caster.id,
+                        targetId: target.id,
+                        roll: {
+                            formula: `1d20+${attackBonus}`,
+                            result: total,
+                            isCritical: isCrit,
+                            isFumble,
+                        },
+                        success: isHit && !isFumble,
+                        description: `${caster.name} rolls spell attack: ${attackRoll.total}+${attackBonus}=${total} vs AC ${targetAC} — ${isHit ? (isCrit ? 'CRITICAL HIT!' : 'HIT!') : 'MISS!'}`,
+                    }));
+
+                    if (isHit) {
+                        logs.push(...this.applySpellEffect(caster, spell, targetId, false));
+                    }
                 }
 
                 this.state.updatedAt = Date.now();
@@ -3571,6 +3840,7 @@ export class CombatEngineV2 {
                 if (target.status === 'UNCONSCIOUS' && target.hp > 0 && target.isEssential) {
                     target.status = 'ALIVE';
                     target.deathSaves = { successes: 0, failures: 0 };
+                    target.isStabilized = false;
                 }
                 logs.push(this.createLogEntry("HEALING", {
                     actorId: caster.id,
@@ -3598,9 +3868,40 @@ export class CombatEngineV2 {
         }
 
         // Saving throw required
-        // - Enemy targets: auto-resolve the save now
-        // - Player targets: enter AWAIT_SAVE_ROLL phase (one at a time)
+        const saveDC = caster.spellSaveDC ?? 13;
 
+        if (caster.type === 'player' && spell.damageFormula) {
+            // Player caster: pause for damage roll first, then resolve saves
+            this.state.phase = 'AWAIT_DAMAGE_ROLL';
+            this.state.pendingSpellDamage = PendingSpellDamageSchema.parse({
+                casterId: caster.id,
+                spellName: spell.name,
+                damageFormula: spell.damageFormula,
+                damageType: spell.damageType ?? 'force',
+                savingThrow: spell.savingThrow!,
+                spellSaveDC: saveDC,
+                halfOnSave: spell.halfOnSave,
+                conditions: spell.conditions,
+                requiresConcentration: spell.requiresConcentration,
+                targetIds,
+            });
+            this.state.updatedAt = Date.now();
+
+            const targetNames = targetIds.map(id => this.getEntity(id)?.name).filter(Boolean);
+            activity.system(
+                this.state.sessionId,
+                `${caster.name} casts ${spell.name}! Roll damage (${spell.damageFormula}) — targets must make DC ${saveDC} ${spell.savingThrow} saves`
+            );
+
+            return {
+                success: true,
+                logs,
+                newState: this.getState() as BattleState,
+                awaitingDamageRoll: true,
+            };
+        }
+
+        // Enemy caster or non-damage save spells: auto-resolve saves immediately
         const enemyTargets = targetIds.filter(id => {
             const e = this.getEntity(id);
             return e && e.type === 'enemy';
@@ -3609,8 +3910,6 @@ export class CombatEngineV2 {
             const e = this.getEntity(id);
             return e && e.type === 'player';
         });
-
-        const saveDC = caster.spellSaveDC ?? 13;
 
         // Auto-resolve enemy saves
         for (const targetId of enemyTargets) {
@@ -3641,6 +3940,7 @@ export class CombatEngineV2 {
                 damageFormula: spell.damageFormula,
                 damageType: spell.damageType,
                 conditions: spell.conditions,
+                requiresConcentration: spell.requiresConcentration,
                 pendingTargetIds: playerTargets,
             });
             this.state.phase = 'AWAIT_SAVE_ROLL';
@@ -3746,15 +4046,159 @@ export class CombatEngineV2 {
             // Only apply valid condition names (from ActiveConditionSchema)
             const validConditions = ['blinded','charmed','deafened','frightened','grappled','incapacitated','invisible','paralyzed','petrified','poisoned','prone','restrained','stunned','unconscious','concentrating'];
             if (validConditions.includes(condName) && !saveSuccess) {
+                // Concentration spells: condition lasts until concentration is broken
+                // (duration undefined = indefinite, removed by dropConcentrationEffects).
+                // Non-concentration: last 1 round (duration 2 survives the tick at
+                // the target's next turn start, then expires the turn after that).
+                const duration = spell.requiresConcentration ? undefined : 2;
                 logs.push(this.applyCondition(targetId, {
                     name: condName as ActiveCondition['name'],
                     sourceId: caster.id,
-                    duration: 1,
+                    duration,
                 }));
             }
         }
 
         return logs;
+    }
+
+    /**
+     * Apply spell damage from a player-provided roll (used after AWAIT_DAMAGE_ROLL for spell attacks).
+     * Like applySpellEffect but uses the provided damage total instead of auto-rolling.
+     */
+    private applySpellDamageFromRoll(
+        caster: CombatEntity, target: CombatEntity, rawDamage: number,
+        spellName: string, damageType: string, _isCritical: boolean
+    ): CombatLogEntry[] {
+        const logs: CombatLogEntry[] = [];
+        if (target.status === 'DEAD') return logs;
+
+        let damage = rawDamage;
+
+        const spellMods = target.activeModifiers ?? [];
+        const hasImmunity = target.immunities.includes(damageType) ||
+            spellMods.some(m => m.type === 'damage_immunity' && m.damageType === damageType);
+        const hasResistance = target.resistances.includes(damageType) ||
+            spellMods.some(m => m.type === 'damage_resistance' && m.damageType === damageType);
+
+        if (hasImmunity) {
+            damage = 0;
+            logs.push(this.createLogEntry("CUSTOM", {
+                targetId: target.id,
+                description: `${target.name} is immune to ${damageType} damage!`,
+            }));
+        } else {
+            if (target.vulnerabilities.includes(damageType)) damage *= 2;
+            if (hasResistance) damage = Math.floor(damage / 2);
+
+            if (target.tempHp > 0) {
+                const absorbed = Math.min(target.tempHp, damage);
+                target.tempHp -= absorbed;
+                damage -= absorbed;
+            }
+
+            target.hp = Math.max(0, target.hp - damage);
+
+            if (damage > 0) {
+                logs.push(this.createLogEntry("DAMAGE", {
+                    actorId: caster.id,
+                    targetId: target.id,
+                    amount: damage,
+                    damageType,
+                    description: `${spellName} deals ${damage} ${damageType} damage to ${target.name}! (${target.hp}/${target.maxHp} HP)`,
+                }));
+                activity.damage(this.state.sessionId, `${spellName} deals ${damage} ${damageType} to ${target.name} (${target.hp}/${target.maxHp} HP)`);
+
+                logs.push(...this.checkConcentrationSave(target.id, damage));
+            }
+
+            if (target.hp <= 0 && target.status === 'ALIVE') {
+                if (target.isEssential) {
+                    target.status = 'UNCONSCIOUS';
+                    logs.push(this.createLogEntry("UNCONSCIOUS", {
+                        targetId: target.id,
+                        description: `${target.name} falls unconscious!`,
+                    }));
+                } else {
+                    target.status = 'DEAD';
+                    activity.death(this.state.sessionId, `${target.name} is slain by ${spellName}!`);
+                    logs.push(this.createLogEntry("DEATH", {
+                        targetId: target.id,
+                        description: `${target.name} is slain by ${spellName}!`,
+                    }));
+                }
+            }
+        }
+
+        // Apply conditions from the spell
+        const spell = caster.spells.find(s => s.name === spellName);
+        if (spell) {
+            for (const condName of spell.conditions) {
+                const validConditions = ['blinded','charmed','deafened','frightened','grappled','incapacitated','invisible','paralyzed','petrified','poisoned','prone','restrained','stunned','unconscious','concentrating'];
+                if (validConditions.includes(condName)) {
+                    logs.push(this.applyCondition(target.id, {
+                        name: condName as ActiveCondition['name'],
+                        sourceId: caster.id,
+                        duration: 1,
+                    }));
+                }
+            }
+        }
+
+        return logs;
+    }
+
+    /**
+     * Check if there are queued spell targets remaining (multi-ray spells).
+     * If so, set up AWAIT_ATTACK_ROLL for the next target.
+     * Returns true if a next target was queued (caller should return early).
+     */
+    private advanceSpellTargetQueue(caster: CombatEntity, logs: CombatLogEntry[]): ActionResult | null {
+        const queue = this.state.pendingSpellTargets;
+        if (!queue || queue.remainingTargetIds.length === 0) {
+            this.state.pendingSpellTargets = undefined;
+            return null;
+        }
+
+        const nextTargetId = queue.remainingTargetIds[0];
+        queue.remainingTargetIds = queue.remainingTargetIds.slice(1);
+        if (queue.remainingTargetIds.length === 0) {
+            this.state.pendingSpellTargets = undefined;
+        }
+
+        const target = this.getEntity(nextTargetId);
+        if (!target || target.status === 'DEAD') {
+            // Target died or doesn't exist, try next
+            return this.advanceSpellTargetQueue(caster, logs);
+        }
+
+        const spell = caster.spells.find(s => s.name === queue.spellName);
+        const attackBonus = caster.spellAttackBonus ?? (caster.spellSaveDC ? (caster.spellSaveDC - 8) : 0);
+
+        this.state.phase = 'AWAIT_ATTACK_ROLL';
+        this.state.pendingAttackRoll = {
+            attackerId: caster.id,
+            targetId: target.id,
+            attackModifier: attackBonus,
+            advantage: false,
+            disadvantage: false,
+            isSpellAttack: true,
+            spellName: queue.spellName,
+            createdAt: Date.now(),
+        };
+        this.state.updatedAt = Date.now();
+
+        activity.system(
+            this.state.sessionId,
+            `${caster.name} targets ${target.name} with next ray! Awaiting spell attack roll (1d20+${attackBonus})`
+        );
+
+        return {
+            success: true,
+            logs,
+            newState: this.getState() as BattleState,
+            awaitingAttackRoll: true,
+        };
     }
 
     /**
@@ -3811,6 +4255,7 @@ export class CombatEngineV2 {
                 damageFormula: pending.damageFormula,
                 damageType: pending.damageType,
                 conditions: pending.conditions,
+                requiresConcentration: pending.requiresConcentration,
             });
             logs.push(...this.applySpellEffect(caster ?? { id: pending.casterId, name: 'spell' } as CombatEntity, spellForEffect, entityId, saveSuccess));
         }
@@ -3865,10 +4310,29 @@ export class CombatEngineV2 {
         }));
 
         if (!success) {
+            logs.push(...this.dropConcentrationEffects(entityId));
             logs.push(this.removeCondition(entityId, 'concentrating'));
             activity.system(this.state.sessionId, `${entity.name} loses concentration`);
         }
 
+        return logs;
+    }
+
+    /**
+     * Remove all active conditions on other entities that were applied by this
+     * caster's concentration spell (identified by sourceId === casterId).
+     * Called when concentration is dropped (new spell) or broken (failed save).
+     */
+    private dropConcentrationEffects(casterId: string): CombatLogEntry[] {
+        const logs: CombatLogEntry[] = [];
+        for (const entity of this.state.entities) {
+            const toRemove = entity.activeConditions.filter(
+                c => c.sourceId === casterId && c.name !== 'concentrating'
+            );
+            for (const cond of toRemove) {
+                logs.push(this.removeCondition(entity.id, cond.name));
+            }
+        }
         return logs;
     }
 

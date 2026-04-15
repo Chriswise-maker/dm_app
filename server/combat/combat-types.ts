@@ -218,6 +218,10 @@ export const CombatEntitySchema = z.object({
         failures: z.number().int().default(0),
     }).default({ successes: 0, failures: 0 }),
 
+    // Stabilized: true when an unconscious entity has 3 death save successes.
+    // Stabilized entities skip death saves but remain unconscious until healed.
+    isStabilized: z.boolean().default(false),
+
     // Damage resistances, immunities, and vulnerabilities
     // Each entry is a damage type string (e.g. "fire", "bludgeoning")
     resistances: z.array(z.string()).default([]),
@@ -657,6 +661,7 @@ export const LayOnHandsPayloadSchema = z.object({
     type: z.literal("LAY_ON_HANDS"),
     entityId: z.string(),    // The Paladin
     targetId: z.string(),    // Ally being healed
+    amount: z.number().int().positive().optional(), // HP to spend from pool (default: heal as much as possible)
     resourceCost: ResourceCostSchema.optional(),
 });
 export type LayOnHandsPayload = z.infer<typeof LayOnHandsPayloadSchema>;
@@ -715,11 +720,32 @@ export const PendingSpellSaveSchema = z.object({
     damageFormula: z.string().optional(),
     damageType: z.string().optional(),
     conditions: z.array(z.string()).default([]),
+    requiresConcentration: z.boolean().default(false),
     // Which player targets still need to roll (processed one at a time)
     pendingTargetIds: z.array(z.string()),
     createdAt: z.number().default(() => Date.now()),
 });
 export type PendingSpellSave = z.infer<typeof PendingSpellSaveSchema>;
+
+/**
+ * Pending Spell Damage — Stored when a PLAYER casts a save-based damage spell.
+ * The engine pauses at AWAIT_DAMAGE_ROLL so the player can roll their spell damage,
+ * then resolves saves and applies damage (full on fail, half on success).
+ */
+export const PendingSpellDamageSchema = z.object({
+    casterId: z.string(),
+    spellName: z.string(),
+    damageFormula: z.string(),
+    damageType: z.string(),
+    savingThrow: z.enum(['STR', 'DEX', 'CON', 'INT', 'WIS', 'CHA']),
+    spellSaveDC: z.number().int(),
+    halfOnSave: z.boolean().default(true),
+    conditions: z.array(z.string()).default([]),
+    requiresConcentration: z.boolean().default(false),
+    targetIds: z.array(z.string()),  // All targets (enemies + players)
+    createdAt: z.number().default(() => Date.now()),
+});
+export type PendingSpellDamage = z.infer<typeof PendingSpellDamageSchema>;
 
 /**
  * Union of all action payloads the engine accepts
@@ -781,6 +807,8 @@ export const PendingAttackSchema = z.object({
     weaponName: z.string().optional(),
     damageFormula: z.string(),      // Expected damage formula (e.g., "1d8+3")
     damageType: z.string().optional(), // e.g., "piercing", "slashing", "bludgeoning"
+    isSpellAttack: z.boolean().default(false), // True if this is a spell attack (for damage resolution)
+    spellName: z.string().optional(),          // Spell name (for narrator context and condition application)
     createdAt: z.number(),
 });
 export type PendingAttack = z.infer<typeof PendingAttackSchema>;
@@ -883,7 +911,9 @@ export type BattleState = {
     pendingInitiative?: PendingInitiative; // When waiting for player initiative rolls
     pendingAttackRoll?: PendingAttackRoll; // When waiting for player attack roll from visual dice
     pendingSpellSave?: PendingSpellSave;  // When waiting for player saving throw against a spell
+    pendingSpellDamage?: PendingSpellDamage; // When waiting for player to roll spell damage (save-based spells)
     pendingSmite?: PendingSmite;          // When waiting for Paladin's smite decision
+    pendingSpellTargets?: { spellName: string; casterId: string; remainingTargetIds: string[] }; // Queued targets for multi-ray spells
     history: BattleState[];
     settings: GameSettings;
     createdAt: number;
@@ -925,8 +955,18 @@ export const BattleStateSchema: z.ZodType<BattleState> = z.lazy(() => z.object({
     // Pending spell save (waiting for player's saving throw against a spell)
     pendingSpellSave: PendingSpellSaveSchema.optional(),
 
+    // Pending spell damage (waiting for player to roll spell damage for save-based spells)
+    pendingSpellDamage: PendingSpellDamageSchema.optional(),
+
     // Pending smite decision (Paladin choosing whether to smite after melee hit)
     pendingSmite: PendingSmiteSchema.optional(),
+
+    // Queued targets for multi-target spell attacks (e.g., Scorching Ray rays)
+    pendingSpellTargets: z.object({
+        spellName: z.string(),
+        casterId: z.string(),
+        remainingTargetIds: z.array(z.string()),
+    }).optional(),
 
     // History stack
     history: z.array(BattleStateSchema).default([]),

@@ -101,8 +101,8 @@ describe('Spell Attack Rolls', () => {
     });
 
     it('resolveAttackRoll with hit applies spell damage', () => {
-        // Dice: init player=15, init goblin=10, then spell damage=14
-        engine = new CombatEngineV2(1, undefined, makeDiceRollFn([15, 10, 14]));
+        // Dice: init player=15, init goblin=10
+        engine = new CombatEngineV2(1, undefined, makeDiceRollFn([15, 10]));
         engine.prepareCombat([player, enemy]);
 
         engine.submitAction({
@@ -116,10 +116,19 @@ describe('Spell Attack Rolls', () => {
         const result = engine.resolveAttackRoll(18);
 
         expect(result.success).toBe(true);
+        // Player spell attacks now enter AWAIT_DAMAGE_ROLL (prompts player for damage)
         const state = engine.getState();
-        expect(state.phase).not.toBe('AWAIT_ATTACK_ROLL');
+        expect(state.phase).toBe('AWAIT_DAMAGE_ROLL');
+        expect(result.awaitingDamageRoll).toBe(true);
+        expect(state.pendingAttack?.isSpellAttack).toBe(true);
+        expect(state.pendingAttack?.spellName).toBe('Fire Bolt');
+
+        // Submit player's damage roll
+        const damageResult = engine.applyDamage(5);
+        expect(damageResult.success).toBe(true);
+
         // Goblin should have taken damage
-        const goblin = state.entities.find(e => e.id === 'goblin-1')!;
+        const goblin = engine.getState().entities.find(e => e.id === 'goblin-1')!;
         expect(goblin.hp).toBeLessThan(7);
     });
 

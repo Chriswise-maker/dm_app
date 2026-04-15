@@ -180,16 +180,18 @@ function buildActionParserPrompt(
     prompt += `8. advantage/disadvantage: true if explicitly stated.\n`;
     prompt += `9. confidence: How confident are you (0.0 to 1.0)?\n`;
     prompt += `10. spellName: If casting a spell, the exact spell name.\n`;
-    prompt += `11. targetNames: Array of target names if multiple targets (area spells).\n`;
+    prompt += `11. targetNames: Array of target names if multiple targets (e.g. Scorching Ray split across enemies, area spells).\n`;
     prompt += `12. moveDirection: For MOVE, use "toward" or "away".\n\n`;
 
     prompt += `Return ONLY valid JSON:\n`;
     prompt += `{"actionType": "ATTACK", "targetName": "Goblin", "attackRoll": 20, "weaponName": "longsword", "confidence": 0.9}\n`;
     prompt += `{"actionType": "MOVE", "targetName": "Goblin", "moveDirection": "toward", "confidence": 0.9}\n`;
+    prompt += `{"actionType": "MOVE", "moveDirection": "away", "confidence": 0.85}\n`;
     prompt += `{"actionType": "DODGE", "confidence": 0.95}\n`;
     prompt += `{"actionType": "HELP", "allyName": "Thorin", "targetName": "Goblin", "confidence": 0.85}\n`;
     prompt += `{"actionType": "USE_ITEM", "itemName": "healing potion", "targetName": "Elara", "confidence": 0.9}\n`;
     prompt += `{"actionType": "CAST_SPELL", "spellName": "Fireball", "confidence": 0.9}\n`;
+    prompt += `{"actionType": "CAST_SPELL", "spellName": "Scorching Ray", "targetNames": ["Goblin Alpha", "Goblin Beta"], "confidence": 0.9}\n`;
     prompt += `{"actionType": "END_TURN", "confidence": 0.95}\n`;
 
     return prompt;
@@ -489,6 +491,16 @@ export async function parsePlayerAction(
             target = matchTargetToEntity(llmResult.targetName, candidates);
         } else if (candidates.length === 1) {
             target = candidates[0];
+        } else if (candidates.length > 1) {
+            // No target specified — pick the closest hostile as a default reference.
+            // Prefer enemies at MELEE range, then NEAR, then FAR.
+            const hostiles = candidates.filter(e => e.type !== currentEntity.type);
+            const rangePriority: Record<string, number> = { MELEE: 0, NEAR: 1, FAR: 2 };
+            target = hostiles.sort((a, b) => {
+                const ra = currentEntity.rangeTo?.[a.id] ?? 'FAR';
+                const rb = currentEntity.rangeTo?.[b.id] ?? 'FAR';
+                return (rangePriority[ra] ?? 3) - (rangePriority[rb] ?? 3);
+            })[0] ?? candidates[0];
         }
 
         if (target) {
@@ -631,6 +643,8 @@ export async function parsePlayerAction(
         // Check if the current entity has this spell (with fuzzy matching)
         const spell = findSpellFuzzy(currentEntity.spells ?? [], spellName);
         if (!spell) {
+            const knownSpells = (currentEntity.spells ?? []).map(s => s.name).join(', ') || 'none';
+            console.warn(`[PlayerActionParser] Spell "${spellName}" not found on ${currentEntity.name}. Known spells: ${knownSpells}`);
             return {
                 action: { type: 'END_TURN', entityId: currentEntity.id },
                 flavorText: playerMessage,
@@ -660,16 +674,21 @@ export async function parsePlayerAction(
             }
         } else {
             // Damage/effect spells
-            if (llmResult.targetName) {
-                const enemies = state.entities.filter(
-                    (e: CombatEntity) => e.type === 'enemy' && e.status === 'ALIVE'
-                );
+            const enemies = state.entities.filter(
+                (e: CombatEntity) => e.type === 'enemy' && e.status === 'ALIVE'
+            );
+            if (llmResult.targetNames && llmResult.targetNames.length > 0) {
+                // Multi-target: resolve each name (e.g. Scorching Ray split across targets)
+                for (const name of llmResult.targetNames) {
+                    const target = matchTargetToEntity(name, enemies);
+                    if (target) targetIds.push(target.id);
+                }
+            } else if (llmResult.targetName) {
                 const target = matchTargetToEntity(llmResult.targetName, enemies);
                 if (target) targetIds = [target.id];
-            } else if (state.entities.filter((e: CombatEntity) => e.type === 'enemy' && e.status === 'ALIVE').length === 1) {
+            } else if (enemies.length === 1) {
                 // Auto-target single enemy
-                const enemy = state.entities.find((e: CombatEntity) => e.type === 'enemy' && e.status === 'ALIVE');
-                if (enemy) targetIds = [enemy.id];
+                targetIds = [enemies[0].id];
             }
         }
 

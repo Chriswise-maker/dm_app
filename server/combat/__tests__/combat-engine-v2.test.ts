@@ -1627,7 +1627,7 @@ describe("CombatEngineV2", () => {
             const goblin2 = createEnemyEntity('g2', 'Goblin 2', 50, 12, 4, '1d6+2');
             engine.prepareCombat([wizard, goblin1, goblin2]);
 
-            // For Fireball, auto-target all enemies
+            // Player casts Fireball → pauses for damage roll
             const result = engine.submitAction({
                 type: 'CAST_SPELL',
                 casterId: 'wizard-1',
@@ -1636,8 +1636,14 @@ describe("CombatEngineV2", () => {
             });
 
             expect(result.success).toBe(true);
+            expect(engine.getState().phase).toBe('AWAIT_DAMAGE_ROLL');
+
+            // Player rolls 8d6 = 20 damage
+            const dmgResult = engine.applyDamage(20);
+            expect(dmgResult.success).toBe(true);
+
             // save roll = 20 (success) → half damage = 10 each. Both goblins at 50 HP → 40 HP.
-            const s = result.newState;
+            const s = engine.getState();
             const g1 = s.entities.find(e => e.id === 'g1')!;
             const g2 = s.entities.find(e => e.id === 'g2')!;
             expect(g1.hp).toBeLessThan(50);
@@ -1645,7 +1651,7 @@ describe("CombatEngineV2", () => {
         });
 
         it("should halve damage on successful saving throw", () => {
-            // save roll = 25 (success), damage roll = 20
+            // save roll = 25 (success)
             const mockRoll = vi.fn().mockImplementation((formula: string) => {
                 if (formula === '1d20') return { total: 25, rolls: [25], isCritical: false, isFumble: false };
                 return { total: 20, rolls: [20], isCritical: false, isFumble: false };
@@ -1655,6 +1661,7 @@ describe("CombatEngineV2", () => {
             const goblin = createTestGoblin({ id: 'goblin-1', hp: 100, maxHp: 100 });
             engine.prepareCombat([wizard, goblin]);
 
+            // Player casts Fireball → pauses for damage roll
             const result = engine.submitAction({
                 type: 'CAST_SPELL',
                 casterId: 'wizard-1',
@@ -1663,7 +1670,12 @@ describe("CombatEngineV2", () => {
             });
 
             expect(result.success).toBe(true);
-            const goblinAfter = result.newState.entities.find(e => e.id === 'goblin-1')!;
+            expect(engine.getState().phase).toBe('AWAIT_DAMAGE_ROLL');
+
+            // Player rolls damage = 20
+            engine.applyDamage(20);
+
+            const goblinAfter = engine.getState().entities.find(e => e.id === 'goblin-1')!;
             // save success with halfOnSave: 100 - floor(20/2) = 100 - 10 = 90
             expect(goblinAfter.hp).toBe(90);
         });
