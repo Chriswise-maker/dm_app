@@ -14,6 +14,8 @@ import type { CombatLogEntry, CombatEntity } from './combat-types';
 export interface CombatNarrativeContext {
     /** Weapon name override for enemy attacks (from AI controller's parsed action) */
     weaponName?: string;
+    /** Spell name — set when the action is a spell attack (overrides weapon fallback) */
+    spellName?: string;
     /** Tactical role of the acting entity (for enemy narration flavor) */
     tacticalRole?: string;
     /** True when the player still has resources (bonus action, etc.) after their action */
@@ -68,10 +70,12 @@ export async function computeCombatNarrativePrompts(
     const attackLog = logs.find(l => l.type === 'ATTACK_ROLL');
 
     const contextLines: string[] = [];
-    if (spellCastLog) {
-        // Spell action: extract spell name from log description ("X casts Fire Bolt!")
-        const spellMatch = spellCastLog.description?.match(/casts (.+?)!?$/);
-        const spellName = spellMatch?.[1] || 'a spell';
+    // Detect spell actions: check logs first, then fall back to narrative context
+    // (damage rolls don't re-emit SPELL_CAST logs, so spellName from context is needed)
+    const isSpellAction = !!spellCastLog || !!narrativeContext?.spellName;
+    if (isSpellAction) {
+        const spellMatch = spellCastLog?.description?.match(/casts (.+?)!?$/);
+        const spellName = spellMatch?.[1] || narrativeContext?.spellName || 'a spell';
         const dt = damageLog?.damageType || 'magical';
         contextLines.push(`SPELL: ${spellName} (${dt} damage)`);
     } else if (actingEntity?.damageFormula) {
@@ -118,6 +122,7 @@ CRITICAL: Write a 2-3 sentence narrative from the PLAYER'S perspective:
 - The ENEMY (${actorName}) is described in THIRD PERSON: "it attacks", "the creature lunges", "${actorName} strikes"
 - The PLAYER is always "you": "you dodge", "you take damage", "your guard"
 - NEVER say "you attack" or "you launch" when describing what the enemy does
+- NEVER state specific HP numbers. Describe condition narratively instead ("you stagger", "barely a scratch", "grievously wounded").
 - ${endingInstruction}`;
     } else {
         prompt = `You are the Dungeon Master narrating combat directly to the player.
@@ -135,6 +140,7 @@ Write a vivid, immersive 2-3 sentence narrative of what just happened.
 - Include the player's flavor where it fits naturally
 - ENTITY DETAILS tells you what was used. If it says SPELL, narrate the spell being cast (e.g. a bolt of fire streaks from your hand, a beam of energy lances out). If it says WEAPON, narrate a physical attack (e.g. your blade slashes, your arrow flies). NEVER describe a spell as a weapon strike or vice versa.
 - Scale the narrative intensity to the damage: a low roll barely grazes, a high roll strikes true, a critical hit is devastating
+- NEVER state specific HP numbers. Describe condition narratively instead ("you feel the sting", "barely a scratch", "a devastating blow").
 - ${endingInstruction}`;
     }
 
@@ -342,8 +348,13 @@ function formatLogEntry(log: CombatLogEntry, resolveName: (id: string | undefine
             const isCrit = log.roll?.isCritical;
             const hitStatus = log.success ? 'HIT' : 'MISS';
             return `Attack roll: ${rollVal} (${hitStatus}${isCrit ? ' - CRITICAL!' : ''})`;
-        case 'DAMAGE':
-            return `Damage: ${log.amount} ${log.damageType || ''} to ${resolveName(log.targetId)}`;
+        case 'DAMAGE': {
+            // Include HP status so the LLM doesn't confuse damage amount with remaining HP.
+            // Engine uses "(16/28 HP remaining)" — regex must allow " remaining" before ")".
+            const hpMatch = log.description?.match(/\((\d+)\/(\d+)\s*HP(?: remaining)?\)/);
+            const hpStatus = hpMatch ? ` (${hpMatch[1]}/${hpMatch[2]} HP)` : '';
+            return `Damage: ${log.amount} ${log.damageType || ''} to ${resolveName(log.targetId)}${hpStatus}`;
+        }
         case 'HEALING':
             return `Healed: ${log.amount} hp to ${resolveName(log.targetId)}`;
         case 'DEATH':

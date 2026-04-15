@@ -188,7 +188,8 @@ const DEFAULT_COMBAT_NARRATIVE_PROMPT = `You are the CHAOS WEAVER, a D&D 5e comb
 
 **FORMAT:**
 - 2-3 sentences maximum
-- Include the mechanical result naturally (damage amount, remaining HP)
+- Include damage amounts naturally when relevant
+- NEVER state specific HP numbers (e.g. "you're at 16 HP", "down to 38 HP"). Instead describe the character's condition narratively: "looking battered", "barely standing", "still going strong". The sidebar shows exact HP — your job is immersion, not bookkeeping.
 - End with whose turn is next, or if combat ended`;
 
 /**
