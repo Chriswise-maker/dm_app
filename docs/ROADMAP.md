@@ -1,6 +1,6 @@
 # D&D AI DM App — Roadmap
 
-> **Last updated:** 2026-04-03
+> **Last updated:** 2026-04-10
 > **Direction:** 2014 5e, theater-of-mind first, SRD + homebrew, LLM narrates / engine decides
 > **Archived docs:** [`docs/archive/`](archive/) — all prior plans and phase docs preserved there
 
@@ -92,7 +92,7 @@ Three phases, each one making the game noticeably better. Each phase is playable
 
 ---
 
-### 🚧 Phase C: Polish, Speed & Feature Depth — CURRENT PHASE
+### ✅ Phase C: Polish, Speed & Feature Depth — NEARLY COMPLETE
 
 **Goal:** Make it feel good, run fast, and support the class features that make D&D characters distinctive.
 
@@ -101,48 +101,82 @@ Three phases, each one making the game noticeably better. Each phase is playable
 #### ✅ C0. Real D&D combat foundation — COMPLETE (~2026-04-03)
 Characters now enter combat with real spells, real weapons, correct proficiencies, and class awareness. SRD-driven `buildActorSheet()` wired into both creation endpoints. DM sees character class, spell list, and weapon list in battlefield context. Save proficiencies, proficiency bonus, and spellcasting ability all use real data.
 
-#### C1. Tiered models for speed
-Use fast/cheap models for structured combat tasks, reserve the main model for storytelling.
+#### ✅ C1. Tiered models for speed — COMPLETE
+Fast/cheap models now handle structured combat tasks; main model reserved for storytelling. `fastModel` column in user settings with per-provider defaults (gpt-4o-mini, claude-haiku-4-5, gemini-2.0-flash-lite). `invokeFastLLMWithSettings()` + streaming variant in `llm-with-settings.ts`. Tests in `llm-fast-routing.test.ts`.
 
-| LLM call | Current | Better fit |
-|----------|---------|------------|
-| Enemy AI decisions | Main model (~3s) | Fast model (~0.4s) |
-| Combat narration | Main model (~3s) | Fast model (~0.7s) |
-| Player action parsing | Main model (~2s) | Fast model (~0.3s) |
-| DM chat/roleplay | Main model | Keep main model |
+| LLM call | Model used | Key file |
+|----------|-----------|----------|
+| Enemy AI decisions | Fast model | `enemy-ai-controller.ts` |
+| Combat narration | Fast model (streaming) | `combat-narrator.ts` |
+| Player action parsing | Fast model | `player-action-parser.ts` |
+| DM chat/roleplay | Main model | `message-send.ts` |
 
-Impact: 3-enemy combat round drops from ~12-24s of LLM time to ~3-5s.
+#### ✅ C2. PC class features — MOSTLY COMPLETE
+10 class features implemented in the combat engine with full test coverage:
 
-#### C2. PC class features
-With the kernel in place, add the features that make characters feel unique:
+| Feature | Class | Mechanism | Tests |
+|---------|-------|-----------|-------|
+| Second Wind | Fighter | Bonus action, 1d10+level heal, `featureUses` tracking | `class-features.test.ts` |
+| Action Surge | Fighter | Free action, grants extra action | `class-features.test.ts` |
+| Cunning Action | Rogue | Dash/Disengage/Hide as bonus actions | `class-features.test.ts` |
+| Sneak Attack | Rogue | Auto-apply on finesse/ranged + advantage/ally, ceil(level/2)d6 | `tier3-features.test.ts` |
+| Divine Smite | Paladin | Post-hit `AWAIT_SMITE_DECISION` phase, slot consumption | `tier3-features.test.ts` |
+| Rage | Barbarian | Condition-based: resistance, advantage on STR, +2 damage | `tier4-rage.test.ts` |
+| Bardic Inspiration | Bard | Bonus action grant to ally, scaling die (d6→d12) | `tier5-features.test.ts` |
+| Lay on Hands | Paladin | Action, pool-based healing, no overheal | `tier5-features.test.ts` |
+| Extra Attack | Fighter/etc. | `extraAttacks` field, multi-attack per turn | combat engine |
+| Unarmored Defense | Barbarian/Monk | AC = 10 + DEX + CON/WIS at build time | `character-builder.ts` |
 
-- **Martial:** Extra Attack, Action Surge, Sneak Attack, Rage, Unarmored Defense
-- **Caster:** Divine Smite, Channel Divinity, Wild Shape, Metamagic
-- **Universal:** Bardic Inspiration, Shield/Counterspell (reactions), Second Wind, Lay on Hands
+**Not yet implemented:** Channel Divinity, Wild Shape, Metamagic, Shield/Counterspell (reactions). These require a general reaction-spell system that doesn't exist yet.
 
-Each as an `EffectDefinition` in the kernel — not hardcoded in the combat engine.
+#### ✅ C3. Combat sidebar & UI polish — COMPLETE
+All items implemented in `CombatSidebar.tsx` and supporting components:
 
-#### C3. Combat sidebar & UI polish
-- HP bars with gradient styling and animations
-- Turn indicator animations
-- Confirm dialog before ending combat
-- Responsive/mobile-friendly layout
-- Character sheet panel (expandable, shows full `ActorSheet` data)
-- Spell list reference during combat
+- ✅ HP bars with dynamic HSL gradient (green→yellow→red) + `transition-all duration-500` animation
+- ✅ Turn indicator with brass gradient border, ring highlight, "Acting Now" label, pulse animation
+- ✅ `AlertDialog` confirm before ending combat
+- ✅ Responsive layout with `useMobile` hook (768px breakpoint), collapsible sidebar
+- ✅ Expandable character panel with ability scores, weapons, spells via `Collapsible` component
+- ✅ Spell list reference with slot tracking (●/○ indicators), concentration markers, save DC display
 
-#### C4. Smarter enemy tactics
-With spatial data and the kernel providing reliable state:
-- Enemies use positioning (ranged enemies stay at distance, melee close in)
-- Enemies target based on threat assessment + spatial opportunity
-- Enemies use terrain/cover when available
-- Boss monsters use legendary actions and lair actions
+#### ✅ C4. Smarter enemy tactics — MOSTLY COMPLETE
+Tactical AI with two-layer system (pre-scoring + LLM refinement):
 
-#### C5. Out-of-combat systems (on the kernel)
-- Skill challenges (multi-check structured encounters)
-- Travel and exploration mechanics
-- Social encounter framework
-- Downtime and crafting (basic)
-- Shopping with SRD equipment data
+- ✅ Spatial positioning — ranged enemies flee melee (+WARNING prompt), melee close in; `scoreAction()` awards up to +25 for tactical movement
+- ✅ Threat-based targeting — `scoreThreat()` scores low HP (0-50), concentration (+30), damage output (2x); multi-enemy penalty (-15) prevents pile-on
+- ✅ Concentration breaking — casters with active concentration are high-priority targets
+- ✅ Multiattack loop — up to 4 extra attacks per turn, skips LLM for speed
+- ✅ Opportunity attack awareness — `DISENGAGE` prevents OA; melee enemies stay engaged
+- ❌ Terrain/cover — no environmental obstacles modeled (range bands are abstract)
+- ❌ Legendary/lair actions — no boss-specific mechanics (infrastructure exists: `tacticalRole` enum)
+
+#### ✅ C5. Out-of-combat systems — MOSTLY COMPLETE
+All four major systems implemented with tRPC endpoints and test suites:
+
+| System | Key file | What it does |
+|--------|----------|-------------|
+| Skill challenges | `server/skill-challenge.ts` | Multi-check encounters with success/failure thresholds, allowed skills |
+| Travel & exploration | `server/travel.ts` | Pace-based travel (fast/normal/slow), random encounter checks at intervals |
+| Social encounters | `server/social-encounter.ts` | NPC disposition model (hostile↔neutral↔friendly), nat 20/1 shifts |
+| Shopping | `server/shopping.ts` | Buy/sell SRD equipment, gold cost conversion, 50% sell-back value |
+
+**Not yet implemented:** Crafting/downtime activities, frontend UI for these systems (backend-only via tRPC endpoints currently).
+
+---
+
+### Remaining Work
+
+What's left across all of Phase C:
+
+| Item | Category | Effort |
+|------|----------|--------|
+| Reaction spell system (Shield, Counterspell) | C2 | Medium — needs "interrupt turn" mechanic |
+| Channel Divinity, Wild Shape, Metamagic | C2 | Medium-Large — each is a unique subsystem |
+| Terrain/cover system | C4 | Medium — extend range band model |
+| Legendary/lair actions for bosses | C4 | Medium — needs turn-order interleaving |
+| Crafting & downtime activities | C5 | Small-Medium |
+| Frontend UI for out-of-combat systems | C5 | Medium — skill challenges, travel, social, shopping need components |
+| Spell attack bonus operator precedence bug | Bug | Small — lines 3758, 4175 of `combat-engine-v2.ts` need parenthesization |
 
 ---
 

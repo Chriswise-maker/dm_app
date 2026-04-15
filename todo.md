@@ -14,7 +14,7 @@
 - [x] Streaming DM responses
 - [x] Automatic campaign summarization (every 20 messages)
 - [x] HP update functionality
-- [ ] Model selection support (Claude/GPT switching) - optional enhancement
+- [x] Model selection support (Claude/GPT switching) - provider + model dropdowns in SettingsDialog, fast model override for combat
 
 ## Frontend Features
 - [x] Session Manager component (create/switch sessions)
@@ -31,8 +31,8 @@
 
 ## API Integration
 - [x] LLM integration using built-in Manus API (no user API key needed)
-- [ ] Model selection dropdown - optional enhancement
-- [ ] LLM provider switching (Claude/GPT) - optional enhancement
+- [x] Model selection dropdown - implemented in SettingsDialog
+- [x] LLM provider switching (Claude/GPT) - OpenAI, Anthropic, Google all supported
 
 ## Testing & Polish
 - [x] Test session creation and switching
@@ -45,8 +45,8 @@
 
 ## Optional Enhancements (Not Required)
 - [ ] Export/Import campaign data
-- [ ] Combat mode with initiative tracking
-- [ ] Custom model selection UI
+- [x] Combat mode with initiative tracking - full combat engine with 6-stage rework, initiative, turn order, action economy
+- [x] Custom model selection UI - provider/model dropdowns in Settings
 - [ ] Voice input for messages
 - [ ] Image generation for scenes
 
@@ -112,7 +112,7 @@
 - [x] Update LLM integration to use smart context (last 10 messages + summary)
 - [x] Reduce token usage by not sending full message history
 - [x] Add extensible fields for future additions (relationships, factions, etc.)
-- [ ] Create context viewer UI (optional, for debugging)
+- [x] Create context viewer UI - ContextViewer.tsx with Activity, Game State, LLM Context tabs + auto-refresh
 
 ## Future Context Extensions (Prepared Schema)
 - [ ] Character relationships and affinity scores
