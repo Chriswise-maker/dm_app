@@ -85,7 +85,7 @@ export function DiceRoller({ pendingRoll, sessionId, onRollComplete }: DiceRolle
     setAnimState('idle');
     setFinalResult(null);
     setDisplayRolls(Array(dieCount).fill(1));
-  }, [pendingRoll.type, pendingRoll.formula, dieCount, pendingRoll.entityId]);
+  }, [pendingRoll.type, pendingRoll.formula, dieCount, pendingRoll.entityId, pendingRoll.targetName]);
 
   const handleRoll = () => {
     if (animState !== 'idle') return;
