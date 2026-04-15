@@ -1,0 +1,64 @@
+{
+  "name": "Three enemies — entity count + initiative stress",
+  "description": "Triggers a crowded fight (3+ hostiles). Expect entityCount reflects party + many foes. Run with DICE_SEED for deterministic enemy behavior. sessionId 25 / Silas 26 — adjust to your DB.",
+  "sessionId": 25,
+  "characterId": 26,
+  "steps": [
+    {
+      "message": "Three bandits emerge from the pillars with blades raised — I ready my staff and fight!",
+      "expect": {
+        "minLength": 40,
+        "combatTriggered": true,
+        "notContains": ["error", "undefined"]
+      },
+      "expectCombat": {
+        "entityCount": { "min": 3 }
+      },
+      "settleTimeoutMs": 12000
+    },
+    {
+      "message": "17",
+      "delayMs": 1200
+    },
+    {
+      "message": "11",
+      "delayMs": 600,
+      "expectCombat": {
+        "phase": "ACTIVE",
+        "round": 1
+      },
+      "settleTimeoutMs": 12000
+    },
+    {
+      "message": "I cast Fire Bolt at the one who flanked!",
+      "delayMs": 4000,
+      "expect": {
+        "notContains": ["error", "undefined", "don't see"]
+      },
+      "rolls": [
+        { "rollType": "attack", "rawDieValue": 16 },
+        { "rollType": "damage", "rawDieValue": 9 }
+      ],
+      "expectCombat": {
+        "phase": "ACTIVE",
+        "entityCount": { "min": 3 }
+      },
+      "settleTimeoutMs": 15000
+    },
+    {
+      "message": "I end my turn.",
+      "delayMs": 2500,
+      "expect": {
+        "minLength": 8,
+        "notContains": ["error", "undefined"]
+      },
+      "expectCombat": {
+        "hp": {
+          "Silas Gravemourn": { "min": 0, "max": 28 },
+          "Mira Ashenthorn": { "min": 0, "max": 11 }
+        }
+      },
+      "settleTimeoutMs": 25000
+    }
+  ]
+}

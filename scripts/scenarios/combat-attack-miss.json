@@ -1,0 +1,54 @@
+{
+  "name": "Attack miss — no damage roll after whiff",
+  "description": "Forces a low attack roll so the engine should not advance to damage roll. Complements combat-multi-exchange (miss in round 2). Verify phase/navigation stays sane.",
+  "sessionId": 25,
+  "characterId": 26,
+  "steps": [
+    {
+      "message": "A lone wolf stalks from the brush — I raise my staff to fight!",
+      "expect": {
+        "minLength": 20,
+        "combatTriggered": true,
+        "notContains": ["error", "undefined"]
+      },
+      "expectCombat": {
+        "entityCount": { "min": 2 }
+      },
+      "settleTimeoutMs": 8000
+    },
+    {
+      "message": "14",
+      "delayMs": 1000
+    },
+    {
+      "message": "12",
+      "delayMs": 500,
+      "expectCombat": {
+        "phase": "ACTIVE",
+        "round": 1
+      },
+      "settleTimeoutMs": 10000
+    },
+    {
+      "message": "I swing my quarterstaff wildly at the beast—I'm nervous!",
+      "delayMs": 3000,
+      "expect": {
+        "notContains": ["error", "undefined"]
+      },
+      "rolls": [{ "rollType": "attack", "rawDieValue": 3 }],
+      "expectCombat": {
+        "phase": "ACTIVE"
+      },
+      "settleTimeoutMs": 12000
+    },
+    {
+      "message": "I end my turn.",
+      "delayMs": 2000,
+      "expect": {
+        "minLength": 10,
+        "notContains": ["error", "undefined"]
+      },
+      "settleTimeoutMs": 18000
+    }
+  ]
+}

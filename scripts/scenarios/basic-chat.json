@@ -1,7 +1,7 @@
 {
   "name": "Basic chat and combat trigger",
-  "sessionId": 1,
-  "characterId": 1,
+  "sessionId": 25,
+  "characterId": 26,
   "steps": [
     {
       "message": "I look around the tavern. What do I see?",

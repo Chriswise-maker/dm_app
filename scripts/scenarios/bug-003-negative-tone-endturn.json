@@ -1,0 +1,59 @@
+{
+  "name": "BUG-003 regression: negative tone on END_TURN after crit",
+  "description": "Cast Fire Bolt, roll nat 20 (crit!), deal big damage, end turn. Narrator should sound triumphant, not despairing. The turn-log context (SPELL_CAST + ATTACK_ROLL + DAMAGE with CRITICAL) must reach the narrator.",
+  "sessionId": 25,
+  "characterId": 26,
+  "steps": [
+    {
+      "message": "Bandits ambush us from behind the wall — I draw my weapon and fight back!",
+      "expect": {
+        "minLength": 20,
+        "combatTriggered": true
+      },
+      "expectCombat": {
+        "entityCount": { "min": 2 }
+      },
+      "settleTimeoutMs": 8000
+    },
+    {
+      "message": "17",
+      "delayMs": 1000
+    },
+    {
+      "message": "9",
+      "delayMs": 500,
+      "expectCombat": {
+        "phase": "ACTIVE",
+        "round": 1
+      },
+      "settleTimeoutMs": 10000
+    },
+    {
+      "message": "I cast Fire Bolt at the nearest bandit!",
+      "delayMs": 3000,
+      "expect": {
+        "notContains": ["error", "undefined"]
+      },
+      "rolls": [
+        { "rollType": "attack", "rawDieValue": 20 },
+        { "rollType": "damage", "rawDieValue": 18 }
+      ],
+      "settleTimeoutMs": 10000
+    },
+    {
+      "message": "I'm done for this turn.",
+      "delayMs": 3000,
+      "expect": {
+        "minLength": 10,
+        "notContains": ["despair", "exhaustion", "error", "undefined"]
+      },
+      "expectCombat": {
+        "hp": {
+          "Silas Gravemourn": { "min": 0, "max": 28 },
+          "Mira Ashenthorn": { "min": 0, "max": 11 }
+        }
+      },
+      "settleTimeoutMs": 15000
+    }
+  ]
+}

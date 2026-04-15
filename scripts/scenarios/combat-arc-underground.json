@@ -1,0 +1,74 @@
+{
+  "name": "Underground gallery — claustrophobic fight",
+  "description": "Tight-space narration + combat. Checks that spatial flavor doesn't break combat initiation. sessionId 25.",
+  "sessionId": 25,
+  "characterId": 26,
+  "steps": [
+    {
+      "message": "The tunnel narrows until we have to walk single file—water drips from the ceiling, and the air smells of rust and old blood.",
+      "expect": {
+        "minLength": 40,
+        "combatTriggered": false
+      }
+    },
+    {
+      "message": "Something scrapes stone ahead—two pinpricks of light. I whisper 'light' and ready a spark between my fingers.",
+      "expect": {
+        "minLength": 35,
+        "combatTriggered": false
+      }
+    },
+    {
+      "message": "Two wretches in chain and rot lunge from an alcove—they were waiting in the dark!",
+      "expect": {
+        "minLength": 30,
+        "combatTriggered": true,
+        "notContains": ["error", "undefined"]
+      },
+      "expectCombat": {
+        "entityCount": { "min": 2 }
+      },
+      "settleTimeoutMs": 12000
+    },
+    {
+      "message": "17",
+      "delayMs": 1000
+    },
+    {
+      "message": "10",
+      "delayMs": 500,
+      "expectCombat": {
+        "phase": "ACTIVE",
+        "round": 1
+      },
+      "settleTimeoutMs": 12000
+    },
+    {
+      "message": "I thrust my quarterstaff into the nearest one's knees!",
+      "delayMs": 3500,
+      "expect": {
+        "notContains": ["error", "undefined"]
+      },
+      "rolls": [
+        { "rollType": "attack", "rawDieValue": 13 },
+        { "rollType": "damage", "rawDieValue": 5 }
+      ],
+      "settleTimeoutMs": 14000
+    },
+    {
+      "message": "I end my turn.",
+      "delayMs": 2000,
+      "expect": {
+        "minLength": 8,
+        "notContains": ["error", "undefined"]
+      },
+      "expectCombat": {
+        "hp": {
+          "Silas Gravemourn": { "min": 0, "max": 28 },
+          "Mira Ashenthorn": { "min": 0, "max": 11 }
+        }
+      },
+      "settleTimeoutMs": 22000
+    }
+  ]
+}

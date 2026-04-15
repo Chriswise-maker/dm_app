@@ -1,0 +1,53 @@
+{
+  "name": "Spell cast + end turn — narrator tone test",
+  "description": "BUG-003 exercise: trigger combat, submit initiative, cast Fire Bolt (hit + damage via rolls), end turn. Narrator should reflect the spell's success, not despair.",
+  "sessionId": 25,
+  "characterId": 26,
+  "steps": [
+    {
+      "message": "Bandits leap from the bushes — I ready my staff and fight them off!",
+      "expect": {
+        "minLength": 30,
+        "combatTriggered": true
+      },
+      "expectCombat": {
+        "entityCount": { "min": 2 }
+      },
+      "settleTimeoutMs": 8000
+    },
+    {
+      "message": "15",
+      "delayMs": 1000
+    },
+    {
+      "message": "12",
+      "delayMs": 500,
+      "expectCombat": {
+        "phase": "ACTIVE",
+        "round": 1
+      },
+      "settleTimeoutMs": 10000
+    },
+    {
+      "message": "I cast Fire Bolt at the nearest bandit!",
+      "delayMs": 3000,
+      "expect": {
+        "notContains": ["error", "undefined"]
+      },
+      "rolls": [
+        { "rollType": "attack", "rawDieValue": 16 },
+        { "rollType": "damage", "rawDieValue": 12 }
+      ],
+      "settleTimeoutMs": 10000
+    },
+    {
+      "message": "I end my turn.",
+      "delayMs": 3000,
+      "expect": {
+        "minLength": 10,
+        "notContains": ["despair", "exhaustion", "error", "undefined"]
+      },
+      "settleTimeoutMs": 15000
+    }
+  ]
+}

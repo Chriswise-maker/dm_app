@@ -1,0 +1,29 @@
+{
+  "name": "Exploration only — no combat trigger",
+  "description": "Negative check: rich narration without starting combat. expect.combatTriggered false each step. Catches accidental combat initiation from peaceful RP. sessionId 25.",
+  "sessionId": 25,
+  "characterId": 26,
+  "steps": [
+    {
+      "message": "We crest the hill at dusk—the valley below is a quilt of fields and smoke from distant hearths. I take a slow breath.",
+      "expect": {
+        "minLength": 45,
+        "combatTriggered": false
+      }
+    },
+    {
+      "message": "I describe what Silas remembers about this region from old maps—rivers, trade roads, anything useful for the party.",
+      "expect": {
+        "minLength": 40,
+        "combatTriggered": false
+      }
+    },
+    {
+      "message": "I ask Mira quietly if she sees anything odd on the road ahead—tracks, camps, anything.",
+      "expect": {
+        "minLength": 35,
+        "combatTriggered": false
+      }
+    }
+  ]
+}

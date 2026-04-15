@@ -1,0 +1,81 @@
+{
+  "name": "River road — long RP lead-in before blades",
+  "description": "Stress-tests context length + transition: several in-character beats, then violence. Good for parser drift ('still in exploration vs combat'). sessionId 25, characterId 26.",
+  "sessionId": 25,
+  "characterId": 26,
+  "steps": [
+    {
+      "message": "We follow the muddy track along the river—the reeds whisper, and mist hangs low. I keep one hand near my component pouch.",
+      "expect": {
+        "minLength": 40,
+        "combatTriggered": false
+      }
+    },
+    {
+      "message": "I pause and listen—do we hear hoofbeats or voices ahead?",
+      "expect": {
+        "minLength": 35,
+        "combatTriggered": false
+      }
+    },
+    {
+      "message": "Mira, stay close. I don't like how the crows went quiet.",
+      "expect": {
+        "minLength": 30,
+        "combatTriggered": false
+      }
+    },
+    {
+      "message": "Suddenly riders in black cloaks burst from the treeline, crossbows raised—they're trying to cut us off from the bridge!",
+      "expect": {
+        "minLength": 35,
+        "combatTriggered": true,
+        "notContains": ["error", "undefined"]
+      },
+      "expectCombat": {
+        "entityCount": { "min": 2 }
+      },
+      "settleTimeoutMs": 12000
+    },
+    {
+      "message": "16",
+      "delayMs": 1000
+    },
+    {
+      "message": "11",
+      "delayMs": 500,
+      "expectCombat": {
+        "phase": "ACTIVE",
+        "round": 1
+      },
+      "settleTimeoutMs": 12000
+    },
+    {
+      "message": "I line up Fire Bolt on the lead rider!",
+      "delayMs": 4000,
+      "expect": {
+        "notContains": ["error", "undefined"]
+      },
+      "rolls": [
+        { "rollType": "attack", "rawDieValue": 17 },
+        { "rollType": "damage", "rawDieValue": 10 }
+      ],
+      "settleTimeoutMs": 14000
+    },
+    {
+      "message": "I end my turn.",
+      "delayMs": 2000,
+      "expect": {
+        "minLength": 8,
+        "notContains": ["error", "undefined"]
+      },
+      "expectCombat": {
+        "hp": {
+          "Silas Gravemourn": { "min": 0, "max": 28 },
+          "Mira Ashenthorn": { "min": 0, "max": 11 }
+        }
+      },
+      "settleTimeoutMs": 22000
+    }
+  ]
+}

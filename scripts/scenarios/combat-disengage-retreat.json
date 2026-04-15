@@ -1,0 +1,53 @@
+{
+  "name": "Disengage — break contact then end turn",
+  "description": "Parser path for DISENGAGE (or similar) so opportunity attacks don't fire when leaving melee. Pair with DICE_SEED. sessionId 25, characterId 26.",
+  "sessionId": 25,
+  "characterId": 26,
+  "steps": [
+    {
+      "message": "Ghouls scramble from the ditch — I draw my weapon and fight!",
+      "expect": {
+        "minLength": 25,
+        "combatTriggered": true,
+        "notContains": ["error", "undefined"]
+      },
+      "expectCombat": {
+        "entityCount": { "min": 2 }
+      },
+      "settleTimeoutMs": 10000
+    },
+    {
+      "message": "15",
+      "delayMs": 1000
+    },
+    {
+      "message": "10",
+      "delayMs": 500,
+      "expectCombat": {
+        "phase": "ACTIVE",
+        "round": 1
+      },
+      "settleTimeoutMs": 10000
+    },
+    {
+      "message": "I Disengage—I back away from the nearest ghoul without turning my back fully, staff ready.",
+      "delayMs": 3000,
+      "expect": {
+        "notContains": ["error", "undefined", "not sure what"]
+      },
+      "settleTimeoutMs": 12000
+    },
+    {
+      "message": "That's all for my turn.",
+      "delayMs": 2000,
+      "expect": {
+        "minLength": 8,
+        "notContains": ["error", "undefined"]
+      },
+      "expectCombat": {
+        "phase": "ACTIVE"
+      },
+      "settleTimeoutMs": 20000
+    }
+  ]
+}

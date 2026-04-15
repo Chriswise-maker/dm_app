@@ -1,0 +1,60 @@
+{
+  "name": "Readied stance — threat without immediate strike",
+  "description": "Player holds a line narratively ('I ready Fire Bolt if they charge'). May parse as READY or fall back to chat—either outcome is diagnostic. sessionId 25.",
+  "sessionId": 25,
+  "characterId": 26,
+  "steps": [
+    {
+      "message": "Torchlight flickers on wet stone—we hear boots echoing from the gallery ahead. Something is coming.",
+      "expect": {
+        "minLength": 35,
+        "combatTriggered": false
+      }
+    },
+    {
+      "message": "Armored knights in tarnished heraldry round the corner—they level spears and demand we kneel!",
+      "expect": {
+        "minLength": 30,
+        "combatTriggered": true,
+        "notContains": ["error", "undefined"]
+      },
+      "expectCombat": {
+        "entityCount": { "min": 2 }
+      },
+      "settleTimeoutMs": 12000
+    },
+    {
+      "message": "14",
+      "delayMs": 1000
+    },
+    {
+      "message": "12",
+      "delayMs": 500,
+      "expectCombat": {
+        "phase": "ACTIVE",
+        "round": 1
+      },
+      "settleTimeoutMs": 12000
+    },
+    {
+      "message": "I raise my hand—I'm ready to loose Fire Bolt the instant they commit to a charge.",
+      "delayMs": 3500,
+      "expect": {
+        "notContains": ["error", "undefined"]
+      },
+      "settleTimeoutMs": 14000
+    },
+    {
+      "message": "I end my turn.",
+      "delayMs": 2000,
+      "expect": {
+        "minLength": 8,
+        "notContains": ["error", "undefined"]
+      },
+      "expectCombat": {
+        "phase": "ACTIVE"
+      },
+      "settleTimeoutMs": 22000
+    }
+  ]
+}

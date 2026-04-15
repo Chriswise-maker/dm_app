@@ -1,0 +1,74 @@
+{
+  "name": "Multi-exchange combat — hit then miss across rounds",
+  "description": "Round 1: attack (hit, damage=4). End turn, wait for enemies + Mira. Round 2: attack (miss, d=2). Verifies HP changes persist across rounds and that the engine handles turn cycling.",
+  "sessionId": 25,
+  "characterId": 26,
+  "steps": [
+    {
+      "message": "A single goblin raider jumps from behind a rock — I raise my staff and attack!",
+      "expect": {
+        "minLength": 30,
+        "combatTriggered": true,
+        "notContains": ["error", "undefined"]
+      },
+      "expectCombat": {
+        "entityCount": { "min": 2 }
+      },
+      "settleTimeoutMs": 8000
+    },
+    {
+      "message": "18",
+      "delayMs": 1000
+    },
+    {
+      "message": "10",
+      "delayMs": 500,
+      "expectCombat": {
+        "phase": "ACTIVE",
+        "round": 1
+      },
+      "settleTimeoutMs": 10000
+    },
+    {
+      "message": "I swing my quarterstaff at the nearest goblin!",
+      "delayMs": 3000,
+      "expect": {
+        "notContains": ["error", "undefined"]
+      },
+      "rolls": [
+        { "rollType": "attack", "rawDieValue": 14 },
+        { "rollType": "damage", "rawDieValue": 4 }
+      ],
+      "settleTimeoutMs": 10000
+    },
+    {
+      "message": "I end my turn.",
+      "delayMs": 2000,
+      "expect": {
+        "minLength": 10,
+        "notContains": ["error", "undefined"]
+      },
+      "settleTimeoutMs": 20000
+    },
+    {
+      "message": "I attack the goblin with my quarterstaff again!",
+      "delayMs": 8000,
+      "expect": {
+        "notContains": ["error", "undefined"]
+      },
+      "rolls": [
+        { "rollType": "attack", "rawDieValue": 2 }
+      ],
+      "settleTimeoutMs": 10000
+    },
+    {
+      "message": "I end my turn.",
+      "delayMs": 2000,
+      "expect": {
+        "minLength": 10,
+        "notContains": ["error", "undefined"]
+      },
+      "settleTimeoutMs": 20000
+    }
+  ]
+}

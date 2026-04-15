@@ -1,0 +1,53 @@
+{
+  "name": "Dodge — defensive action + end turn",
+  "description": "Parser + engine: declares Dodge (or defensive stance), then ends turn. Watch for 'action already spent' or parser dropping to chat. sessionId 25, characterId 26.",
+  "sessionId": 25,
+  "characterId": 26,
+  "steps": [
+    {
+      "message": "Skeletons lurch from the crypt — I ready my staff and engage!",
+      "expect": {
+        "minLength": 25,
+        "combatTriggered": true,
+        "notContains": ["error", "undefined"]
+      },
+      "expectCombat": {
+        "entityCount": { "min": 2 }
+      },
+      "settleTimeoutMs": 10000
+    },
+    {
+      "message": "16",
+      "delayMs": 1000
+    },
+    {
+      "message": "9",
+      "delayMs": 500,
+      "expectCombat": {
+        "phase": "ACTIVE",
+        "round": 1
+      },
+      "settleTimeoutMs": 10000
+    },
+    {
+      "message": "I take the Dodge action—I stay light on my feet and watch the bones!",
+      "delayMs": 3000,
+      "expect": {
+        "notContains": ["error", "undefined", "not sure what you want"]
+      },
+      "settleTimeoutMs": 12000
+    },
+    {
+      "message": "That's my full turn—I'm done.",
+      "delayMs": 2000,
+      "expect": {
+        "minLength": 8,
+        "notContains": ["error", "undefined"]
+      },
+      "expectCombat": {
+        "phase": "ACTIVE"
+      },
+      "settleTimeoutMs": 22000
+    }
+  ]
+}

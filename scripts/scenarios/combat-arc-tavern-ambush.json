@@ -1,0 +1,73 @@
+{
+  "name": "Tavern ambush — full combat arc with rolls",
+  "description": "RP in tavern → trigger combat → initiative → attack (hit + damage) → end turn → enemy turns settle → verify state. Tests the complete pipeline from narrative to combat resolution.",
+  "sessionId": 25,
+  "characterId": 26,
+  "steps": [
+    {
+      "message": "I walk into the tavern and look around. Anything suspicious?",
+      "expect": {
+        "minLength": 50,
+        "combatTriggered": false
+      }
+    },
+    {
+      "message": "I approach the hooded figure in the corner and ask what they're doing here.",
+      "expect": {
+        "minLength": 40,
+        "combatTriggered": false
+      }
+    },
+    {
+      "message": "I draw my weapon and attack the hooded figure!",
+      "expect": {
+        "minLength": 30,
+        "combatTriggered": true
+      },
+      "expectCombat": {
+        "entityCount": { "min": 2 }
+      },
+      "settleTimeoutMs": 8000
+    },
+    {
+      "message": "15",
+      "delayMs": 1000
+    },
+    {
+      "message": "12",
+      "delayMs": 500,
+      "expectCombat": {
+        "phase": "ACTIVE",
+        "round": 1
+      },
+      "settleTimeoutMs": 10000
+    },
+    {
+      "message": "I attack the nearest enemy with my quarterstaff!",
+      "delayMs": 3000,
+      "expect": {
+        "notContains": ["error", "undefined"]
+      },
+      "rolls": [
+        { "rollType": "attack", "rawDieValue": 15 },
+        { "rollType": "damage", "rawDieValue": 4 }
+      ],
+      "settleTimeoutMs": 10000
+    },
+    {
+      "message": "I end my turn.",
+      "delayMs": 2000,
+      "expect": {
+        "minLength": 10,
+        "notContains": ["error", "undefined"]
+      },
+      "expectCombat": {
+        "hp": {
+          "Silas Gravemourn": { "min": 0, "max": 28 },
+          "Mira Ashenthorn": { "min": 0, "max": 11 }
+        }
+      },
+      "settleTimeoutMs": 15000
+    }
+  ]
+}

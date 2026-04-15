@@ -1,0 +1,44 @@
+{
+  "name": "BUG-001 regression: wrong weapon in narration",
+  "description": "Attack with dagger (not quarterstaff). After attack roll resolves, narrator should reference dagger, not quarterstaff or longbow. Submits attack roll (hit) + damage roll to get full narration.",
+  "sessionId": 25,
+  "characterId": 26,
+  "steps": [
+    {
+      "message": "A goblin scout leaps from the shadows — I draw my dagger and attack!",
+      "expect": {
+        "minLength": 20,
+        "combatTriggered": true
+      },
+      "expectCombat": {
+        "entityCount": { "min": 2 }
+      },
+      "settleTimeoutMs": 8000
+    },
+    {
+      "message": "16",
+      "delayMs": 1000
+    },
+    {
+      "message": "11",
+      "delayMs": 500,
+      "expectCombat": {
+        "phase": "ACTIVE",
+        "round": 1
+      },
+      "settleTimeoutMs": 10000
+    },
+    {
+      "message": "I attack the goblin with my dagger!",
+      "delayMs": 3000,
+      "expect": {
+        "notContains": ["longbow", "arrow", "error", "undefined"]
+      },
+      "rolls": [
+        { "rollType": "attack", "rawDieValue": 17 },
+        { "rollType": "damage", "rawDieValue": 3 }
+      ],
+      "settleTimeoutMs": 10000
+    }
+  ]
+}

@@ -1,0 +1,68 @@
+{
+  "name": "BUG-006 regression: action already spent on fresh turn",
+  "description": "Attack (hit + damage) → end turn → wait for enemy turns → try Scorching Ray on fresh turn. Must NOT get 'action already spent'. Tests turnResources reset across rounds.",
+  "sessionId": 25,
+  "characterId": 26,
+  "steps": [
+    {
+      "message": "A bandit ambushes us on the road — I draw my weapon and fight back!",
+      "expect": {
+        "minLength": 20,
+        "combatTriggered": true
+      },
+      "expectCombat": {
+        "entityCount": { "min": 2 }
+      },
+      "settleTimeoutMs": 8000
+    },
+    {
+      "message": "19",
+      "delayMs": 1000
+    },
+    {
+      "message": "8",
+      "delayMs": 500,
+      "expectCombat": {
+        "phase": "ACTIVE",
+        "round": 1
+      },
+      "settleTimeoutMs": 10000
+    },
+    {
+      "message": "I attack the nearest bandit with my quarterstaff!",
+      "delayMs": 3000,
+      "expect": {
+        "notContains": ["error", "undefined"]
+      },
+      "rolls": [
+        { "rollType": "attack", "rawDieValue": 14 },
+        { "rollType": "damage", "rawDieValue": 4 }
+      ],
+      "settleTimeoutMs": 10000
+    },
+    {
+      "message": "I end my turn.",
+      "delayMs": 2000,
+      "expect": {
+        "minLength": 10,
+        "notContains": ["error", "undefined"]
+      },
+      "expectCombat": {
+        "hp": {
+          "Silas Gravemourn": { "min": 0, "max": 28 },
+          "Mira Ashenthorn": { "min": 0, "max": 11 }
+        }
+      },
+      "settleTimeoutMs": 20000
+    },
+    {
+      "message": "I cast Scorching Ray at the bandit!",
+      "delayMs": 8000,
+      "expect": {
+        "minLength": 10,
+        "notContains": ["action already spent", "already used", "error", "undefined"]
+      },
+      "settleTimeoutMs": 10000
+    }
+  ]
+}
